@@ -18,7 +18,7 @@ git clone https://github.com/beater27032001/jfy.git ~/jfy
 O `install.sh`:
 - instala o `tmux` pelo Homebrew, se faltar;
 - coloca o comando `jfy` no PATH;
-- liga o `/pipeline` e os agentes dele (planner, builder, verifier, e2e-tester, committer, pr-creator) no seu `~/.claude`. Se você já tem um arquivo com o mesmo nome e conteúdo diferente, ele mantém o seu e avisa;
+- baixa a pipeline oficial do time ([pipeline-Claude](https://github.com/Carloscavalcante97/pipeline-Claude)) em `~/.jfy/pipeline-Claude` e liga o `/pipeline`, os agentes (planner, builder, verifier, e2e-tester, committer, pr-creator) e os hooks no seu `~/.claude`. Se você já tem um arquivo com o mesmo nome e conteúdo diferente, ele mantém o seu e avisa;
 - confere se o MCP do Journify está configurado e roda um autoteste.
 
 ### 2. Conectar o Journify
@@ -47,10 +47,11 @@ Tudo é por número: digite e dê Enter. `0` sempre volta.
 - `l` abre um **terminal livre**: Claude com `--dangerously-skip-permissions` numa pasta que você escolhe, sem task.
 
 **Tela do projeto**: suas tasks, ordenadas por status.
-- Número abre a task (descrição e comentários) com duas opções:
-  - `1` **/pipeline**: para task de código (testes, implementação, revisão, commit e PR com a sua aprovação). O jfy oferece criar a branch `feature/<titulo>` se você não estiver numa branch gitflow.
+- Número abre a task (descrição, comentários e pontos; avisa se passar de 8, o teto do fluxo) com duas opções:
+  - `1` **/pipeline**: para task de código (testes, implementação, revisão, commit e PR com a sua aprovação). Se você não estiver numa branch gitflow, o jfy cria `feature/`, `bugfix/` (a partir da `develop` atualizada) ou `hotfix/` (a partir da `main`) com o título da task.
   - `2` **Claude livre**: para estudo, análise, documento, preparação de reunião. Nada vai para o Journify sem você aprovar.
-- `s` **sessão**: um chat só para várias tasks, uma atrás da outra. O Claude lista as tasks, você escolhe, ele faz e no fim pergunta se segue com outra.
+  - Depois de escolher, o jfy pergunta **"Algo a mais para o Claude?"**. Digite ou cole instruções extras e arraste arquivos (prints, PDFs, planilhas) para o terminal. Eles vão junto com a descrição da task. Linha vazia continua; Enter direto pula.
+- `s` **sessão**: um chat só para várias tasks, uma atrás da outra. O Claude lista as tasks, você escolhe, ele faz e no fim pergunta se segue com outra. No `/exit`, o jfy registra o tempo das tasks que ficaram abertas e garante o `handoff.md` de todas as tasks trabalhadas.
 - `l` **terminal livre** direto no repositório do projeto.
 - `c` troca o repositório do projeto.
 
@@ -95,12 +96,12 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 cd ~/jfy && git pull
 ```
 
-O `/pipeline` e os agentes são links para o repositório, então atualizam junto. Rode o `install.sh` de novo se algum arquivo novo entrar em `claude/`.
+Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git pull` na pipeline oficial e liga arquivos novos.
 
 ## Problemas comuns
 
 - **"MCP 'journify' não configurado"**: faça o passo 2.
-- **O `/pipeline` para dizendo que a branch está errada**: ele só roda em `feature/`, `bugfix/`, `hotfix/` ou `release/`. Responda `s` quando o jfy oferecer a branch.
+- **O `/pipeline` para dizendo que a branch está errada**: ele só roda em `feature/`, `bugfix/`, `hotfix/` ou `release/`. Escolha o tipo quando o jfy oferecer criar a branch.
 - **O `/pipeline` diz que a task não é de código**: use a opção `2` (Claude livre).
 - **Um projeto não aparece no menu**: o menu mostra só projetos com tasks abertas atribuídas a você.
 
@@ -108,6 +109,6 @@ O `/pipeline` e os agentes são links para o repositório, então atualizam junt
 
 ```bash
 rm "$(command -v jfy)"
-find ~/.claude/commands ~/.claude/agents -type l -lname "*jfy/claude/*" -delete
+find ~/.claude/commands ~/.claude/agents ~/.claude/hooks -type l -lname "*pipeline-Claude/*" -delete
 rm -rf ~/.jfy ~/jfy
 ```

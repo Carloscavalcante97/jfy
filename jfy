@@ -2,7 +2,7 @@
 # jfy: menu do Journify que manda a task para o Claude Code (/pipeline) e registra o tempo.
 # Roda dentro de um tmux próprio (socket "jfy"): aba 0 = menu, uma aba por task rodando.
 # ponytail: /usr/bin/python3 (o do macOS) de propósito: o Python do python.org costuma vir sem certificados SSL.
-import json, os, re, shutil, subprocess, sys, time, unicodedata, urllib.request, uuid
+import json, os, re, select, shutil, subprocess, sys, time, unicodedata, urllib.request, uuid
 from datetime import datetime
 
 HOME = os.path.expanduser("~/.jfy")
@@ -81,6 +81,20 @@ def ask(msg, default=""):
         print()
         sys.exit(0)
     return r or default
+
+
+def ask_texto(msg):
+    """Várias linhas: termina numa linha vazia. Texto colado com linhas em branco no meio vem inteiro."""
+    print(msg)
+    linhas = []
+    while True:
+        l = ask(c("» ", 39, True))
+        if l:
+            linhas.append(l)
+        elif not linhas or not select.select([sys.stdin], [], [], 0.1)[0]:  # nada pendente: o usuário deu Enter
+            return "\n".join(linhas).strip()
+        else:
+            linhas.append("")
 
 
 def menu(titulo, itens, extras="", zero="voltar"):
@@ -185,14 +199,28 @@ def ocupado(lock):
         return False
 
 
+def base(repo, tipo="feature"):
+    """Ponto de partida gitflow, atualizado do remoto: develop; hotfix sai da main. Sem develop, main/master."""
+    git(repo, "fetch", "-q", "origin")
+    for n in (["main", "master"] if tipo == "hotfix" else ["develop", "main", "master"]):
+        for ref in (f"origin/{n}", n):
+            if git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0:
+                return ref
+    return "HEAD"
+
+
 def garantir_branch(repo, titulo):
     atual = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if not atual or BRANCH_OK.match(atual):
         return
-    nova = "feature/" + slug(titulo)
-    if ask(f"Branch atual '{atual}' não é gitflow. Criar/trocar para '{c(nova, 78)}'? (s/n) ", "s").lower() == "s":
-        if git(repo, "switch", nova).returncode != 0:
-            subprocess.run(["git", "switch", "-c", nova], cwd=repo)
+    op = ask(f"Branch atual '{atual}' não é gitflow. Criar a branch da task:\n"
+             f"  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "1")
+    if op == "0":
+        return
+    tipo = {"2": "bugfix", "3": "hotfix"}.get(op, "feature")
+    nova = f"{tipo}/{slug(titulo)}"
+    if git(repo, "switch", nova).returncode != 0:
+        subprocess.run(["git", "switch", "--no-track", "-c", nova, base(repo, tipo)], cwd=repo)
 
 
 def criar_worktree(repo, titulo):
@@ -200,7 +228,7 @@ def criar_worktree(repo, titulo):
     branch = "feature/" + slug(titulo)
     wt = os.path.join(WT_DIR, os.path.basename(repo) + "-" + slug(titulo))
     if not os.path.isdir(wt):
-        if git(repo, "worktree", "add", wt, "-b", branch).returncode != 0:
+        if git(repo, "worktree", "add", "--no-track", "-b", branch, wt, base(repo)).returncode != 0:
             subprocess.run(["git", "worktree", "add", wt, branch], cwd=repo, check=True)
         for f in os.listdir(repo):
             if f.startswith(".env") and os.path.isfile(os.path.join(repo, f)):
@@ -231,6 +259,15 @@ def fechamento(pid_proj, task="a task que acabou de terminar"):
         f"2. Reescreva {mem} com no máximo 40 linhas: só fatos duráveis do projeto (stack, comandos de build/teste, "
         "convenções, armadilhas, decisões, contatos). Reescreva e enxugue, nunca só acrescente; nada de histórico de tasks."
     )
+
+
+def fechar(sid, cwd, pedido):
+    """Depois do /exit: handoff.md e memória, garantidos mesmo se o Claude não fez."""
+    print(dim("Atualizando handoff.md e a memória do projeto..."))
+    # ponytail: retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
+    subprocess.call(["claude", "-p", "--resume", sid, "--permission-mode", "acceptEdits", "--allowedTools",
+                     "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
+                     "Bash(ls:*)", "--", pedido], cwd=cwd)
 
 
 def preparar_repo(repo, nome_wt):
@@ -298,11 +335,18 @@ def rodar(tid, modo="pipeline"):
     if lock and modo == "pipeline":
         garantir_branch(repo, task["title"])
     inicio(tid)
+    arq = os.path.join(RUN_DIR, tid + ".extra")  # escrito pela tela_task
+    notas = ""
+    if os.path.exists(arq):
+        notas = ("\n\nNotas minhas para esta task (caminhos de arquivo são anexos: leia cada um):\n"
+                 + open(arq).read())
+        os.remove(arq)
     if modo == "pipeline":
-        pedido = f"/pipeline {tid}"
+        pedido = f"/pipeline {tid}{notas}"
     else:
         pedido = (f"Task Journify {tid}: \"{task['title']}\". Leia com mcp__journify__obter_task e me ajude a entregá-la "
-                  "(estudo, análise, documento, o que ela pedir). Nada vai para o Journify (comentário, status) sem eu aprovar.")
+                  "(estudo, análise, documento, o que ela pedir). Nada vai para o Journify (comentário, status) sem eu aprovar."
+                  + notas)
     contexto = contexto_projeto(proj, pid_proj) + " Não mude status nem registre tempo no Journify: o jfy faz isso ao sair."
     sid = str(uuid.uuid4())
     minutos = abrir_claude(cwd, contexto, pedido, lock, sid)
@@ -316,11 +360,7 @@ def rodar(tid, modo="pipeline"):
     else:
         m = ask(f"Tempo gasto em minutos [{minutos}]: ", str(minutos))
         fim(tid, int(m) if m.isdigit() else minutos, op == "1")
-    print(dim("Atualizando handoff.md e a memória do projeto..."))
-    # ponytail: retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
-    subprocess.call(["claude", "-p", "--resume", sid, "--permission-mode", "acceptEdits", "--allowedTools",
-                     "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
-                     "Bash(ls:*)", "--", fechamento(pid_proj, f"\"{task['title']}\" ({tid})")], cwd=cwd)
+    fechar(sid, cwd, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
     limpar_worktree(repo, cwd)
     ask(dim("Enter fecha esta aba."))
 
@@ -345,7 +385,8 @@ Regras desta sessão:
 - Ao terminar, pergunte se a task está pronta e se quero corrigir o tempo. Rode `{SELF} --fim <id>`, com `--pronta` se estiver pronta e `--min N` se eu corrigir o tempo (sem --min o jfy usa o relógio). Se eu não quiser registrar, rode `{SELF} --fim <id> --nada`. Nunca mude status nem tempo no Journify de outro jeito.
 - Logo depois do --fim, faça o encerramento da task: {fechamento(pid_proj)}
 - Depois atualize a lista com mcp__journify__minhas_tasks (projetoId {pid_proj}) e pergunte se seguimos com outra."""
-    abrir_claude(cwd, contexto_projeto(proj, pid_proj), pedido, lock)
+    sid = str(uuid.uuid4())
+    abrir_claude(cwd, contexto_projeto(proj, pid_proj), pedido, lock, sid)
 
     for t in tasks:  # tasks que ficaram com o relógio ligado
         if os.path.exists(os.path.join(RUN_DIR, t["id"] + ".t")):
@@ -354,6 +395,9 @@ Regras desta sessão:
                 os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
                 continue
             fim(t["id"], int(m) if m.isdigit() else None, ask("Está pronta? (s/n) [n]: ", "n") == "s")
+    fechar(sid, cwd, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
+                     "'nada a atualizar'. Senão, confira o encerramento de todas as tasks trabalhadas (inclusive as "
+                     "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"))
     limpar_worktree(repo, cwd)
     ask(dim("Enter fecha esta aba."))
 
@@ -381,13 +425,20 @@ def tela_task(cfg, t):
     full = mcp("obter_task", taskId=t["id"])
     limpar()
     print(c(f" {cfg['projetos'][t['projectId']]['nome']} ", cor_projeto(t["projectId"]), True))
-    print(c(t["title"], 255, True) + "  " + status(t["statusId"]) + dim(f"  prioridade {t['priority']}") + "\n")
+    pts = (full["task"].get("estimate") or {}).get("value")
+    print(c(t["title"], 255, True) + "  " + status(t["statusId"]) + dim(f"  prioridade {t['priority']}")
+          + (dim(f"  {pts} pts") if pts else "")
+          + (c("  acima de 8 pontos: o fluxo pede dividir a task antes", 203) if pts and pts > 8 else "") + "\n")
     print(doc_texto(full["task"].get("description") or "").strip() or dim("(sem descrição)"))
     for cm in full.get("comments", []):
         print(dim(f"  > {cm.get('authorName')}: ") + cm.get("body", ""))
     op = ask("\n" + c(" 1", 39, True) + "  /pipeline   (task de código: testes, implementação, revisão)\n"
              + c(" 2", 39, True) + "  Claude livre (estudo, análise, documento, reunião)\n" + dim(" 0 voltar") + "\n" + c("> ", 39, True))
     if op in ("1", "2"):
+        extra = ask_texto("\n" + c("Algo a mais para o Claude?", 39, True) + dim(
+            " Digite ou cole texto, arraste arquivos (prints, PDFs, planilhas) para cá. Linha vazia continua."))
+        if extra:
+            open(os.path.join(RUN_DIR, t["id"] + ".extra"), "w").write(extra)
         nome = f"{cfg['projetos'][t['projectId']]['nome'][:12]}: {t['title'][:24]}"
         abrir_aba(nome, t["projectId"], "--run", t["id"], "pipeline" if op == "1" else "livre")
 

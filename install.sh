@@ -30,21 +30,26 @@ ln -sf "$DIR/jfy" "$BIN/jfy"
 ok "comando jfy em $BIN"
 case ":$PATH:" in *":$BIN:"*) ;; *) aviso "$BIN não está no PATH. Adicione ao ~/.zshrc: export PATH=\"$BIN:\$PATH\"";; esac
 
-# /pipeline e agentes: symlink, então um git pull já atualiza. Não sobrescreve arquivo seu.
-for f in "$DIR"/claude/commands/*.md "$DIR"/claude/agents/*.md; do
-  rel="${f#$DIR/claude/}"
-  dest="$HOME/.claude/$rel"
-  mkdir -p "$(dirname "$dest")"
-  if [ -L "$dest" ] || [ ! -e "$dest" ]; then
-    ln -sf "$f" "$dest"
-  elif cmp -s "$f" "$dest"; then
-    ln -sf "$f" "$dest"  # igual ao do repo: troca pelo link para receber as atualizações
+# /pipeline, agentes e hooks: do repo oficial da pipeline, por symlink, então atualizar o repo já atualiza.
+# Não sobrescreve arquivo seu.
+PIPE="$HOME/.jfy/pipeline-Claude"
+if [ -d "$PIPE/.git" ]; then
+  git -C "$PIPE" pull -q --ff-only || aviso "não consegui atualizar $PIPE, segui com a versão atual"
+else
+  git clone -q https://github.com/Carloscavalcante97/pipeline-Claude.git "$PIPE" || erro "Não consegui clonar a pipeline"
+fi
+ligar() {  # ligar <arquivo do repo> <destino em ~/.claude>
+  mkdir -p "$(dirname "$2")"
+  if [ -L "$2" ] || [ ! -e "$2" ] || cmp -s "$1" "$2"; then
+    ln -sf "$1" "$2"
   else
-    aviso "~/.claude/$rel já existe e é diferente do repo, mantive o seu"
-    continue
+    aviso "${2/#$HOME/~} já existe e é diferente da pipeline oficial, mantive o seu"
   fi
-done
-ok "/pipeline e agentes em ~/.claude"
+}
+ligar "$PIPE/pipeline.md" "$HOME/.claude/commands/pipeline.md"
+for f in "$PIPE"/agents/*.md; do ligar "$f" "$HOME/.claude/agents/$(basename "$f")"; done
+for f in "$PIPE"/hooks/*.sh; do ligar "$f" "$HOME/.claude/hooks/pipeline/$(basename "$f")"; done
+ok "/pipeline, agentes e hooks em ~/.claude (de github.com/Carloscavalcante97/pipeline-Claude)"
 
 # MCP do Journify
 if /usr/bin/python3 -c "import json,os,sys; sys.exit(0 if json.load(open(os.path.expanduser('~/.claude.json'))).get('mcpServers',{}).get('journify') else 1)" 2>/dev/null; then
