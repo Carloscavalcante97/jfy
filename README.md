@@ -24,6 +24,7 @@ O `install.sh`:
   - **uso da IA na barra**: muda o `statusLine` do `~/.claude/settings.json`;
   - **aviso do Claude no macOS**: dois hooks no `~/.claude/settings.json` (valem para todo Claude Code) e o `terminal-notifier`;
   - **fonte JFY Mono** (a Maple Mono com os ícones em pixel art dos temas). Escolha "JFY Mono" como fonte do seu terminal (no Warp: Settings > Appearance) e reinicie o terminal com ⌘Q;
+  - **notificação das 7h**: um LaunchAgent.
 
 ### 2. Conectar o Journify
 
@@ -44,11 +45,14 @@ jfy
 
 ## Como usar
 
-Número + Enter abre o item. Letras (`l`, `t`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
+Número + Enter abre o item. Letras (`l`, `r`, `h`, `t`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
 
 **Menu principal**: três seções. **Foco**: tasks de todos os projetos com prazo vencido ou nos próximos 7 dias e as de prioridade crítica, da mais urgente para a menos; o número abre a task direto. **Projetos**: os que têm tasks suas, com a contagem. **Sem task**: os configurados sem task aberta (manutenção: terminal livre ou sessão quando surgir algo). O repositório de cada projeto aparece no `c` da tela do projeto.
+- `jfy --hoje` imprime as reuniões de hoje e o foco, sem abrir o menu.
 - Na primeira vez em cada projeto, o jfy pede a pasta do repositório (navegador de pastas: número entra, `..` sobe, `s` escolhe, ou cole o caminho) e um nome.
 - `l` abre um **terminal livre**: Claude com `--dangerously-skip-permissions` numa pasta que você escolhe, sem task.
+- `r` **reuniões de hoje**: escolha uma pelo número e diga o projeto (Enter aceita o palpite pelo título; ou escreva o nome do projeto no Journify, como `Souv`, se ele não estiver no jfy) e, se quiser, uma linha de contexto (ex.: "alinhamento de infra das duas Plastamps"). O jfy só grava: nada de Claude, nada de task. Nas horas, a reunião vai para esse projeto com o contexto como descrição. `p` + número abre a preparação com o Claude (opcional): o que avançou, o que espera alguém, bloqueios e perguntas.
+- `h` **horas**: abre a tabela de hoje para o [minhas-horas](https://journify.souv.tech/minhas-horas), uma linha por lançamento (veja [Horas](#horas)). `l` chama o Claude para lançar pelo Chrome. Também dá para rodar `jfy --horas -1` (ontem) ou `jfy --horas 20/11`.
 
 **Tela do projeto**: suas tasks em seções, na ordem do que pede ação sua primeiro: **Urgente** (prazo vencido, nos próximos 7 dias ou crítica; mostra o status no fim da linha), **Em andamento**, **A fazer**, **Esperando alguém** (revisão, teste ou validação) e **Bloqueadas**. Seção vazia não aparece.
 - Número abre a task. A tela cabe no terminal, nesta ordem: projeto e título; status, prioridade, pontos e prazo (avisa se passar de 8 pontos, o teto do fluxo); **O que fazer** (o começo da descrição, já limpa: sem markdown cru, e cada imagem vira `▣ imagem a3`, o número do anexo); anexos (imagens agrupadas, documentos pelo nome); o último comentário; e as ações:
@@ -65,7 +69,7 @@ Número + Enter abre o item. Letras (`l`, `t`, `s`, `p`, `w`...) e o `0` (volta)
 
 ### Abas
 
-Cada task abre numa aba nova, com a cor do projeto. Abrir de novo algo que já tem aba (a mesma task ou pasta) só leva você até ela. A barra fica embaixo.
+Cada task abre numa aba nova, com a cor do projeto. Abrir de novo algo que já tem aba (a mesma task, reunião, pasta ou as horas) só leva você até ela. A barra fica embaixo.
 
 | Para | Faça |
 |---|---|
@@ -79,6 +83,8 @@ Cada task abre numa aba nova, com a cor do projeto. Abrir de novo algo que já t
 
 | O quê | Como funciona |
 |---|---|
+| 📅 reunião | contagem regressiva quando falta 1h ou menos para a próxima reunião do Google Agenda; vermelho a 5 min. **Clique** para entrar na chamada |
+| ✉ 3 | emails não lidos (no Gmail, só a aba Principal). Quando chega um novo, a barra destaca remetente e assunto por 5 min e o macOS notifica. **Clique no ✉** para ler num popup: abre direto o que acabou de chegar, ou a lista com hora, remetente e assunto (número lê, `o` + número abre no Gmail, `q` volta da leitura, `0` fecha) |
 | IA ▰▰▱▱ 23% | quanto você já usou do limite de 5h do Claude (e até que horas), e da semana; laranja a 50%, vermelho a 80% |
 | ⏱ 3h 12min / 8h | cronômetro da jornada: liga sozinho na primeira vez que você usa o jfy no dia, fica verde e notifica ao chegar a 8h |
 | 14:32 | relógio |
@@ -86,6 +92,7 @@ Cada task abre numa aba nova, com a cor do projeto. Abrir de novo algo que já t
 | Atalho | Faz |
 |---|---|
 | `Ctrl-b` `c` | mostra todos os comandos do jfy (menus, atalhos e linha de comando). Substitui o "nova janela" do tmux |
+| `Ctrl-b` `m` | entra na chamada (Meet, Zoom, Teams) da reunião que está rolando ou da próxima. 5 min antes de cada reunião chega uma notificação |
 | `Ctrl-b` `p` | pausa / retoma a jornada (almoço, intervalo). Substitui o "aba anterior" do tmux |
 | `Ctrl-b` `r` | zera a jornada e começa de novo agora (pede confirmação) |
 
@@ -108,11 +115,47 @@ O uso da IA vem do statusline do Claude Code (o `install.sh` faz ele gravar uma 
 
 Os ícones em pixel art só aparecem com a fonte **JFY Mono** no terminal (o `install.sh` instala, se você aceitar). O Padrão usa caracteres comuns e funciona com qualquer fonte. Para mudar ou criar um ícone, edite o desenho em `fonte/icones.txt` e gere a fonte de novo (o comando está no topo de `fonte/patch.py`).
 
+### Google: agenda e Gmail
+
+Rode `jfy --login`. Na primeira vez ele abre no navegador o [JSON do app jfy da Souv](https://drive.google.com/file/d/12zl0qgv3LfCi5dNgVzhNtyvpgUzZOS8a/view?usp=sharing), no Drive da empresa: baixe e arraste o arquivo para o terminal. O JSON só identifica o app; cada pessoa autoriza a própria conta e o acesso fica no Chaves do Mac dela. Depois abre o login do Google no navegador. Você entra com a conta da empresa e autoriza:
+- **agenda**: só leitura de eventos. Reuniões recusadas, eventos de dia inteiro e ausências ficam de fora;
+- **Gmail**: só leitura (`gmail.readonly`): o jfy lê os emails para o popup do ✉, mas não marca como lido, não apaga e não envia. Quem fez login antes dessa mudança precisa rodar `jfy --login` uma vez.
+
+O acesso fica no Chaves do macOS. O jfy olha a agenda a cada 2 min e o Gmail a cada 30 s (um email novo aparece na barra em até ~45 s). Se a barra mostrar `✉ erro`, rode `jfy --login` de novo.
+
+### Notificação das 7h
+
+De segunda a sexta, às 7h, chega uma notificação do macOS com as reuniões do dia e as tasks no foco. Se o Mac estiver dormindo, ela chega quando ele acordar. Se a notificação não aparecer, libere as notificações do **Editor de Scripts** em Ajustes do Sistema > Notificações.
+
 ### Aviso do Claude
 
-Quando um Claude responde ou pede permissão, chega uma notificação do macOS com o nome da aba (ou da pasta). **Clicar nela traz o terminal já na aba daquele Claude.** Isso usa o `terminal-notifier`, que o `install.sh` instala se você aceitar o aviso; libere **terminal-notifier** em Ajustes do Sistema > Notificações. Sem ele, a notificação aparece, mas o clique não faz nada. Vale para todo Claude Code, dentro e fora do jfy. Ela não aparece se você já está olhando: terminal na frente e, dentro do jfy, a aba daquele Claude aberta. O `install.sh` liga isso com dois hooks (`Stop` e `Notification`) no `~/.claude/settings.json`.
+Quando um Claude responde ou pede permissão, chega uma notificação do macOS com o nome da aba (ou da pasta). **Clicar nela traz o terminal já na aba daquele Claude.** O clique também funciona na notificação de email (abre o leitor) e na de reunião (abre a chamada). Isso usa o `terminal-notifier`, que o `install.sh` instala se você aceitar o aviso; libere **terminal-notifier** em Ajustes do Sistema > Notificações. Sem ele, a notificação aparece, mas o clique não faz nada. Vale para todo Claude Code, dentro e fora do jfy. Ela não aparece se você já está olhando: terminal na frente e, dentro do jfy, a aba daquele Claude aberta. O `install.sh` liga isso com dois hooks (`Stop` e `Notification`) no `~/.claude/settings.json`.
 
 Para a aba também ficar vermelha, no Claude rode `/config` e ponha **Notifications** em **Terminal Bell**.
+
+### Horas
+
+O jfy anota cada trabalho do dia em `~/.jfy/horas/AAAA-MM-DD.jsonl`: tasks (no `/exit` ou no `--fim` da sessão), terminal livre e preparação de reunião. As reuniões vêm da agenda, com o projeto e o contexto que você deu no `r` (sem isso, o projeto sai do apelido no título, marcado "projeto pelo título"). Sessões do Claude abertas fora do jfy não entram.
+
+A tabela do `h` mostra só o que vai para o Journify: uma linha por lançamento, com projeto, categoria, horas e descrição, e o total no topo. O medido e a regra ficam no rodapé.
+
+| Na tabela | Faz |
+|---|---|
+| número | edita a linha: `p` projeto, `c` categoria, `h` horas, `d` descrição, `x` remove. Vale só para aquele dia. Numa reunião, projeto e descrição ficam iguais aos do `r` |
+| número de uma linha removida | restaura |
+| `-` / `+` | dia anterior / próximo |
+| `20/11` | vai para a data |
+| `l` | o Claude lança pelo Chrome |
+
+Hora mudada à mão (`h`) substitui a da regra só naquela linha, e as outras não mudam. A linha fica marcada como "horas à mão" e, com `h` e Enter vazio, volta para a regra.
+
+Por padrão o jfy lança o medido, arredondado para múltiplos de 5 min. Se o seu gestor combinou um fator para cobrir o que o cronômetro não vê (entender a task, ler, conversar), ponha em `~/.jfy/config.json`:
+
+```json
+"horas": {"fator": 1.2}
+```
+
+O fator multiplica só as linhas de trabalho; reunião fica com a duração da agenda. Ele aparece no rodapé da tabela, junto do medido. Sessões do Claude abertas fora do jfy não entram no log.
 
 ### Ao encerrar uma task (`/exit`)
 
@@ -121,7 +164,7 @@ O jfy pergunta:
 2. não pronta: só comenta o tempo;
 3. não registrar nada.
 
-O tempo vem do relógio (da abertura até o `/exit`) e você pode corrigir (`80`, `1h20`, `1:20`). Ele vai como comentário porque o MCP do Journify não tem campo de tempo.
+O tempo vem do relógio (da abertura até o `/exit`, sem as reuniões da agenda que caíram no meio) e você pode corrigir (`80`, `1h20`, `1:20`). Ele vai como comentário porque o MCP do Journify não tem campo de tempo, e também para o log de [horas](#horas).
 
 Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero, se não existir) e a memória do projeto, em segundo plano: a aba já pode ser fechada. O `handoff.md` fica como alteração não commitada: commite junto com a task. Se a task rodou num worktree, ele fica em `~/.jfy/worktrees/` com o `handoff.md`: depois do merge, apague com `git worktree remove <pasta>`.
 
@@ -134,6 +177,12 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 | memória de cada projeto (máx. 40 linhas, o Claude lê antes de tudo) | `~/.jfy/memoria/<projectId>.md` |
 | worktrees de tasks paralelas | `~/.jfy/worktrees/` |
 | cronômetro da jornada de hoje | `~/.jfy/dia.json` |
+| horas medidas por dia e a regra do lançamento | `~/.jfy/horas/` e `"horas"` no `~/.jfy/config.json` |
+| client OAuth do Google e reuniões de hoje | `~/.jfy/config.json` e `~/.jfy/agenda.json` |
+| projeto e contexto de cada reunião (base das horas) | `~/.jfy/reunioes.json` |
+| ajustes que você fez na tabela de horas de um dia | `~/.jfy/horas/AAAA-MM-DD.ajustes.json` |
+| notificação das 7h | `~/Library/LaunchAgents/jfy.dia.plist` |
+| acesso ao Google | Chaves do macOS, item `jfy-google` |
 
 **Duas tasks no mesmo repositório ao mesmo tempo**: a segunda roda num `git worktree` separado, com branch própria, para os pipelines não mexerem nos mesmos arquivos. O worktree recebe uma cópia dos `.env`, mas não as dependências (`node_modules`, venv); o Claude instala se precisar.
 
@@ -158,6 +207,8 @@ Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git
 ```bash
 rm "$(command -v jfy)"
 find ~/.claude/commands ~/.claude/agents ~/.claude/hooks -type l -lname "*pipeline-Claude/*" -delete
+launchctl bootout gui/$(id -u)/jfy.dia; rm ~/Library/LaunchAgents/jfy.dia.plist
+security delete-generic-password -s jfy-google
 rm -rf ~/.jfy ~/jfy
 # e tire o "tee ~/.jfy/claude-status.json | " do statusLine e os hooks "jfy --avisar" em ~/.claude/settings.json
 ```

@@ -103,6 +103,22 @@ if [ -f "$HOME/Library/Fonts/JFYMono.ttf" ] || quer "Fonte JFY Mono, com os íco
   cp "$DIR/fonte/JFYMono.ttf" "$HOME/Library/Fonts/JFYMono.ttf"
   ok "fonte JFY Mono: escolha \"JFY Mono\" no seu terminal e reinicie ele (os temas, menos o Padrão, usam os ícones dela)"
 fi
+PLIST="$HOME/Library/LaunchAgents/jfy.dia.plist"
+if [ -f "$PLIST" ] || quer "Notificação às 7h (seg a sex) com as reuniões e as tasks no foco? Cria um LaunchAgent."; then
+  DIAS=""; for d in 1 2 3 4 5; do DIAS="$DIAS<dict><key>Weekday</key><integer>$d</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>"; done
+  mkdir -p "$(dirname "$PLIST")"
+  cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>jfy.dia</string>
+  <key>ProgramArguments</key><array><string>$DIR/jfy</string><string>--notificar</string></array>
+  <key>StartCalendarInterval</key><array>$DIAS</array>
+</dict></plist>
+EOF
+  launchctl bootout "gui/$(id -u)/jfy.dia" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" && ok "notificação do dia às 7h (seg a sex)"
+fi
 echo
 
 "$DIR/jfy" --selftest >/dev/null && ok "autoteste"
