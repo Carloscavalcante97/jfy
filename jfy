@@ -187,20 +187,34 @@ def ask_texto(msg):
             linhas.append("")
 
 
-def escolha(prompt, teclas=""):
-    """Lê a opção de um menu: uma letra de `teclas` (e o 0) vale na hora, sem Enter; o resto (números, p3) vai até o
-    Enter, com backspace. Fora de um terminal, cai no input normal."""
-    import termios, tty
+def escolha(prompt, teclas="", n=0, prefixos=None):
+    """Lê a opção de um menu sem Enter. Letra de `teclas` (e o 0) vale na hora. Número de 1 a `n` (ou letra de
+    `prefixos` + número, como a3 = {"a": nº de anexos}) vale assim que não puder crescer: com até 9 opções, na hora;
+    com 12, o 1 espera um instante pelo 2º dígito. Texto livre (nome, caminho) vai até o Enter, com backspace.
+    Fora de um terminal, cai no input normal."""
+    import codecs, termios, tty
     if not sys.stdin.isatty():
         return ask(prompt)
+    prefixos = prefixos or {}
     print(prompt, end="", flush=True)
-    fd, buf = sys.stdin.fileno(), ""
+    fd, buf, dec = sys.stdin.fileno(), "", codecs.getincrementaldecoder("utf-8")(errors="ignore")
     antes = termios.tcgetattr(fd)
+
+    def numero():  # "fim": não cresce mais; "talvez": um dígito a mais ainda vale; None: não é opção numerada
+        m = re.fullmatch(r"([a-z]?)(\d+)", buf)
+        maior = (prefixos.get(m[1]) if m[1] else n) if m else None
+        if not maior or not 1 <= int(m[2]) <= maior:
+            return None
+        return "talvez" if int(m[2]) * 10 <= maior else "fim"
+
     try:
         tty.setcbreak(fd)
         while True:
-            ch = sys.stdin.read(1)
-            if ch in ("\n", "\r", ""):
+            # os.read, não sys.stdin: o buffer do Python esconderia do select o dígito já digitado
+            ch = dec.decode(os.read(fd, 1))
+            if not ch:
+                continue  # meio de um caractere com acento
+            if ch in ("\n", "\r"):
                 break
             if ch in ("\x7f", "\b"):
                 if buf:
@@ -212,6 +226,9 @@ def escolha(prompt, teclas=""):
             elif ch.isprintable():
                 buf += ch
                 print(ch, end="", flush=True)
+                st = numero()
+                if st == "fim" or (st == "talvez" and not select.select([fd], [], [], 0.7)[0]):
+                    break
     except KeyboardInterrupt:
         print()
         sys.exit(0)
@@ -235,7 +252,7 @@ def corta(txt, n):
     return txt if len(txt) <= n else txt[:max(n, 2) - 1] + "…"
 
 
-def menu(titulo, itens, acoes=(), zero="volta", teclas=""):
+def menu(titulo, itens, acoes=(), zero="volta", teclas="", prefixos=None):
     limpar()
     print(c(f" {titulo} ", 39, True) + "\n")
     i = 0
@@ -249,7 +266,7 @@ def menu(titulo, itens, acoes=(), zero="volta", teclas=""):
         i += 1
         print(f" {c(f'{i:>2}', 39, True)}  {txt}")
     print("\n " + acoes_txt(acoes, "0 " + zero))
-    return escolha(seta(), teclas)
+    return escolha(seta(), teclas, i, prefixos)
 
 
 def doc_texto(node, depth=0):
@@ -764,7 +781,7 @@ def ler_emails():
         itens = [f"{dim(quando(ts))}  {c(corta(nome, 22).ljust(22), 255, True)}  {corta(assunto, larg - 40)}"
                  for ts, nome, assunto in metas]
         op = menu(f"Emails não lidos ({len(ids)}) · Principal", itens or [(dim("caixa zerada"),)],
-                  [("número", "lê"), ("o + número", "abre no Gmail")], zero="fecha")
+                  [("número", "lê"), ("o + número", "abre no Gmail")], zero="fecha", prefixos={"o": len(ids)})
         n = op.lstrip("o")
         if not (n.isdigit() and 1 <= int(n) <= len(ids)):
             return
@@ -1177,8 +1194,8 @@ def tela_horas(dia=None):
         prox = dia < date.today()
         op = escolha("\n " + acoes_txt(([("número", "edita")] if itens else []) + ([("l", "lança (Claude no Chrome)")] if vivos else [])
                                       + [("-", "dia anterior")] + ([("+", "próximo dia")] if prox else [])
-                                      + [("ou a data", "20/11")], "0 fecha") + "\n" + seta(), "l-+")
-        d = ler_data(op, futuro=False) if "/" in op else None
+                                      + [("d", "outra data")], "0 fecha") + "\n" + seta(), "l-+d", len(itens))
+        d = ler_data(ask("  Data (20/11, -1 = ontem): "), futuro=False) if op == "d" else None
         if op == "0":
             return
         if op == "-":
@@ -1214,7 +1231,7 @@ def escolher_pasta(inicio):
             eh_git = os.path.isdir(os.path.join(cur, d, ".git"))
             print(f" {c(f'{i:>2}', 39, True)}  {c(d, 78) if eh_git else d}{dim('  git') if eh_git else ''}")
         print("\n " + acoes_txt([("número", "entra"), ("s", "usa esta pasta"), ("..", "sobe"), ("ou cole", "um caminho")]))
-        op = ask(seta())
+        op = escolha(seta(), "s", len(subs))  # .. e caminho colado vão até o Enter
         if op == "0":
             return None
         if op == "s":
@@ -1224,7 +1241,7 @@ def escolher_pasta(inicio):
             continue
         if op.isdigit() and 1 <= int(op) <= len(subs):
             alvo = os.path.join(cur, subs[int(op) - 1])
-            if os.path.isdir(os.path.join(alvo, ".git")) and ask(f"Usar {c(alvo, 78)}? (enter = sim, n = entrar na pasta) ") != "n":
+            if os.path.isdir(os.path.join(alvo, ".git")) and escolha(f"Usar {c(alvo, 78)}? (enter = sim, n = entrar na pasta) ", "sn") != "n":
                 return alvo
             cur = alvo
             continue
@@ -1274,8 +1291,8 @@ def garantir_branch(repo, titulo):
     atual = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if not atual or BRANCH_OK.match(atual):
         return
-    op = ask(f"Branch atual '{atual}' não é gitflow. Criar a branch da task:\n"
-             f"  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "1")
+    op = escolha(f"Branch atual '{atual}' não é gitflow. Criar a branch da task:\n"
+                 f"  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "123") or "1"
     if op == "0":
         return
     tipo = {"2": "bugfix", "3": "hotfix"}.get(op, "feature")
@@ -1424,9 +1441,9 @@ def rodar(tid, modo="pipeline"):
     minutos = minutos_uteis(abrir_claude(cwd, contexto, pedido, lock, sid), time.time())
 
     print("\n" + c(" Fim da sessão ", 39, True) + " " + task["title"])
-    op = ask(f" 1) pronta: registrar tempo e mover para {status(STATUS_FIM)}\n"
-             " 2) não pronta: só registrar o tempo\n"
-             " 3) não registrar nada\n> [2] ", "2")
+    op = escolha(f" 1) pronta: registrar tempo e mover para {status(STATUS_FIM)}\n"
+                 " 2) não pronta: só registrar o tempo\n"
+                 " 3) não registrar nada\n> [2] ", "123") or "2"
     if op == "3":
         fim(tid, nada=True)
     else:
@@ -1465,7 +1482,7 @@ Regras desta sessão:
             if m == "n":
                 os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
                 continue
-            fim(t["id"], ler_minutos(m), ask("Está pronta? (s/n) [n]: ", "n") == "s")
+            fim(t["id"], ler_minutos(m), escolha("Está pronta? (s/n) [n]: ", "sn") == "s")
     fechar(sid, cwd, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
                      "'nada a atualizar'. Senão, confira o encerramento de todas as tasks trabalhadas (inclusive as "
                      "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"))
@@ -1565,7 +1582,7 @@ def tela_reunioes(cfg):
         op = menu("Reuniões de hoje: projeto e contexto para as horas",
                   [f"{c(datetime.fromtimestamp(i).strftime('%H:%M'), 39, True)}  {t}{quando(i, f)}  "
                    + rotulo_reuniao(cfg, reuniao_info(i, t)) for i, f, t, *_ in evs] or [(dim("nenhuma reunião hoje"),)],
-                  [("número", "projeto e contexto"), ("p + número", "prepara com o Claude")])
+                  [("número", "projeto e contexto"), ("p + número", "prepara com o Claude")], prefixos={"p": len(evs)})
         n = op[1:] if op.startswith("p") else op
         if not (evs and n.isdigit() and 1 <= int(n) <= len(evs)):
             return
@@ -1627,7 +1644,7 @@ def tela_task(cfg, t):
         if len(desc) > cabe:
             print(" " + dim(f"… mais {len(desc) - cabe} linhas · d lê a descrição inteira"))
         print("\n" + "\n".join(" " + l for l in (base + [""] if base else []) + acoes))
-        op = escolha(seta(), "12dpw")
+        op = escolha(seta(), "12dpw", prefixos={"a": len(anexos)})
         if op == "d":
             coms = [c(f"{x.get('authorName')}:", 39, True) + " " + (x.get("body") or "") for x in full.get("comments") or []]
             subprocess.run(["less", "-R", "-Ps q volta "], text=True, input="\n".join(
@@ -1741,7 +1758,7 @@ def principal():
                 buscado = 0
                 continue
             if op == "0":
-                if abas > 1 and ask("Tasks ainda rodando. Sair e deixar elas rodando? Volte com 'jfy'. (s/n) ", "s") == "s":
+                if abas > 1 and (escolha("Tasks ainda rodando. Sair e deixar elas rodando? Volte com 'jfy'. (s/n) [s] ", "sn") or "s") == "s":
                     subprocess.run(TMUX + ["detach-client"])
                     continue
                 return

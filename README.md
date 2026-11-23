@@ -44,7 +44,7 @@ Na primeira vez, antes do menu, o jfy te guia por **primeiros passos**, um de ca
 
 ## Como usar
 
-Número + Enter abre o item. Letras (`l`, `r`, `h`, `t`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
+Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou mais opções, o `1` espera um instante pelo segundo dígito), e letras (`l`, `r`, `h`, `t`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
 
 **Menu principal**: três seções. **Foco**: tasks de todos os projetos com prazo vencido ou nos próximos 7 dias e as de prioridade crítica, da mais urgente para a menos; o número abre a task direto. **Projetos**: os que têm tasks suas, com a contagem. **Sem task**: os configurados sem task aberta (manutenção: terminal livre ou sessão quando surgir algo). O repositório de cada projeto aparece no `c` da tela do projeto.
 - `jfy --hoje` imprime as reuniões de hoje e o foco, sem abrir o menu.
@@ -58,7 +58,7 @@ Número + Enter abre o item. Letras (`l`, `r`, `h`, `t`, `s`, `p`, `w`...) e o `
   - `1` **implementar (/pipeline)**: para task de código (testes, implementação, revisão, commit e PR com a sua aprovação). Se você não estiver numa branch gitflow, o jfy cria `feature/`, `bugfix/` (a partir da `develop` atualizada) ou `hotfix/` (a partir da `main`) com o título da task.
   - `2` **conversar com o Claude**: para estudo, análise, documento, preparação de reunião. Nada vai para o Journify sem você aprovar.
   - `d` **descrição inteira**: a task toda, com todos os comentários, para ler com espaço e setas (`q` volta).
-  - `a` + número abre o anexo no navegador pelo link (ex.: `a3` + Enter). Nada é baixado para o disco.
+  - `a` + número abre o anexo no navegador pelo link (ex.: `a3`). Nada é baixado para o disco.
   - `p` **prazo**: grava o prazo no Journify. Aceita `25/11`, `25/11/2026` ou `+3` (daqui a 3 dias).
   - `w` abre a task no Journify (navegador).
   - Depois de escolher, o jfy pergunta **"Algo a mais para o Claude?"**. Digite ou cole instruções extras e arraste arquivos (prints, PDFs, planilhas) para o terminal. Eles vão junto com a descrição da task. Linha vazia continua; Enter direto pula.
@@ -143,7 +143,7 @@ A tabela do `h` mostra só o que vai para o Journify: uma linha por lançamento,
 | número | edita a linha: `p` projeto, `c` categoria, `h` horas, `d` descrição, `x` remove. Vale só para aquele dia. Numa reunião, projeto e descrição ficam iguais aos do `r` |
 | número de uma linha removida | restaura |
 | `-` / `+` | dia anterior / próximo |
-| `20/11` | vai para a data |
+| `d` | vai para outra data (`20/11`, `-1` = ontem) |
 | `l` | o Claude lança pelo Chrome |
 
 Hora mudada à mão (`h`) substitui a da regra só naquela linha, e as outras não mudam. A linha fica marcada como "horas à mão" e, com `h` e Enter vazio, volta para a regra.
