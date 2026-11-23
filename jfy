@@ -2,27 +2,102 @@
 # jfy: menu do Journify que manda a task para o Claude Code (/pipeline) e registra o tempo.
 # Roda dentro de um tmux próprio (socket "jfy"): aba 0 = menu, uma aba por task rodando.
 # ponytail: /usr/bin/python3 (o do macOS) de propósito: o Python do python.org costuma vir sem certificados SSL.
-import json, os, re, select, shutil, subprocess, sys, time, unicodedata, urllib.request, uuid
-from datetime import datetime
+import itertools, json, os, re, select, shutil, subprocess, sys, textwrap, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
+from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~/.jfy")
 CONFIG = os.path.join(HOME, "config.json")
 MEM_DIR = os.path.join(HOME, "memoria")
 RUN_DIR = os.path.join(HOME, "rodando")
 WT_DIR = os.path.join(HOME, "worktrees")
+DIA = os.path.join(HOME, "dia.json")  # cronômetro da jornada de hoje
+USO = os.path.join(HOME, "claude-status.json")  # gravado pelo statusline do Claude Code (install.sh)
+JOURNIFY = "https://journify.souv.tech"  # padrão; quem entra por outro domínio põe "journify" no config.json
+JORNADA = 8 * 60  # minutos; o cronômetro fica verde e avisa ao chegar aqui
 SELF = os.path.realpath(__file__)
-TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(os.path.dirname(SELF), "tmux.conf")]
+TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(HOME, "tmux.conf")]  # tmux.conf do repo já com as cores do tema
 STATUS_FIM = "finalizado_validacao"  # status ao concluir; troque aqui se o Journify ganhar um "em_teste"
-ORDEM = ["em_progresso", "a_fazer", "bloqueado", STATUS_FIM]
+# ordem na tela do projeto: o que dá para tocar agora primeiro, o que espera os outros depois
+ORDEM = ["em_progresso", "priorizado", "em_aberto", "criando_escopo", "em_revisao", "em_teste",
+         "pendente_validacao", "bloqueado", STATUS_FIM]
+JANELA = 7  # dias: prazo até aqui (ou vencido) entra no foco do menu principal
 BRANCH_OK = re.compile(r"^(feature|bugfix|hotfix|release)/[a-z0-9._-]+$")
 
-# ---------- cores ----------
+# ---------- cores e temas ----------
 PALETA = [39, 214, 170, 78, 141, 203, 51, 220, 117, 209]
 COR_STATUS = {"em_progresso": 220, "bloqueado": 203, STATUS_FIM: 78}
+# Tema = troca das cores do Padrão (cores 256 do terminal). O código pinta com as cores do Padrão e c(),
+# tematizar() e cor_projeto() trocam na saída. Papéis: 39 destaque, 78 ok, 220 em andamento, 214 alerta,
+# 203 perigo, 244 apagado, 250 texto, 255 texto forte, 236 fundo da barra; "projetos" = cores das abas.
+# "icones": cheio/vazio = barra do uso da IA (1 coluna cada, senão a barra desalinha); o resto vai na barra do tmux.
+# Valor = caractere, ou nome de um pixel art da fonte JFY Mono (fonte/icones.txt). O Padrão não depende da fonte.
+ICONES = {"cheio": "▰", "vazio": "▱", "reuniao": "📅", "email": "✉", "jornada": "⏱", "feito": "✓", "pausa": "⏸"}
+# "andador": 2 quadros (pixel art de 16 colunas) de quem empurra a barra da IA; alterna a cada segundo.
+PIXEL = {n: "".join(chr(int(c, 16)) for c in cps.split()) for n, cps in  # 16 colunas = 2 codepoints = 2 caracteres
+         re.findall(r"^== (\S+) ([0-9A-F ]+)$", open(os.path.join(os.path.dirname(SELF), "fonte", "icones.txt")).read(), re.M)}
+TEMAS = {
+    "Padrão": {},
+    "Dracula": {39: 141, 78: 84, 220: 228, 214: 215, 203: 203, 244: 61, 250: 253, 255: 231, 236: 236,
+                "projetos": [141, 212, 84, 117, 215, 228, 183, 159, 219, 210],
+                "icones": {"cheio": "coracao", "vazio": "coracao-vazio", "reuniao": "morcego", "email": "carta", "jornada": "lua", "feito": "taca", "pausa": "caixao"},
+                "andador": ["vampiro-1", "vampiro-2"]},
+    "Monokai": {39: 81, 78: 148, 220: 186, 214: 208, 203: 197, 244: 101, 250: 252, 255: 231, 236: 235,
+                "projetos": [81, 197, 148, 208, 141, 186, 123, 211, 191, 215],
+                "icones": {"cheio": "bloco", "vazio": "bloco-vazio", "reuniao": "lambda", "email": "arroba", "jornada": "cafe", "feito": "check", "pausa": "pausa"}},
+    "Cyberpunk": {39: 51, 78: 46, 220: 226, 214: 201, 203: 197, 244: 60, 250: 189, 255: 231, 236: 233,
+                  "projetos": [51, 201, 46, 226, 93, 197, 87, 213, 118, 129],
+                  "icones": {"cheio": "scan", "vazio": "scan-vazio", "reuniao": "raio", "email": "sinal", "jornada": "bateria", "feito": "disquete", "pausa": "pausa"},
+                  "andador": ["runner-1", "runner-2"]},
+    "Élfico": {39: 221, 78: 157, 220: 192, 214: 223, 203: 210, 244: 108, 250: 253, 255: 231, 236: 22,
+               "projetos": [221, 157, 152, 186, 151, 223, 159, 194, 229, 117],
+               "icones": {"cheio": "brilho", "vazio": "brilho-vazio", "reuniao": "folha", "email": "pergaminho", "jornada": "ramo", "feito": "estrela", "pausa": "lua"},
+               "andador": ["elfo-1", "elfo-2"]},
+    "Anão": {39: 221, 78: 150, 220: 215, 214: 208, 203: 196, 244: 144, 250: 223, 255: 230, 236: 58,
+             "projetos": [221, 208, 178, 136, 172, 215, 179, 130, 222, 166],
+             "icones": {"cheio": "gema", "vazio": "gema-vazia", "reuniao": "martelo", "email": "corvo", "jornada": "machado", "feito": "caneca", "pausa": "zz"},
+             "andador": ["anao-1", "anao-2"]},
+    "GTA": {39: 213, 78: 41, 220: 87, 214: 215, 203: 196, 244: 139, 250: 225, 255: 231, 236: 53,
+            "projetos": [213, 41, 87, 215, 199, 45, 219, 48, 207, 123],
+            "icones": {"cheio": "estrela", "vazio": "estrela-vazia", "reuniao": "alvo", "email": "celular", "jornada": "nota", "feito": "saco", "pausa": "palmeira"},
+            "andador": ["viatura-1", "viatura-2"]},
+    "Mordor": {39: 202, 78: 142, 220: 178, 214: 208, 203: 196, 244: 240, 250: 248, 255: 252, 236: 232,
+               "projetos": [202, 196, 208, 130, 160, 166, 124, 215, 88, 172],
+               "icones": {"cheio": "olho", "vazio": "olho-vazio", "reuniao": "vulcao", "email": "lobo", "jornada": "chama", "feito": "anel", "pausa": "caveira"},
+               "andador": ["lorde-1", "lorde-2"]},
+    "Aço": {39: 74, 78: 79, 220: 153, 214: 215, 203: 196, 244: 67, 250: 252, 255: 231, 236: 17,
+            "projetos": [74, 252, 153, 79, 110, 196, 117, 146, 189, 68],
+            "icones": {"cheio": "bloco", "vazio": "bloco-vazio", "reuniao": "raio", "email": "sinal", "jornada": "bateria", "feito": "check", "pausa": "pausa"},
+            "andador": ["robo-1", "robo-2"]},
+}
+TEMA = {}  # o escolhido; carregado do config logo depois de load()
+
+
+def ic(nome, tema=None):
+    """Ícone do tema (ou o do Padrão), já como caractere."""
+    v = (TEMA if tema is None else tema).get("icones", {}).get(nome, ICONES[nome])
+    return PIXEL.get(v, v)
+
+
+def andador(tema=None):
+    """Quem empurra a barra da IA (2 colunas), no quadro deste segundo; "" no tema sem andador."""
+    q = (TEMA if tema is None else tema).get("andador")
+    return PIXEL[q[int(time.time()) % len(q)]] if q else ""
+
+
+def tematizar(txt):
+    """Troca as cores do Padrão pelas do tema num texto com 'colourN' (config e barra do tmux)."""
+    return re.sub(r"colour(\d+)", lambda m: f"colour{TEMA.get(int(m[1]), m[1])}", txt)
+
+
+def tmux_conf():
+    """Grava ~/.jfy/tmux.conf: o tmux.conf do repo com as cores do tema. O tmux carrega esse arquivo."""
+    dst = os.path.join(HOME, "tmux.conf")
+    open(dst, "w").write(tematizar(open(os.path.join(os.path.dirname(SELF), "tmux.conf")).read()))
+    return dst
 
 
 def c(txt, cor, bold=False):
-    return f"\033[{'1;' if bold else ''}38;5;{cor}m{txt}\033[0m"
+    return f"\033[{'1;' if bold else ''}38;5;{TEMA.get(cor, cor)}m{txt}\033[0m"
 
 
 def dim(txt):
@@ -30,7 +105,8 @@ def dim(txt):
 
 
 def cor_projeto(pid):
-    return PALETA[sum(map(ord, pid)) % len(PALETA)]
+    pal = TEMA.get("projetos", PALETA)
+    return pal[sum(map(ord, pid)) % len(pal)]
 
 
 def status(s):
@@ -70,6 +146,9 @@ def load():
         return {"projetos": {}}
 
 
+TEMA = TEMAS.get(load().get("tema"), {})
+
+
 def save(cfg):
     json.dump(cfg, open(CONFIG, "w"), indent=2, ensure_ascii=False)
 
@@ -97,13 +176,69 @@ def ask_texto(msg):
             linhas.append("")
 
 
-def menu(titulo, itens, extras="", zero="voltar"):
+def escolha(prompt, teclas=""):
+    """Lê a opção de um menu: uma letra de `teclas` (e o 0) vale na hora, sem Enter; o resto (números, p3) vai até o
+    Enter, com backspace. Fora de um terminal, cai no input normal."""
+    import termios, tty
+    if not sys.stdin.isatty():
+        return ask(prompt)
+    print(prompt, end="", flush=True)
+    fd, buf = sys.stdin.fileno(), ""
+    antes = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\n", "\r", ""):
+                break
+            if ch in ("\x7f", "\b"):
+                if buf:
+                    buf = buf[:-1]
+                    print("\b \b", end="", flush=True)
+            elif not buf and ch in teclas + "0":
+                buf = ch
+                break
+            elif ch.isprintable():
+                buf += ch
+                print(ch, end="", flush=True)
+    except KeyboardInterrupt:
+        print()
+        sys.exit(0)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
+    print(buf if len(buf) == 1 and buf in teclas + "0" else "")
+    return buf.strip()
+
+
+def seta():
+    return c(" > ", 39, True)  # o mesmo prompt em toda tela (função: o tema pode mudar com o jfy aberto)
+
+
+def acoes_txt(pares, sair="0 volta"):
+    """Linha de ações igual em toda tela: a tecla em destaque e o que ela faz; o 0 apagado no fim."""
+    return "   ".join([c(k, 39, True) + " " + t for k, t in pares] + ([dim(sair)] if sair else []))
+
+
+def corta(txt, n):
+    txt = txt.strip()
+    return txt if len(txt) <= n else txt[:max(n, 2) - 1] + "…"
+
+
+def menu(titulo, itens, acoes=(), zero="volta", teclas=""):
     limpar()
     print(c(f" {titulo} ", 39, True) + "\n")
-    for i, txt in enumerate(itens, 1):
+    i = 0
+    for txt in itens:
+        if txt is None:  # separador, não conta na numeração
+            print()
+            continue
+        if isinstance(txt, tuple):  # (título[, nota]) = cabeçalho de seção, não conta na numeração
+            print(("\n" if i else "") + " " + c(txt[0], 244, True) + (dim("  " + txt[1]) if txt[1:] else ""))
+            continue
+        i += 1
         print(f" {c(f'{i:>2}', 39, True)}  {txt}")
-    print(f"\n {extras}{dim(' 0 ' + zero)}")
-    return ask(c("> ", 39, True))
+    print("\n " + acoes_txt(acoes, "0 " + zero))
+    return escolha(seta(), teclas)
 
 
 def doc_texto(node, depth=0):
@@ -115,7 +250,12 @@ def doc_texto(node, depth=0):
             return node
     t = node.get("type")
     if t == "text":
-        return node.get("text", "")
+        txt = node.get("text", "")
+        return f"**{txt}**" if any(m.get("type") == "bold" for m in node.get("marks", [])) else txt
+    if t == "image":
+        return f"![]({(node.get('attrs') or {}).get('src', '')})\n"
+    if t == "hardBreak":
+        return "\n"
     filhos = node.get("content", [])
     if t == "listItem":
         return "  " * depth + "- " + "".join(doc_texto(x, depth + 1) for x in filhos).strip() + "\n"
@@ -126,7 +266,56 @@ def doc_texto(node, depth=0):
         return "\n" + "#" * node["attrs"]["level"] + " " + inner + "\n"
     if t == "paragraph":
         return inner + "\n"
+    if t == "codeBlock":
+        return "```\n" + inner + "\n```\n"
     return inner
+
+
+def num_anexo(src, anexos):
+    """Número (a1, a2…) do anexo que é esta imagem. O id 'cu_<uuid>.png' da migração do ClickUp tem o uuid da URL."""
+    for i, x in enumerate(anexos, 1):
+        i_d = x.get("id", "")
+        if src == x.get("url") or (i_d.startswith("cu_") and i_d[3:].rsplit(".", 1)[0] in src):
+            return i
+
+
+def descricao(texto, anexos, largura):
+    """Markdown do ClickUp ou doc do Journify -> linhas limpas no terminal; imagem solta vira 'imagem aN'."""
+    linhas, codigo = [], False
+    for l in texto.replace("\\[", "[").replace("\\]", "]").splitlines():
+        s = l.strip()
+        if s.startswith("```"):
+            codigo = not codigo
+            continue
+        if codigo:  # bloco de código / wireframe: recuado e apagado, sem quebrar
+            linhas.append(dim("│ " + l.rstrip()[:largura - 2]) if s else "")
+            continue
+        if s in ("* * *", "*", "---", "***"):
+            linhas.append("")
+            continue
+        l = re.sub(r"!\[[^\]]*\]\(([^)]*)\)",
+                   lambda m: c("▣ imagem" + (f" a{n}" if (n := num_anexo(m[1], anexos)) else ""), 39), l)
+        if m := re.match(r"\s*#{1,6}\s+(.*)", l) or re.fullmatch(r"\s*\*\*([^*]+)\*\*:?\s*", l):
+            linhas += ["", c(m[1].replace("**", "").strip(), 255, True)]  # título, ou parágrafo todo em negrito
+            continue
+        if l.startswith("**") and linhas and linhas[-1]:  # parágrafo que abre com rótulo ("**Contexto.** ...")
+            linhas.append("")
+        l = re.sub(r"^(\s*)[*-]\s+", r"\1• ", re.sub(r"\*\*(.+?)\*\*", "\033[1m\\1\033[22m", l.rstrip()))
+        recuo = " " * (len(l) - len(l.lstrip()) + (2 if l.lstrip().startswith("• ") else 0))
+        linhas += textwrap.wrap(l, largura, subsequent_indent=recuo) or [""]
+    out = []
+    for l in linhas:  # uma linha em branco no máximo, nenhuma nas pontas
+        if l or (out and out[-1]):
+            out.append(l)
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def faixas(ns):
+    """[1, 2, 3, 4, 7] -> 'a1–a4, a7'"""
+    gs = [[n for _, n in g] for _, g in itertools.groupby(enumerate(ns), lambda p: p[1] - p[0])]
+    return ", ".join(f"a{g[0]}" + (f"–a{g[-1]}" if len(g) > 1 else "") for g in gs)
 
 
 def slug(s):
@@ -134,12 +323,217 @@ def slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:40].rstrip("-")
 
 
+def ler_minutos(s):
+    """'80', '1h20', '1h', '1:20', '45min' -> minutos; None se não entendeu."""
+    m = re.fullmatch(r"(\d+)[h:](\d{1,2})?(?:min|m)?|(\d+)(?:min|m)?", s.strip().lower().replace(" ", ""))
+    return None if not m else int(m[1]) * 60 + int(m[2] or 0) if m[1] else int(m[3])
+
+
 def fmt_min(m):
     return f"{m // 60}h {m % 60:02d}min" if m >= 60 else f"{m}min"
 
 
+# ---------- prazos ----------
+def dias_prazo(t):
+    """Dias até o prazo (negativo = atrasada); None se a task não tem prazo."""
+    return (date.fromisoformat(t["dueDate"][:10]) - date.today()).days if t.get("dueDate") else None
+
+
+def urgencia(t):
+    """Chave do foco: dias até o prazo; crítica sem prazo próximo vem logo depois. None = fora do foco."""
+    n = dias_prazo(t)
+    if n is not None and n <= JANELA:
+        return n
+    return JANELA + 1 if t.get("priority") == "critica" else None
+
+
+def foco(tasks):
+    return sorted((t for t in tasks if urgencia(t) is not None), key=urgencia)
+
+
+def tag_prazo(t, largura=0):
+    n = dias_prazo(t)
+    if n is None:
+        return c("crítica".ljust(largura), 203) if t.get("priority") == "critica" else " " * largura
+    txt = (f"atrasada {-n}d" if n < 0 else "hoje" if n == 0 else "amanhã" if n == 1
+           else f"em {n}d" if n <= JANELA else date.fromisoformat(t["dueDate"][:10]).strftime("%d/%m"))
+    return c(txt.ljust(largura), 203 if n <= 0 else 214 if n <= 3 else 250, n <= 1)
+
+
+def linha_foco(cfg, t, largura=0):
+    pc = cfg["projetos"].get(t["projectId"])
+    proj = c(pc["nome"][:12].ljust(12), cor_projeto(t["projectId"])) if pc else dim(t["projectId"][:8].ljust(12))
+    return f"{tag_prazo(t, 12)}  {proj}  {corta(t['title'], largura - 34) if largura else t['title']}"
+
+
+def ler_data(s, hoje=None, futuro=True):
+    """'25/11', '25/11/2026', '+3' / '-1' (daqui a 3 dias / ontem) ou '2026-11-25' -> 'AAAA-MM-DD'; None se inválida.
+    futuro=False (horas): '20/11' é o deste ano mesmo que já tenha passado."""
+    hoje = hoje or date.today()
+    try:
+        if re.fullmatch(r"[+-]\d+", s):
+            return (hoje + timedelta(days=int(s))).isoformat()
+        if "-" in s:
+            return date.fromisoformat(s).isoformat()
+        d, m, *a = map(int, s.split("/"))
+        dt = date((a[0] + 2000 if a[0] < 100 else a[0]) if a else hoje.year, m, d)
+        if futuro and not a and dt < hoje:  # dia/mês que já passou este ano: é o do ano que vem
+            dt = dt.replace(year=dt.year + 1)
+        return dt.isoformat()
+    except ValueError:
+        return None
+
+
 def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+# ---------- barra do tmux (uso da IA, jornada) e notificações do macOS ----------
+def notificar(titulo, texto, abrir=None, executar=None):
+    """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
+    (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, a do osascript (clique não faz nada)."""
+    tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
+                                                                 "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
+    if tn:
+        app = os.environ.get("__CFBundleIdentifier")  # o terminal de onde o jfy (ou o Claude) foi aberto
+        extra = (["-open", abrir] if abrir else []) + (["-execute", executar] if executar else []) \
+            + (["-activate", app] if app and not abrir else [])
+        if subprocess.run([tn, "-title", titulo, "-message", texto.lstrip("-[") or " ", "-sound", "Glass", *extra],
+                          capture_output=True).returncode == 0:
+            return
+        # sem permissão em Ajustes > Notificações (ou outro erro): cai na do osascript para o aviso não sumir
+    subprocess.run(["osascript", "-e", "on run a", "-e",
+                    'display notification (item 2 of a) with title (item 1 of a) sound name "Glass"',
+                    "-e", "end run", titulo, texto])
+
+
+def cronometro(acao=None):
+    """Blocos de trabalho de hoje em ~/.jfy/dia.json. acao 'ligar': só se ainda não ligou hoje;
+    'alternar': pausa/retoma; 'zerar': volta a zero e começa de novo agora. Devolve (minutos hoje, rodando?)."""
+    # ponytail: bloco esquecido aberto morre na virada do dia; o dia seguinte começa do zero
+    try:
+        d = json.load(open(DIA))
+    except (OSError, ValueError):
+        d = {}
+    if d.get("data") != date.today().isoformat():
+        d = {"data": date.today().isoformat(), "blocos": []}
+    b, agora = d["blocos"], time.time()
+    rodando = bool(b) and b[-1][1] is None
+    if acao == "zerar":
+        b[:] = [[agora, None]]
+    elif acao == "alternar" and rodando:
+        b[-1][1] = agora
+    elif acao == "alternar" or (acao == "ligar" and not b):
+        b.append([agora, None])
+    if acao:
+        json.dump(d, open(DIA, "w"))
+    return int(sum((f or agora) - i for i, f in b) // 60), bool(b) and b[-1][1] is None
+
+
+def barra_ia():
+    """Uso dos limites do Claude (janela de 5h e semana), do JSON que o statusline do Claude Code grava em USO."""
+    # Claude recém-aberto grava sem rate_limits (só vêm após a 1ª resposta) e o tee trunca antes de escrever:
+    # nesses casos usa a última leitura boa, guardada em USO + ".ok"
+    for arq in (USO, USO + ".ok"):
+        try:
+            rl = json.load(open(arq))["rate_limits"]
+            j5, j7 = rl.get("five_hour") or {}, rl.get("seven_day") or {}
+            break
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+    else:
+        return ""
+    ok = USO + ".ok"
+    if arq == USO and os.path.getmtime(USO) > (os.path.getmtime(ok) if os.path.exists(ok) else 0):  # só se mudou
+        json.dump({"rate_limits": rl}, open(ok, "w"))
+    vivo = lambda j: time.time() < j.get("resets_at", 0)  # janela que já resetou desde a última gravação = 0%
+    p5 = round(j5.get("used_percentage", 0)) if vivo(j5) else 0
+    p7 = round(j7.get("used_percentage", 0)) if vivo(j7) else 0
+    cheio = min(10, round(p5 / 10))
+    ate = " até " + datetime.fromtimestamp(j5["resets_at"]).strftime("%H:%M") if vivo(j5) else ""
+    cor = 203 if p5 >= 80 else 214 if p5 >= 50 else 78
+    return f"#[fg=colour{cor}]IA {ic('cheio') * cheio}{andador()}{ic('vazio') * (10 - cheio)} {p5}%{ate} #[fg=colour244]· semana {p7}%  "
+
+
+def relogio():
+    """Texto da barra do tmux, uma linha por segundo (o andador do tema anda). Fica rodando: o tmux mostra a última
+    linha e não chama de novo enquanto ele vive, então não sobe um Python por segundo. Sai quando o jfy muda (o tmux
+    sobe o novo no próximo redesenho, até 15s) e quando o tmux fecha. Avisa uma vez por dia quando fecha a jornada."""
+    global TEMA
+    versao = os.path.getmtime(SELF)
+    while os.path.getmtime(SELF) == versao:
+        TEMA = TEMAS.get(load().get("tema"), {})  # tema trocado no menu vale aqui sem reiniciar
+        m, rodando = cronometro()
+        marca, hoje = os.path.join(RUN_DIR, "jornada-avisada"), date.today().isoformat()
+        if m >= JORNADA and (not os.path.exists(marca) or open(marca).read() != hoje):
+            open(marca, "w").write(hoje)
+            notificar("jfy", f"Jornada de {JORNADA // 60}h fechada: {fmt_min(m)} hoje.")
+        if not m and not rodando:
+            jornada = f"#[fg=colour244]{ic('jornada')} jornada não começou "
+        else:
+            cor, icone = (78, ic("feito")) if m >= JORNADA else (220, ic("jornada")) if rodando else (244, ic("pausa") + " pausado")
+            jornada = f"#[fg=colour{cor},bold]{icone} {fmt_min(m)} / {JORNADA // 60}h#[default] "
+        print(tematizar(barra_ia() + jornada), flush=True)
+        time.sleep(1)
+
+
+def atalhos():
+    """Ctrl-b c: todos os comandos do jfy num popup do tmux; qualquer tecla fecha."""
+    import termios, tty
+    secoes = [
+        ("Em qualquer aba: Ctrl-b e depois", [("0", "menu"), ("1 2 3...", "vai para a aba"), ("w", "todas as abas com prévia"),
+                                              ("p", "pausa / retoma a jornada"), ("r", "zera a jornada"),
+                                              ("d", "sai deixando as tasks rodando (jfy volta)"), ("c", "esta lista")]),
+        ("Menu principal", [("número", "abre a task do foco ou o projeto"), ("l", "terminal livre"),
+                            ("t", "tema"), ("0", "sair")]),
+        ("Projeto", [("número", "abre a task"), ("s", "sessão: várias tasks num chat só"), ("l", "terminal livre no repo"),
+                     ("c", "trocar o repositório")]),
+        ("Task", [("1", "implementar (/pipeline)"), ("2", "conversar com o Claude (estudo, análise, documento)"),
+                  ("d", "descrição inteira e comentários"), ("a + número", "abre o anexo no navegador"),
+                  ("p", "definir prazo"), ("w", "abre a task no Journify"),
+                  ("/exit", "no Claude: encerra e registra o tempo")]),
+        ("No terminal", [("jfy", "abre ou volta para o jfy")]),
+    ]
+    for titulo, itens in secoes:
+        print(c(titulo, 255, True))
+        print("\n".join(f"  {c(k.ljust(15), 39, True)}{txt}" for k, txt in itens) + "\n")
+    print(dim("qualquer tecla fecha"), end="", flush=True)
+    fd = sys.stdin.fileno()
+    antes = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
+
+
+def avisar():
+    """Hook Stop/Notification do Claude Code (install.sh liga): notificação do macOS quando o Claude responde ou
+    pede permissão. Não avisa se você já está olhando: terminal na frente e, dentro do tmux, a aba dele aberta."""
+    if os.environ.get("JFY_SEM_AVISO"):  # claude -p do fechar(): ninguém está esperando essa resposta
+        return
+    d = json.load(sys.stdin)
+    pane = os.environ.get("TMUX_PANE")  # "tmux" sem -L usa o servidor do $TMUX: serve para o jfy e para outro tmux
+    tm = lambda fmt: subprocess.run(["tmux", "display", "-p", "-t", pane, fmt], capture_output=True, text=True).stdout.strip()
+    sh = lambda *a: subprocess.run(a, capture_output=True, text=True).stdout.strip()
+    na_frente = os.environ.get("__CFBundleIdentifier", "?") in sh("lsappinfo", "info", "-only", "bundleid", sh("lsappinfo", "front"))
+    # ponytail: fora do tmux não dá para saber a aba do terminal; com o terminal na frente, conta como olhando
+    aba_aberta = not pane or tm("#{window_active}") == "1" and tm("#{session_attached}") not in ("0", "")
+    if na_frente and aba_aberta:
+        return
+    onde = tm("#W") if pane else os.path.basename(d.get("cwd", ""))
+    titulo = "Claude precisa de você" if d.get("hook_event_name") == "Notification" else "Claude respondeu"
+    import shlex
+    sock = os.environ.get("TMUX", "").split(",")[0]
+    ir = (" ".join(shlex.quote(x) for x in [shutil.which("tmux") or "tmux", "-S", sock, "select-window", "-t", pane])
+          if pane and sock else None)  # clique na notificação: terminal na frente, já na aba deste Claude
+    notificar(f"{titulo} · {onde}", " ".join((d.get("message") or d.get("last_assistant_message") or "").split())[:140] or "pronto",
+              executar=ir)
+
+
+def minutos_uteis(ini, fim):
+    """Minutos entre ini e fim (epoch)."""
+    return max(1, round((fim - ini) / 60))
 
 
 # ---------- configuração de projeto ----------
@@ -152,8 +546,8 @@ def escolher_pasta(inicio):
         for i, d in enumerate(subs, 1):
             eh_git = os.path.isdir(os.path.join(cur, d, ".git"))
             print(f" {c(f'{i:>2}', 39, True)}  {c(d, 78) if eh_git else d}{dim('  git') if eh_git else ''}")
-        print("\n" + dim(" número entra  ·  s usa esta pasta  ·  .. sobe  ·  ou cole um caminho  ·  0 voltar"))
-        op = ask(c("> ", 39, True))
+        print("\n " + acoes_txt([("número", "entra"), ("s", "usa esta pasta"), ("..", "sobe"), ("ou cole", "um caminho")]))
+        op = ask(seta())
         if op == "0":
             return None
         if op == "s":
@@ -181,7 +575,7 @@ def configurar(cfg, pid):
     if not repo:
         return False
     padrao = p.get("nome") or os.path.basename(repo)
-    nome = ask(f"Nome do projeto [{padrao}] (0 voltar): ", padrao)
+    nome = ask(f"Nome do projeto [{padrao}] (0 volta): ", padrao)
     if nome == "0":
         return False
     cfg["projetos"][pid] = {"nome": nome, "repo": repo}
@@ -262,12 +656,25 @@ def fechamento(pid_proj, task="a task que acabou de terminar"):
 
 
 def fechar(sid, cwd, pedido):
-    """Depois do /exit: handoff.md e memória, garantidos mesmo se o Claude não fez."""
-    print(dim("Atualizando handoff.md e a memória do projeto..."))
-    # ponytail: retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
+    """Depois do /exit: handoff.md e memória, garantidos mesmo se o Claude não fez. Roda em segundo plano (jfy --fechar)
+    para a aba fechar na hora."""
+    # ponytail: reabrir a task no mesmo repo antes disso acabar (~1 min) pode cruzar com a escrita do handoff.md
+    arq = os.path.join(RUN_DIR, sid + ".fechar")
+    open(arq, "w").write(pedido)
+    subprocess.Popen([SELF, "--fechar", sid, cwd, arq], start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "fechar.log"), "a"))
+    print(dim("handoff.md e memória do projeto: atualizando em segundo plano."))
+
+
+def fechar_agora(sid, cwd, arq):
+    pedido = open(arq).read()
+    os.remove(arq)
+    # retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
     subprocess.call(["claude", "-p", "--resume", sid, "--permission-mode", "acceptEdits", "--allowedTools",
                      "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
-                     "Bash(ls:*)", "--", pedido], cwd=cwd)
+                     "Bash(ls:*)", "--", pedido], cwd=cwd, env=dict(os.environ, JFY_SEM_AVISO="1"),
+                    stdout=subprocess.DEVNULL)
+    # ponytail: o worktree fica (com o handoff.md pendente); git worktree remove depois do merge
 
 
 def preparar_repo(repo, nome_wt):
@@ -280,8 +687,8 @@ def preparar_repo(repo, nome_wt):
 
 
 def abrir_claude(cwd, contexto, pedido, lock, sid=None, extra=()):
-    print(dim("Para encerrar: /exit no Claude."))
-    time.sleep(2)
+    """Roda o Claude até o /exit. Devolve a hora (epoch) em que ele abriu."""
+    cronometro("ligar")
     t0 = time.time()
     try:
         subprocess.call(["claude", "--append-system-prompt", contexto, *extra] + (["--session-id", sid] if sid else [])
@@ -289,13 +696,7 @@ def abrir_claude(cwd, contexto, pedido, lock, sid=None, extra=()):
     finally:
         if lock:
             os.remove(lock)
-    return max(1, round((time.time() - t0) / 60))
-
-
-def limpar_worktree(repo, cwd):
-    if cwd != repo and not git(cwd, "status", "--porcelain").stdout.strip() and \
-            ask(f"Remover o worktree {cwd}? A branch continua. (s/n) ", "n") == "s":
-        git(repo, "worktree", "remove", cwd)
+    return t0
 
 
 def inicio(tid):
@@ -312,8 +713,10 @@ def fim(tid, minutos=None, pronta=False, nada=False):
         if os.path.exists(arq):
             os.remove(arq)
         return print(dim("Nada registrado no Journify."))
+    agora = time.time()
+    ini = float(open(arq).read()) if os.path.exists(arq) else agora - 60 * (minutos or 1)
     if minutos is None:
-        minutos = max(1, round((time.time() - float(open(arq).read())) / 60))
+        minutos = minutos_uteis(ini, agora)
     quando = datetime.now().strftime("%d/%m/%Y %H:%M")
     mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
     if pronta:
@@ -349,7 +752,7 @@ def rodar(tid, modo="pipeline"):
                   + notas)
     contexto = contexto_projeto(proj, pid_proj) + " Não mude status nem registre tempo no Journify: o jfy faz isso ao sair."
     sid = str(uuid.uuid4())
-    minutos = abrir_claude(cwd, contexto, pedido, lock, sid)
+    minutos = minutos_uteis(abrir_claude(cwd, contexto, pedido, lock, sid), time.time())
 
     print("\n" + c(" Fim da sessão ", 39, True) + " " + task["title"])
     op = ask(f" 1) pronta: registrar tempo e mover para {status(STATUS_FIM)}\n"
@@ -358,10 +761,9 @@ def rodar(tid, modo="pipeline"):
     if op == "3":
         fim(tid, nada=True)
     else:
-        m = ask(f"Tempo gasto em minutos [{minutos}]: ", str(minutos))
-        fim(tid, int(m) if m.isdigit() else minutos, op == "1")
+        m = ask(f"Tempo gasto (80, 1h20) [{fmt_min(minutos)}]: ")
+        fim(tid, ler_minutos(m) or minutos, op == "1")
     fechar(sid, cwd, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
-    limpar_worktree(repo, cwd)
     ask(dim("Enter fecha esta aba."))
 
 
@@ -390,15 +792,14 @@ Regras desta sessão:
 
     for t in tasks:  # tasks que ficaram com o relógio ligado
         if os.path.exists(os.path.join(RUN_DIR, t["id"] + ".t")):
-            m = ask(f"\n'{t['title']}' ficou aberta. Minutos a registrar [enter = relógio, n = não registrar]: ")
+            m = ask(f"\n'{t['title']}' ficou aberta. Tempo a registrar (80, 1h20) [enter = relógio, n = não registrar]: ")
             if m == "n":
                 os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
                 continue
-            fim(t["id"], int(m) if m.isdigit() else None, ask("Está pronta? (s/n) [n]: ", "n") == "s")
+            fim(t["id"], ler_minutos(m), ask("Está pronta? (s/n) [n]: ", "n") == "s")
     fechar(sid, cwd, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
                      "'nada a atualizar'. Senão, confira o encerramento de todas as tasks trabalhadas (inclusive as "
                      "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"))
-    limpar_worktree(repo, cwd)
     ask(dim("Enter fecha esta aba."))
 
 
@@ -414,45 +815,159 @@ def livre(pasta):
     abrir_claude(pasta, contexto, None, None, extra=["--dangerously-skip-permissions"])
 
 
+def aba(chave):
+    """Id da aba que já roda esta coisa ('--run <id>', '--livre <pasta>'...), ou None."""
+    abas = subprocess.run(TMUX + ["list-windows", "-F", "#{window_id}\t#{@jfy}"], capture_output=True, text=True).stdout
+    return next((w for w, k in (l.split("\t", 1) for l in abas.splitlines() if "\t" in l) if k == chave), None)
+
+
 def abrir_aba(nome, pid_proj, *args):
+    """Abre a aba. Se a mesma coisa (mesma task, reunião, pasta) já tem aba, só vai para ela: abrir duas vezes a mesma
+    task brigava pelo worktree e a segunda aba quebrava."""
+    chave = " ".join(args[:2])  # --run <id> vale para /pipeline e livre
+    wid = aba(chave)
+    if wid:
+        return subprocess.run(TMUX + ["select-window", "-t", wid])
     wid = subprocess.run(TMUX + ["new-window", "-P", "-F", "#{window_id}", "-n", nome, SELF, *args],
                          capture_output=True, text=True).stdout.strip()
     subprocess.run(TMUX + ["set-window-option", "-t", wid, "window-status-style", f"fg=colour{cor_projeto(pid_proj)}"])
+    subprocess.run(TMUX + ["set-window-option", "-t", wid, "@jfy", chave])
 
 
 # ---------- menus ----------
+def tela_tema():
+    global TEMA
+    nomes, atual = list(TEMAS), load().get("tema", "Padrão")
+    amostra = lambda t: "".join(f"\033[38;5;{t.get(k, k)}m██" for k in (39, 78, 220, 214, 203, 244)) + "\033[0m"
+    icones = lambda t: " ".join(ic(k, t) for k in ("reuniao", "email", "jornada", "feito", "pausa")) \
+        + "  " + ic("cheio", t) * 3 + andador(t) + ic("vazio", t) * 2
+    op = menu("Tema", [f"{amostra(TEMAS[n])}  {n:<10} {icones(TEMAS[n])}" + (dim("  (atual)") if n == atual else "")
+                       for n in nomes])
+    if op.isdigit() and 1 <= int(op) <= len(nomes):
+        cfg = load()  # relê: não sobrescreve o que outro jfy gravou
+        cfg["tema"] = nomes[int(op) - 1]
+        save(cfg)
+        TEMA = TEMAS[cfg["tema"]]
+        subprocess.run(TMUX + ["source-file", tmux_conf()])  # barra muda na hora, abas abertas inclusive
+
+
+def blocos_task(cfg, t, full, largura):
+    """Topo (projeto, título, indicadores) e rodapé (anexos, comentários) da task, em linhas."""
+    pid, tk = t["projectId"], full["task"]
+    topo = [c(f" {cfg['projetos'][pid]['nome']} ", cor_projeto(pid), True) + dim("─" * (largura - len(cfg['projetos'][pid]['nome']) - 2))]
+    topo += [c(l, 255, True) for l in textwrap.wrap(t["title"], largura)]
+    pts, n, pr = (tk.get("estimate") or {}).get("value"), dias_prazo(t), t.get("priority") or ""
+    ind = [c("● " + t["statusId"].replace("_", " "), COR_STATUS.get(t["statusId"], 250)),
+           c("▲ crítica", 203) if pr == "critica" else c("▲ alta", 214) if pr == "alta" else dim(pr.replace("media", "média"))]
+    if pts:
+        ind.append(c(f"{pts:g} pts".replace(".", ","), 250))
+    ind.append(dim("sem prazo") if n is None else c("prazo " + date.fromisoformat(t["dueDate"][:10]).strftime("%d/%m"), 250)
+               + (" · " + tag_prazo(t) if n <= JANELA else ""))
+    topo += ["", "   ".join(ind)]
+    if pts and pts > 8:
+        topo.append(c("acima de 8 pontos: o fluxo pede dividir a task antes", 203))
+    anexos, coms, base = tk.get("attachments") or [], full.get("comments") or [], []
+    imgs = [i for i, x in enumerate(anexos, 1) if (x.get("contentType") or "").startswith("image/")]
+    docs = [f"{c(f'a{i}', 39, True)} {x.get('name', '?')}"[:largura + 20] for i, x in enumerate(anexos, 1) if i not in imgs]
+    if imgs:
+        docs.insert(0, f"{len(imgs)} {'imagem' if len(imgs) == 1 else 'imagens'}  " + c(faixas(imgs), 39, True))
+    for k, l in enumerate(docs):
+        base.append(c("ANEXOS".ljust(13) if k == 0 else " " * 13, 244, True) + l)
+    if coms:
+        u = coms[-1]
+        txt = f"{u.get('authorName')}: " + " ".join((u.get("body") or "").split())
+        base.append(c("COMENTÁRIOS".ljust(13), 244, True) + txt[:largura - 13]
+                    + (dim(f"  +{len(coms) - 1} no d") if len(coms) > 1 else ""))
+    return topo, base
+
+
 def tela_task(cfg, t):
-    full = mcp("obter_task", taskId=t["id"])
-    limpar()
-    print(c(f" {cfg['projetos'][t['projectId']]['nome']} ", cor_projeto(t["projectId"]), True))
-    pts = (full["task"].get("estimate") or {}).get("value")
-    print(c(t["title"], 255, True) + "  " + status(t["statusId"]) + dim(f"  prioridade {t['priority']}")
-          + (dim(f"  {pts} pts") if pts else "")
-          + (c("  acima de 8 pontos: o fluxo pede dividir a task antes", 203) if pts and pts > 8 else "") + "\n")
-    print(doc_texto(full["task"].get("description") or "").strip() or dim("(sem descrição)"))
-    for cm in full.get("comments", []):
-        print(dim(f"  > {cm.get('authorName')}: ") + cm.get("body", ""))
-    op = ask("\n" + c(" 1", 39, True) + "  /pipeline   (task de código: testes, implementação, revisão)\n"
-             + c(" 2", 39, True) + "  Claude livre (estudo, análise, documento, reunião)\n" + dim(" 0 voltar") + "\n" + c("> ", 39, True))
-    if op in ("1", "2"):
-        extra = ask_texto("\n" + c("Algo a mais para o Claude?", 39, True) + dim(
-            " Digite ou cole texto, arraste arquivos (prints, PDFs, planilhas) para cá. Linha vazia continua."))
-        if extra:
-            open(os.path.join(RUN_DIR, t["id"] + ".extra"), "w").write(extra)
-        nome = f"{cfg['projetos'][t['projectId']]['nome'][:12]}: {t['title'][:24]}"
-        abrir_aba(nome, t["projectId"], "--run", t["id"], "pipeline" if op == "1" else "livre")
+    full = mcp("obter_task", taskId=t["id"])  # uma busca só; p, w e anexo redesenham sem buscar de novo
+    anexos = full["task"].get("attachments") or []
+    while True:
+        tam = shutil.get_terminal_size()
+        largura = min(tam.columns or 100, 100) - 2
+        topo, base = blocos_task(cfg, t, full, largura)
+        desc = descricao(doc_texto(full["task"].get("description") or ""), anexos, largura)
+        acoes = [dim("─" * largura), acoes_txt([("1", "implementar (/pipeline)"), ("2", "conversar com o Claude")], ""),
+                 acoes_txt([("d", "descrição inteira")]
+                           + ([("a1" + (f"–a{len(anexos)}" if len(anexos) > 1 else ""), "abre anexo")] if anexos else [])
+                           + [("p", "prazo"), ("w", "Journify")])]
+        # a descrição ocupa o que sobra da tela; o resto fica no d
+        cabe = max(5, (tam.lines or 40) - len(topo) - len(base) - len(acoes) - 7)
+        limpar()
+        print("\n".join(" " + l for l in topo) + "\n")
+        print(" " + c("O QUE FAZER", 244, True))
+        print("\n".join(" " + l for l in desc[:cabe]) if desc else " " + dim("(sem descrição)"))
+        if len(desc) > cabe:
+            print(" " + dim(f"… mais {len(desc) - cabe} linhas · d lê a descrição inteira"))
+        print("\n" + "\n".join(" " + l for l in (base + [""] if base else []) + acoes))
+        op = escolha(seta(), "12dpw")
+        if op == "d":
+            coms = [c(f"{x.get('authorName')}:", 39, True) + " " + (x.get("body") or "") for x in full.get("comments") or []]
+            subprocess.run(["less", "-R", "-Ps q volta "], text=True, input="\n".join(
+                topo + ["", c("O QUE FAZER", 244, True)] + (desc or [dim("(sem descrição)")]) + [""] + base
+                + ([""] + coms if len(coms) > 1 else [])) + "\n")
+        elif op == "w":
+            subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/projects/{t['projectId']}?task={t['id']}"])
+        elif op[:1] == "a" and op[1:].isdigit() and 1 <= int(op[1:]) <= len(anexos):
+            subprocess.run(["open", anexos[int(op[1:]) - 1]["url"]])  # só o link: nada é baixado para o disco
+        elif op == "p":
+            d = ler_data(ask("Prazo (25/11, 25/11/2026 ou +3 = daqui a 3 dias): "))
+            if d:
+                mcp("atualizar_task", taskId=t["id"], dueDate=d)
+                t["dueDate"] = d
+            else:
+                ask(c("Data inválida. Enter para continuar.", 203))
+        elif op in ("1", "2"):
+            # já tem aba: só vai até ela, sem pedir notas que ela não leria
+            extra = "" if aba(f"--run {t['id']}") else ask_texto("\n" + c("Algo a mais para o Claude?", 39, True) + dim(
+                " Digite ou cole texto, arraste arquivos (prints, PDFs, planilhas) para cá. Linha vazia continua."))
+            if extra:
+                open(os.path.join(RUN_DIR, t["id"] + ".extra"), "w").write(extra)
+            nome = f"{cfg['projetos'][t['projectId']]['nome'][:12]}: {t['title'][:24]}"
+            return abrir_aba(nome, t["projectId"], "--run", t["id"], "pipeline" if op == "1" else "livre")
+        elif op == "0":
+            return
+
+
+# seções da lista de tasks, na ordem do que pede ação sua primeiro; o status sai da linha porque a seção já diz
+ETAPAS = ["URGENTE", "EM ANDAMENTO", "A FAZER", "ESPERANDO ALGUÉM", "BLOQUEADAS"]
+ESPERA = {"em_revisao": "revisão", "em_teste": "teste", "pendente_validacao": "validação"}
+
+
+def etapa(t):
+    s = t["statusId"]
+    return (0 if urgencia(t) is not None else 1 if s == "em_progresso" else 3 if s in ESPERA
+            else 4 if s == "bloqueado" else 2)
 
 
 def tela_projeto(cfg, pid):
+    buscado = 0
     while True:
-        tasks = sorted(mcp("minhas_tasks", projetoId=pid),
-                       key=lambda x: ORDEM.index(x["statusId"]) if x["statusId"] in ORDEM else 1)
+        if time.time() - buscado > 60:  # voltar de uma task não espera o Journify de novo; Enter força
+            tasks = sorted(mcp("minhas_tasks", projetoId=pid),
+                           key=lambda x: (etapa(x), urgencia(x) or 0,
+                                          ORDEM.index(x["statusId"]) if x["statusId"] in ORDEM else len(ORDEM)))
+            buscado = time.time()
+        w = 12 if any(etapa(x) in (0, 3) or x.get("dueDate") for x in tasks) else 0
+        itens, atual = [], None
+        for x in tasks:
+            if etapa(x) != atual:
+                atual = etapa(x)
+                itens.append((ETAPAS[atual],))
+            col = c(ESPERA[x["statusId"]].ljust(w), 250) if atual == 3 else tag_prazo(x, w)
+            st = ESPERA.get(x["statusId"]) or x["statusId"].replace("_", " ") if atual == 0 else ""
+            tit = corta(x["title"], (shutil.get_terminal_size().columns or 100) - w - len(st) - 12)
+            itens.append((f"{col}  " if w else "") + tit + (dim(f"  · {st}") if st else ""))
         nome = c(cfg["projetos"][pid]["nome"], cor_projeto(pid), True)
-        op = menu(f"{nome}  minhas tasks", [f"{status(x['statusId']):<30} {x['title']}" for x in tasks],
-                  c("s", 39, True) + " sessão: várias tasks num chat só  " + c("l", 39, True) + " terminal livre  "
-                  + dim("·  c trocar repo  ·"))
-        if op in ("0", ""):
+        op = menu(f"{nome} · minhas tasks ({len(tasks)})", itens or [(dim("nenhuma task sua neste projeto"),)],
+                  [("s", "sessão (várias tasks num chat)"), ("l", "terminal livre"), ("c", "trocar repo"),
+                   ("enter", "atualiza")], teclas="slc")
+        if op == "0":
             return
+        if op == "":
+            buscado = 0
         if op == "c":
             configurar(cfg, pid)
         elif op == "l":
@@ -464,35 +979,62 @@ def tela_projeto(cfg, pid):
 
 
 def principal():
-    cfg = load()
+    tasks, buscado = [], 0
     while True:
         try:
-            tasks = mcp("minhas_tasks")
-            pids = sorted({x["projectId"] for x in tasks}, key=lambda p: cfg["projetos"].get(p, {}).get("nome", "~" + p))
-            linhas = []
-            for p in pids:
-                pc = cfg["projetos"].get(p)
-                n = sum(x["projectId"] == p for x in tasks)
-                info = f"{n} tasks  " + (pc["repo"] if pc else "")
-                linhas.append(f"{c(pc['nome'], cor_projeto(p), True)} {dim(info)}" if pc
-                              else f"{p} {dim(f'{n} tasks')}  {c('sem repo, escolha para configurar', 214)}")
+            cfg = load()  # relê a cada volta: o config pode ter mudado fora deste menu
+            cronometro("ligar")  # primeira vez no jfy hoje = início da jornada
+            if time.time() - buscado > 60:  # voltar de um submenu não espera o Journify; Enter força
+                tasks, buscado = mcp("minhas_tasks"), time.time()
+            urgentes = foco(tasks)  # prazo vencido / nos próximos dias / crítica, de todos os projetos
+            # configurados sem task aberta também aparecem (embaixo): manutenção às vezes pede um terminal livre ou sessão
+            n_tasks = lambda p: sum(x["projectId"] == p for x in tasks)
+            pids = sorted({x["projectId"] for x in tasks} | set(cfg["projetos"]),
+                          key=lambda p: (not n_tasks(p), cfg["projetos"].get(p, {}).get("nome", "~" + p)))
+            larg = shutil.get_terminal_size().columns or 100
+
+            def linha_proj(p):
+                pc, n = cfg["projetos"].get(p), n_tasks(p)
+                qtd = dim(f"{n:>2} task{'s' if n != 1 else ''}") if n else ""
+                if pc:
+                    return c(pc["nome"][:12].ljust(12), cor_projeto(p), True) + " " + qtd
+                exemplo = next((x["title"] for x in tasks if x["projectId"] == p), "")  # o MCP não dá o nome do projeto
+                return (dim(p[:8].ljust(12)) + " " + qtd + "  " + c("sem repo: escolha para configurar", 214)
+                        + dim(f"  ex.: {corta(exemplo, 40)}"))
+            com, sem = [p for p in pids if n_tasks(p)], [p for p in pids if not n_tasks(p)]  # = ordem de pids
+            itens = (([("FOCO",)] + [linha_foco(cfg, t, larg) for t in urgentes] if urgentes else [])
+                     + ([("PROJETOS",)] + [linha_proj(p) for p in com] if com else [])
+                     + ([("SEM TASK", "manutenção: terminal livre ou sessão")] + [linha_proj(p) for p in sem] if sem else []))
             abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
-            op = menu("Projetos Journify", linhas, c("l", 39, True) + " terminal livre  "
-                      + dim(f"·  {abas - 1} aba(s) rodando, clique nelas lá embaixo  ·"), "sair")
-            if op in ("0", ""):
+            dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
+            op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
+                      [("l", "terminal livre"), ("t", "tema"), ("enter", "atualiza")],
+                      "sai", teclas="lt")
+            if op == "":  # Enter não sai mais: atualiza as tasks
+                buscado = 0
+                continue
+            if op == "0":
                 if abas > 1 and ask("Tasks ainda rodando. Sair e deixar elas rodando? Volte com 'jfy'. (s/n) ", "s") == "s":
                     subprocess.run(TMUX + ["detach-client"])
                     continue
                 return
+            if op == "t":
+                tela_tema()
             if op == "l":
                 ultimo = next((os.path.dirname(x["repo"]) for x in cfg["projetos"].values()), os.path.expanduser("~/Documents"))
                 pasta = escolher_pasta(ultimo)
                 if pasta:
                     abrir_aba(os.path.basename(pasta)[:20] + ": livre", pasta, "--livre", pasta)
-            if op.isdigit() and 1 <= int(op) <= len(pids):
-                pid = pids[int(op) - 1]
+            k = int(op) if op.isdigit() else 0
+            if 1 <= k <= len(urgentes):
+                t = urgentes[k - 1]
+                if t["projectId"] in cfg["projetos"] or configurar(cfg, t["projectId"]):
+                    tela_task(cfg, t)
+            elif 1 <= k - len(urgentes) <= len(pids):
+                pid = pids[k - len(urgentes) - 1]
                 if pid in cfg["projetos"] or configurar(cfg, pid):
                     tela_projeto(cfg, pid)
+                buscado = 0  # mexeu num projeto (status, prazo, task nova): relê ao voltar
         except Exception as e:  # rede/Journify fora: mostra e volta ao menu
             ask(c(f"Erro: {e}. Enter para tentar de novo.", 203))
 
@@ -507,11 +1049,24 @@ def main():
         return sessao(a[1])
     if a[:1] == ["--inicio"]:
         return inicio(a[1])
+    if a[:1] == ["--relogio"]:
+        return relogio()
+    if a[:1] == ["--pausar"]:  # Ctrl-b p
+        return cronometro("alternar")
+    if a[:1] == ["--zerar"]:  # Ctrl-b r
+        return cronometro("zerar")
+    if a[:1] == ["--fechar"]:  # fechamento de uma task em segundo plano
+        return fechar_agora(*a[1:4])
+    if a[:1] == ["--atalhos"]:  # Ctrl-b c
+        return atalhos()
+    if a[:1] == ["--avisar"]:  # hook do Claude Code
+        return avisar()
     if a[:1] == ["--fim"]:
         return fim(a[1], int(a[a.index("--min") + 1]) if "--min" in a else None, "--pronta" in a, "--nada" in a)
     if os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
         return principal()
     # fora do tmux: entra (ou volta) na sessão jfy, garantindo a aba do menu
+    tmux_conf()
     if subprocess.run(TMUX + ["has-session", "-t", "jfy"], capture_output=True).returncode == 0:
         abas = subprocess.run(TMUX + ["list-windows", "-t", "jfy", "-F", "#{window_name}"], capture_output=True, text=True).stdout.split("\n")
         if "menu" not in abas:
@@ -521,14 +1076,79 @@ def main():
 
 
 def selftest():
+    import glob
+    for x in glob.glob(os.path.join(RUN_DIR, "teste-*")):
+        shutil.rmtree(x) if os.path.isdir(x) else os.remove(x)
     d = {"type": "doc", "content": [
         {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Título"}]},
         {"type": "bulletList", "content": [{"type": "listItem", "content": [
             {"type": "paragraph", "content": [{"type": "text", "text": "item"}]}]}]}]}
     assert doc_texto(json.dumps(d)) == "\n## Título\n- item\n", repr(doc_texto(json.dumps(d)))
+    # descrição limpa: imagem solta vira o número do anexo, sem markdown cru nem bloco de código cercado
+    ax = [{"id": "cu_aaa-1.png", "url": "u1", "contentType": "image/png"}, {"id": "x.pdf", "url": "u2"},
+          {"id": "cu_bbb-2.png", "url": "u3", "contentType": "image/png"}]
+    ls = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in descricao(
+        "# Meta\n**Contexto.** algo\n\n\n![](https://x/bbb-2/image.png)\n* * *\n*   item\n```plain\ncódigo\n```", ax, 60)]
+    assert ls == ["Meta", "", "Contexto. algo", "", "▣ imagem a3", "", "• item", "│ código"], ls
+    assert faixas([1, 2, 3, 4, 7, 9, 10]) == "a1–a4, a7, a9–a10"
+    assert corta(" abcdef ", 4) == "abc…" and corta("abc", 4) == "abc"
+    assert [etapa({"statusId": s, "dueDate": None, "priority": "media"}) for s in ("em_progresso", "em_teste", "bloqueado", "em_aberto")] == [1, 3, 4, 2]
     assert slug("Estudar o escopo do projeto!") == "estudar-o-escopo-do-projeto"
     assert fmt_min(83) == "1h 23min" and fmt_min(5) == "5min"
     assert not ocupado("/nao/existe")
+    assert [ler_minutos(x) for x in ("80", "1h20", "1h", "1:05", "45min", "2 h 5", "x", "")] == [80, 80, 60, 65, 45, 125, None, None]
+    global TEMA
+    for nome, t in TEMAS.items():  # cor de aba igual a um papel seria trocada duas vezes
+        assert not set(t.get("projetos", [])) & {k for k in t if k != "projetos"}, nome
+    for nome, t in TEMAS.items():
+        assert set(t.get("icones", {})) <= set(ICONES), nome
+        i = {k: ic(k, t) for k in ICONES}
+        assert all(len(v) == 1 for v in i.values()), (nome, i)  # nome que não está no fonte/icones.txt
+        assert unicodedata.east_asian_width(i["cheio"]) != "W" != unicodedata.east_asian_width(i["vazio"]), nome
+    TEMA = TEMAS["Dracula"]
+    assert tematizar("bg=colour236,fg=colour250 #[fg=colour39] colour232") == "bg=colour236,fg=colour253 #[fg=colour141] colour232"
+    assert c("x", 39) == "\033[38;5;141mx\033[0m" and cor_projeto("a") in TEMAS["Dracula"]["projetos"]
+    TEMA = {}
+    h = date(2026, 11, 21)
+    assert ler_data("25/11", h) == "2026-11-25" and ler_data("10/01", h) == "2027-01-10"  # já passou: ano que vem
+    assert ler_data("25/12/26", h) == "2026-12-25" and ler_data("+3", h) == "2026-11-24"
+    assert ler_data("2026-12-01", h) == "2026-12-01"
+    assert ler_data("31/02", h) is None and ler_data("amanhã", h) is None and ler_data("", h) is None
+    assert ler_data("-1", h) == "2026-11-20" and ler_data("+0", h) == "2026-11-21"
+    assert ler_data("20/11", h, futuro=False) == "2026-11-20" and ler_data("20/11", h) == "2027-11-20"
+    d = lambda n: (date.today() + timedelta(days=n)).isoformat()
+    ts = [{"id": "longe", "dueDate": d(30), "priority": "media"}, {"id": "atrasada", "dueDate": d(-2), "priority": "media"},
+          {"id": "critica", "dueDate": None, "priority": "critica"}, {"id": "em3", "dueDate": d(3), "priority": "baixa"},
+          {"id": "alta", "dueDate": None, "priority": "alta"}, {"id": "hoje", "dueDate": d(0) + "T03:00:00Z", "priority": "media"}]
+    assert [t["id"] for t in foco(ts)] == ["atrasada", "hoje", "em3", "critica"], foco(ts)
+    global DIA, USO
+    DIA = os.path.join(RUN_DIR, "teste-dia.json")
+    cronometro("ligar")
+    assert cronometro()[1]
+    cronometro("alternar")
+    assert not cronometro()[1]  # pausou
+    cronometro("ligar")
+    assert not cronometro()[1]  # 'ligar' não tira da pausa
+    d = json.load(open(DIA))
+    d["blocos"] = [[time.time() - 3 * 3600, time.time() - 3600], [time.time() - 600, None]]
+    json.dump(d, open(DIA, "w"))
+    assert cronometro() == (130, True), cronometro()  # 2h pausadas antes + 10min rodando
+    cronometro("zerar")
+    assert cronometro() == (0, True)
+    os.remove(DIA)
+    USO = os.path.join(RUN_DIR, "teste-uso.json")
+    json.dump({"rate_limits": {"five_hour": {"used_percentage": 83, "resets_at": time.time() + 600},
+                               "seven_day": {"used_percentage": 40, "resets_at": time.time() - 1}}}, open(USO, "w"))
+    assert "▰" * 8 + "▱" * 2 + " 83%" in barra_ia() and "semana 0%" in barra_ia(), barra_ia()  # semana já resetou
+    TEMA = TEMAS["Dracula"]
+    b = barra_ia()  # vampiro empurrando: entre o cheio e o vazio, no quadro do segundo, com 2 caracteres
+    assert any(PIXEL["coracao"] * 8 + PIXEL[q] + PIXEL["coracao-vazio"] * 2 + " 83%" in b for q in TEMA["andador"]), b
+    assert ic("email") == "\ue4a2" and all(len(PIXEL[q]) == 2 for t in TEMAS.values() for q in t.get("andador", []))
+    TEMA = {}
+    json.dump({"model": {}}, open(USO, "w"))  # sessão nova, ainda sem rate_limits: mantém a última boa
+    assert " 83%" in barra_ia(), barra_ia()
+    os.remove(USO)
+    os.remove(USO + ".ok")
     global mcp
     chamadas = []
     mcp = lambda tool, **kw: chamadas.append((tool, kw))  # Journify falso
