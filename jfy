@@ -12,7 +12,12 @@ RUN_DIR = os.path.join(HOME, "rodando")
 WT_DIR = os.path.join(HOME, "worktrees")
 DIA = os.path.join(HOME, "dia.json")  # cronômetro da jornada de hoje
 USO = os.path.join(HOME, "claude-status.json")  # gravado pelo statusline do Claude Code (install.sh)
+AGENDA = os.path.join(HOME, "agenda.json")  # cache das reuniões de hoje
+REUNIOES = os.path.join(HOME, "reunioes.json")  # projeto e contexto que você deu a cada reunião (r ou h): base das horas
+EMAIL = os.path.join(HOME, "email.json")  # estado da caixa: não lidos, último uid visto, email que acabou de chegar
+HORAS_DIR = os.path.join(HOME, "horas")  # AAAA-MM-DD.jsonl: cada trabalho medido (task, terminal livre, reunião)
 JOURNIFY = "https://journify.souv.tech"  # padrão; quem entra por outro domínio põe "journify" no config.json
+CATEGORIA = {"pipeline": "Desenvolvimento", "sessao": "Desenvolvimento", "livre": "Análise e estudo", "reuniao": "Reunião"}
 JORNADA = 8 * 60  # minutos; o cronômetro fica verde e avisa ao chegar aqui
 SELF = os.path.realpath(__file__)
 TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(HOME, "tmux.conf")]  # tmux.conf do repo já com as cores do tema
@@ -139,6 +144,12 @@ def mcp(tool, **args):
 
 
 # ---------- utilidades ----------
+def projetos_no_texto(cfg, texto):
+    """Projetos cujo apelido aparece no texto (título de reunião). O mais específico ganha: "rpa alpha" tira "alpha"."""
+    nomes = {p: x["nome"].lower() for p, x in cfg["projetos"].items() if x["nome"].lower() in texto.lower()}
+    return [p for p, n in nomes.items() if not any(n != m and n in m for m in nomes.values())]
+
+
 def load():
     try:
         return json.load(open(CONFIG))
@@ -388,7 +399,7 @@ def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
 
 
-# ---------- barra do tmux (uso da IA, jornada) e notificações do macOS ----------
+# ---------- barra do tmux (reunião, uso da IA, jornada) e notificações do macOS ----------
 def notificar(titulo, texto, abrir=None, executar=None):
     """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
     (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, a do osascript (clique não faz nada)."""
@@ -405,6 +416,12 @@ def notificar(titulo, texto, abrir=None, executar=None):
     subprocess.run(["osascript", "-e", "on run a", "-e",
                     'display notification (item 2 of a) with title (item 1 of a) sound name "Glass"',
                     "-e", "end run", titulo, texto])
+
+
+def cmd_tmux(*args):
+    """Linha de shell que roda um comando no tmux do jfy (para o clique da notificação, que roda fora dele)."""
+    import shlex
+    return " ".join(shlex.quote(x) for x in [shutil.which("tmux") or "tmux", "-L", "jfy", *args])
 
 
 def cronometro(acao=None):
@@ -455,6 +472,292 @@ def barra_ia():
     return f"#[fg=colour{cor}]IA {ic('cheio') * cheio}{andador()}{ic('vazio') * (10 - cheio)} {p5}%{ate} #[fg=colour244]· semana {p7}%  "
 
 
+ESCOPOS = ["https://www.googleapis.com/auth/calendar.events.readonly",  # só lê eventos
+           "https://www.googleapis.com/auth/gmail.readonly"]  # lê o email no popup do ✉; não marca, não apaga, não envia
+# gmail.metadata não entra junto: com ele no token o Gmail recusa format=full mesmo tendo o readonly
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+
+
+def chaves(servico, valor=None):
+    """Lê (ou grava, com valor) um segredo no Chaves do macOS. Grava pelo stdin do 'security -i', fora da linha
+    de comando (que aparece no ps)."""
+    if valor is None:
+        return subprocess.run(["security", "find-generic-password", "-a", "jfy", "-s", servico, "-w"],
+                              capture_output=True, text=True).stdout.strip()
+    esc = valor.replace("\\", "\\\\").replace('"', '\\"')
+    subprocess.run(["security", "-i"], input=f'add-generic-password -U -a jfy -s {servico} -w "{esc}"\n',
+                   text=True, check=True, capture_output=True)
+
+
+def http_json(url, dados=None, token=None):
+    """GET (ou POST de formulário) no Google; erro HTTP vira mensagem com o motivo (API desligada, escopo negado...)."""
+    req = urllib.request.Request(url, dados and urllib.parse.urlencode(dados).encode(),
+                                 {"Authorization": "Bearer " + token} if token else {})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=20))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Google {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+
+
+def google_token():
+    """Access token (vale 1h), reaproveitado do Chaves até 5min antes de vencer; depois renova com o refresh
+    token que o jfy --login guardou."""
+    try:
+        t = json.loads(chaves("jfy-google-acesso"))
+        if t["expira"] - time.time() > 300:
+            return t["token"]
+    except (ValueError, KeyError, TypeError):
+        pass
+    cli, rt = load().get("google"), chaves("jfy-google")
+    if not cli or not rt:
+        raise RuntimeError("Google não conectado: rode jfy --login")
+    r = http_json(TOKEN_URL, dict(cli, refresh_token=rt, grant_type="refresh_token"))
+    chaves("jfy-google-acesso", json.dumps({"token": r["access_token"], "expira": time.time() + r.get("expires_in", 3600)}))
+    return r["access_token"]
+
+
+def login():
+    """Login do Google (app Interno da empresa): abre o navegador, recebe o código em 127.0.0.1 (PKCE + state)
+    e guarda o refresh token no Chaves."""
+    import base64, hashlib, http.server, secrets
+    cfg = load()
+    if not cfg.get("google"):
+        arq = ask("Arraste aqui o JSON do client OAuth (baixado no Google Cloud) e dê Enter:\n> ")
+        j = json.load(open(os.path.expanduser(arq.strip("'\" ").replace("\\ ", " "))))["installed"]
+        cfg["google"] = {"client_id": j["client_id"], "client_secret": j["client_secret"]}
+    cli, recebido = cfg["google"], {}
+    verif, estado = secrets.token_urlsafe(64), secrets.token_urlsafe(16)
+    desafio = base64.urlsafe_b64encode(hashlib.sha256(verif.encode()).digest()).rstrip(b"=").decode()
+
+    class Volta(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            recebido.update(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("<h2>jfy: pode fechar esta aba e voltar para o terminal.</h2>".encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Volta)
+    volta = f"http://127.0.0.1:{srv.server_port}"
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+        "client_id": cli["client_id"], "redirect_uri": volta, "response_type": "code", "scope": " ".join(ESCOPOS),
+        "code_challenge": desafio, "code_challenge_method": "S256", "state": estado,
+        "access_type": "offline", "prompt": "consent"})
+    subprocess.run(["open", url])
+    print(f"Abri o login do Google no navegador. Se não abriu, cole isto nele:\n{url}\n")
+    while "code" not in recebido and "error" not in recebido:  # ignora /favicon.ico e afins
+        srv.handle_request()
+    srv.server_close()
+    if recebido.get("state") != estado or "code" not in recebido:
+        return print(c(f"Login não concluído: {recebido.get('error', 'resposta inválida')}", 203))
+    tok = http_json(TOKEN_URL, dict(cli, code=recebido["code"], redirect_uri=volta,
+                                    grant_type="authorization_code", code_verifier=verif))
+    chaves("jfy-google", tok["refresh_token"])
+    chaves("jfy-google-acesso", json.dumps({"token": tok["access_token"], "expira": time.time() + tok.get("expires_in", 3600)}))
+    save(cfg)
+    try:
+        n, m = len(agenda_google()), len(gmail_nao_lidos(tok["access_token"]))
+        print(c(f"Google conectado: {n} reunião(ões) hoje, {m} email(s) não lido(s) na Principal.", 78))
+    except Exception as e:
+        print(c(f"Login salvo, mas a leitura falhou: {e}\nConfira se liberou agenda e Gmail na tela do Google "
+                "e se as duas APIs estão ativadas no projeto.", 214))
+
+
+def reunioes(itens):
+    """Eventos da API do Google Agenda -> [[início, fim, título, link da chamada, participantes + descrição]]
+    (epoch), sem: dia inteiro, cancelado, recusado por você, ausência e local de trabalho."""
+    ts = lambda x: datetime.fromisoformat(x["dateTime"].replace("Z", "+00:00")).timestamp()
+    out = []
+    for e in itens:
+        if "dateTime" not in e.get("start", {}) or e.get("status") == "cancelled" \
+                or e.get("eventType") in ("outOfOffice", "workingLocation") \
+                or any(a.get("self") and a.get("responseStatus") == "declined" for a in e.get("attendees", [])):
+            continue
+        # Meet; senão a chamada do conferenceData (Zoom, Teams); senão o local, se for um link
+        video = [p["uri"] for p in e.get("conferenceData", {}).get("entryPoints", []) if p.get("entryPointType") == "video"]
+        local = e.get("location", "")
+        link = e.get("hangoutLink") or (video[0] if video else local if local.startswith("http") else "")
+        quem = ", ".join(a.get("displayName") or a.get("email", "") for a in e.get("attendees", []) if not a.get("self"))
+        det = (f"Participantes: {quem}\n" if quem else "") + (e.get("description") or "")[:2000]
+        out.append([ts(e["start"]), ts(e["end"]), e.get("summary") or "(sem título)", link, det])
+    return sorted(out)
+
+
+def agenda_google(dia=None):
+    """Reuniões do dia na agenda principal; o Google já expande as recorrentes (singleEvents)."""
+    ini = datetime.combine(dia or date.today(), datetime.min.time()).astimezone()  # meia-noite local, com fuso
+    q = {"timeMin": ini.isoformat(), "timeMax": (ini + timedelta(days=1)).isoformat(),
+         "singleEvents": "true", "orderBy": "startTime", "maxResults": 250}
+    return reunioes(http_json("https://www.googleapis.com/calendar/v3/calendars/primary/events?"
+                              + urllib.parse.urlencode(q), token=google_token()).get("items", []))
+
+
+def gmail_nao_lidos(token):
+    """Ids dos não lidos da aba Principal da caixa de entrada, do mais novo para o mais antigo (até 100)."""
+    q = urllib.parse.urlencode([("labelIds", x) for x in ("INBOX", "UNREAD", "CATEGORY_PERSONAL")] + [("maxResults", 100)])
+    return [m["id"] for m in http_json(f"{GMAIL}?{q}", token=token).get("messages", [])]
+
+
+def gmail_meta(token, mid):
+    """(recebido em segundos, remetente, assunto) só pelos metadados (não marca como lido)."""
+    import email.utils
+    m = http_json(f"{GMAIL}/{mid}?format=metadata&metadataHeaders=From&metadataHeaders=Subject", token=token)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    nome, end = email.utils.parseaddr(h.get("from", ""))
+    return int(m.get("internalDate", 0)) // 1000, nome or end, h.get("subject") or "(sem assunto)"
+
+
+def gmail_cabecalho(token, mid):
+    """'Remetente: assunto' de um email (aviso de email novo na barra)."""
+    _, nome, assunto = gmail_meta(token, mid)
+    return f"{nome}: {assunto}"
+
+
+def email_barra():
+    """✉ na barra: não lidos da Principal e, por 5min, o email que acabou de chegar. Olha o Gmail a cada ~25s
+    (a barra roda a cada 1s), inclusive quando dá erro (não fica martelando o Google)."""
+    if not load().get("google"):
+        return ""
+    try:
+        st = json.load(open(EMAIL))
+    except (OSError, ValueError):
+        st = {}
+    if time.time() - st.get("checado", 0) > 25:
+        st["checado"] = time.time()
+        try:
+            tok = google_token()
+            ids = gmail_nao_lidos(tok)
+            # novo = mais recente que o maior id já visto (o id do Gmail cresce com o tempo). Comparar com a
+            # lista anterior dava falso alarme: com 100+ não lidos, ler os recentes puxa antigos para a janela.
+            primeira, maior = "maior" not in st, st.get("maior") or "0"  # 1ª olhada só marca a base
+            novos = [] if primeira else [i for i in ids if int(i, 16) > int(maior, 16)]
+            st.update(erro=False, ids=ids, maior=max(ids + [maior], key=lambda x: int(x, 16)))
+            if novos:
+                st.update(novo=gmail_cabecalho(tok, novos[0]), novo_id=novos[0], chegou=time.time())
+                cliente = "$(" + cmd_tmux("list-clients", "-F", "#{client_tty}") + " | head -1)"
+                notificar("Email novo", st["novo"], executar=cmd_tmux("display-popup", "-E", "-w", "90%", "-h", "85%",
+                                                                      "-T", " jfy: emails ", SELF + " --email")
+                          .replace("display-popup", f'display-popup -c "{cliente}"', 1))
+        except Exception:
+            st["erro"] = True
+        json.dump(st, open(EMAIL, "w"))
+    # range=user|email: o clique nesse trecho abre o leitor (jfy --email, ver o tmux.conf); o visual não muda
+    if time.time() - st.get("chegou", 0) < 300:
+        return f"#[range=user|email fg=colour232,bg=colour214,bold] {ic('email')} {st['novo'][:45].replace('#', '##')} #[default norange]  "
+    if st.get("erro"):
+        return f"#[range=user|email fg=colour203]{ic('email')} erro (jfy --login)#[norange]  "
+    n = len(st.get("ids", []))
+    return f"#[range=user|email fg=colour39]{ic('email')} {n}{'+' if n >= 100 else ''}#[norange]  " if n \
+        else f"#[range=user|email fg=colour244]{ic('email')}#[norange]  "  # caixa zerada: só o ícone
+
+
+def corpo_email(payload):
+    """Texto de um email (payload do format=full): o text/plain; se não houver, o text/html sem as tags.
+    Devolve (texto, [anexos])."""
+    import base64, html
+    partes, achado, anexos = [payload], {}, []
+    while partes:
+        p = partes.pop(0)
+        partes += p.get("parts", [])
+        if p.get("filename"):
+            anexos.append(p["filename"])
+        elif p.get("mimeType") in ("text/plain", "text/html") and p.get("body", {}).get("data"):
+            achado.setdefault(p["mimeType"], base64.urlsafe_b64decode(p["body"]["data"] + "==").decode(errors="replace"))
+    if "text/plain" in achado:
+        return achado["text/plain"].strip(), anexos
+    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", "", achado.get("text/html", ""))
+    h = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", h)
+    txt = html.unescape(re.sub(r"<[^>]+>", "", h))
+    return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip(), anexos
+
+
+def ler_email(tok, mid):
+    """Abre um email no less (q volta). Só lê: continua não lido no Gmail."""
+    m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    texto, anexos = corpo_email(m["payload"])
+    topo = (f"{c('De:', 39, True)} {h.get('from', '')}\n{c('Para:', 39, True)} {h.get('to', '')}\n"
+            f"{c('Data:', 39, True)} {h.get('date', '')}\n{c(h.get('subject') or '(sem assunto)', 255, True)}\n"
+            + (dim("Anexos: " + ", ".join(anexos)) + "\n" if anexos else ""))
+    link = f"https://mail.google.com/mail/u/0/#inbox/{m['threadId']}"
+    subprocess.run(["less", "-R", "-Ps q volta "], input=f"{topo}\n{texto}\n\n{dim('No Gmail: ' + link)}\n", text=True)
+
+
+def ler_emails():
+    """Clique no ✉ da barra (popup do tmux): não lidos da Principal. Se acabou de chegar um, abre ele direto."""
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        tok = google_token()
+        st = json.load(open(EMAIL)) if os.path.exists(EMAIL) else {}
+        if time.time() - st.get("chegou", 0) < 300 and st.get("novo_id"):
+            ler_email(tok, st.pop("novo_id"))
+            json.dump(dict(st, chegou=0), open(EMAIL, "w"))  # leu o aviso: a barra volta ao contador
+        ids = gmail_nao_lidos(tok)[:30]
+        with ThreadPoolExecutor(8) as ex:
+            metas = list(ex.map(lambda i: gmail_meta(tok, i), ids))
+    except Exception as e:
+        return ask(c(f"Gmail: {e}\n" + ("Rode jfy --login de novo para liberar a leitura dos emails.\n" if "403" in str(e) else "")
+                     + "Enter fecha.", 203))
+    while True:
+        larg = shutil.get_terminal_size().columns or 100
+        quando = lambda ts: datetime.fromtimestamp(ts).strftime("%H:%M" if date.fromtimestamp(ts) == date.today() else "%d/%m")
+        itens = [f"{dim(quando(ts))}  {c(corta(nome, 22).ljust(22), 255, True)}  {corta(assunto, larg - 40)}"
+                 for ts, nome, assunto in metas]
+        op = menu(f"Emails não lidos ({len(ids)}) · Principal", itens or [(dim("caixa zerada"),)],
+                  [("número", "lê"), ("o + número", "abre no Gmail")], zero="fecha")
+        n = op.lstrip("o")
+        if not (n.isdigit() and 1 <= int(n) <= len(ids)):
+            return
+        try:
+            if op.startswith("o"):
+                m = http_json(f"{GMAIL}/{ids[int(n) - 1]}?format=minimal", token=tok)
+                subprocess.run(["open", f"https://mail.google.com/mail/u/0/#inbox/{m['threadId']}"])
+            else:
+                ler_email(tok, ids[int(n) - 1])
+        except Exception as e:
+            ask(c(f"Erro: {e}. Enter volta.", 203))
+
+
+def eventos_hoje(forcar=False):
+    """Reuniões de hoje, com cache: busca no máximo a cada 2min (reunião marcada agora aparece logo); sem rede, fica com o que tinha."""
+    hoje = date.today().isoformat()
+    if not load().get("google"):
+        return []
+    try:
+        cache = json.load(open(AGENDA))
+    except (OSError, ValueError):
+        cache = {}
+    if forcar or cache.get("data") != hoje or time.time() - cache.get("baixado", 0) > 120:
+        try:
+            cache = {"data": hoje, "baixado": time.time(), "eventos": agenda_google()}
+            json.dump(cache, open(AGENDA, "w"))
+        except Exception:  # rede fora ou login revogado não derruba a barra; o jfy --login mostra o erro
+            pass
+    return cache.get("eventos", []) if cache.get("data") == hoje else []
+
+
+def proxima_reuniao():
+    """Contagem regressiva: reunião que começa em até 1h, ou que está rolando. Notifica uma vez a 5 min."""
+    agora = time.time()
+    for i, f, t, *r in eventos_hoje():
+        if f > agora and i - agora <= 3600:
+            m = int((i - agora + 59) // 60)
+            marca = os.path.join(RUN_DIR, "reuniao-avisada")
+            if 0 < i - agora <= 300 and (not os.path.exists(marca) or open(marca).read() != f"{i}"):
+                open(marca, "w").write(f"{i}")
+                notificar(f"Reunião em {fmt_min(m)}", t + (" · clique para entrar na chamada" if r and r[0] else ""),
+                          abrir=r[0] if r and r[0] else None)
+            cor = 203 if m <= 5 else 214 if m <= 15 else 39
+            # range=user|reuniao: clicar entra na chamada (jfy --entrar, ver o tmux.conf)
+            return (f"#[range=user|reuniao fg=colour{cor},bold]{ic('reuniao')} {t[:24].replace('#', '##')} "
+                    f"{'agora' if i <= agora else 'em ' + fmt_min(m)}#[default norange]  ")
+    return ""
+
+
 def relogio():
     """Texto da barra do tmux, uma linha por segundo (o andador do tema anda). Fica rodando: o tmux mostra a última
     linha e não chama de novo enquanto ele vive, então não sobe um Python por segundo. Sai quando o jfy muda (o tmux
@@ -473,8 +776,33 @@ def relogio():
         else:
             cor, icone = (78, ic("feito")) if m >= JORNADA else (220, ic("jornada")) if rodando else (244, ic("pausa") + " pausado")
             jornada = f"#[fg=colour{cor},bold]{icone} {fmt_min(m)} / {JORNADA // 60}h#[default] "
-        print(tematizar(barra_ia() + jornada), flush=True)
+        print(tematizar(proxima_reuniao() + email_barra() + barra_ia() + jornada), flush=True)
         time.sleep(1)
+
+
+def resumo_dia():
+    """Reuniões de hoje e tasks no foco. Usado pelo jfy --hoje e pela notificação das 7h."""
+    cfg, urgentes, evs = load(), foco(mcp("minhas_tasks")), eventos_hoje(forcar=True)
+    linhas = [c(datetime.fromtimestamp(i).strftime("%H:%M"), 39, True) + f"  {t}" for i, _, t, *_ in evs]
+    return f"{len(evs)} reunião(ões) · {len(urgentes)} task(s) no foco", linhas + [linha_foco(cfg, t) for t in urgentes]
+
+
+def notificar_dia():
+    """O launchd chama às 7h nos dias úteis (instalado pelo install.sh)."""
+    try:
+        titulo, linhas = resumo_dia()
+    except Exception as e:
+        return notificar("jfy", f"Não consegui montar o resumo do dia: {e}")
+    limpo = [" ".join(re.sub(r"\033\[[0-9;]*m", "", l).split()) for l in linhas]
+    notificar("jfy: " + titulo, "\n".join(limpo[:4]) or "Sem reunião nem prazo hoje.")
+
+
+def entrar():
+    """Ctrl-b m: abre a chamada da reunião que está rolando ou da próxima de hoje."""
+    ev = next((e for e in eventos_hoje() if e[1] > time.time() and len(e) > 3 and e[3]), None)
+    if ev:
+        return subprocess.run(["open", ev[3]])
+    subprocess.run(TMUX + ["display-message", "jfy: nenhuma reunião com link pela frente hoje"])
 
 
 def atalhos():
@@ -482,9 +810,12 @@ def atalhos():
     import termios, tty
     secoes = [
         ("Em qualquer aba: Ctrl-b e depois", [("0", "menu"), ("1 2 3...", "vai para a aba"), ("w", "todas as abas com prévia"),
+                                              ("m", "entra na chamada da reunião atual ou da próxima"),
                                               ("p", "pausa / retoma a jornada"), ("r", "zera a jornada"),
+                                              ("clique no ✉", "lê os emails num popup"), ("clique no 📅", "entra na chamada"),
                                               ("d", "sai deixando as tasks rodando (jfy volta)"), ("c", "esta lista")]),
         ("Menu principal", [("número", "abre a task do foco ou o projeto"), ("l", "terminal livre"),
+                            ("r", "reuniões de hoje: projeto e contexto para as horas (p + número prepara com o Claude)"), ("h", "horas de hoje: número edita, - + troca o dia, l lança"),
                             ("t", "tema"), ("0", "sair")]),
         ("Projeto", [("número", "abre a task"), ("s", "sessão: várias tasks num chat só"), ("l", "terminal livre no repo"),
                      ("c", "trocar o repositório")]),
@@ -492,7 +823,8 @@ def atalhos():
                   ("d", "descrição inteira e comentários"), ("a + número", "abre o anexo no navegador"),
                   ("p", "definir prazo"), ("w", "abre a task no Journify"),
                   ("/exit", "no Claude: encerra e registra o tempo")]),
-        ("No terminal", [("jfy", "abre ou volta para o jfy")]),
+        ("No terminal", [("jfy", "abre ou volta para o jfy"), ("jfy --hoje", "reuniões e foco de hoje"),
+                         ("jfy --horas -1", "horas de ontem (ou 20/11)"), ("jfy --login", "conecta agenda e Gmail")]),
     ]
     for titulo, itens in secoes:
         print(c(titulo, 255, True))
@@ -531,9 +863,287 @@ def avisar():
               executar=ir)
 
 
+# ---------- horas (minhas-horas do Journify) ----------
 def minutos_uteis(ini, fim):
-    """Minutos entre ini e fim (epoch)."""
-    return max(1, round((fim - ini) / 60))
+    """Minutos entre ini e fim (epoch) tirando as reuniões de hoje que caíram no meio."""
+    # ponytail: só a agenda de hoje e reuniões sobrepostas descontam duas vezes; raro o bastante
+    reun = sum(max(0, min(f, fim) - max(i, ini)) for i, f, *_ in eventos_hoje())
+    return max(1, round((fim - ini - reun) / 60))
+
+
+def registrar_horas(ini, fim, minutos, modo, tid=None, pid=None, titulo=None):
+    """Uma linha por trabalho em ~/.jfy/horas/AAAA-MM-DD.jsonl (dia do início): base do jfy --horas."""
+    linha = {k: v for k, v in dict(ini=ini, fim=fim, min=minutos, modo=modo, tid=tid, pid=pid, titulo=titulo).items()
+             if v is not None}
+    with open(os.path.join(HORAS_DIR, date.fromtimestamp(ini).isoformat() + ".jsonl"), "a") as f:
+        f.write(json.dumps(linha, ensure_ascii=False) + "\n")
+
+
+def inflar(linhas, regra):
+    """{(…, categoria): minutos medidos} -> minutos a lançar, linha a linha. 'fator' (config "horas", padrão 1) multiplica
+    o medido nas linhas de trabalho; reunião fica com a duração da agenda. Múltiplos de 5 min; linha medida não some."""
+    f = regra.get("fator", 1)
+    return {k: 5 * max(1, round(m * (1 if k[1] == CATEGORIA["reuniao"] else f) / 5)) if m > 0 else 0
+            for k, m in linhas.items()}
+
+
+def horas_do_dia(dia):
+    """Linhas medidas do dia: o log do jfy (tasks, terminal livre, preparação de reunião) + reuniões da agenda.
+    Devolve (linhas, reunioes): reunioes = {linha: (início, título, palpite?)} para poder definir projeto e contexto."""
+    cfg, linhas, tasks = load(), {}, {}
+    try:
+        log = [json.loads(l) for l in open(os.path.join(HORAS_DIR, dia.isoformat() + ".jsonl"))]
+    except OSError:
+        log = []
+    for e in log:
+        tid = e.get("tid")
+        if tid and tid not in tasks:
+            try:
+                tasks[tid] = mcp("obter_task", taskId=tid)["task"]
+            except Exception:  # task apagada ou Journify fora: fica o id
+                tasks[tid] = {"title": tid}
+        t = tasks.get(tid, {})
+        k = (e.get("pid") or t.get("projectId"), CATEGORIA.get(e["modo"], "Desenvolvimento"), e.get("titulo") or t.get("title"))
+        linhas[k] = linhas.get(k, 0) + e["min"]
+    try:
+        evs = reunioes_do_dia(dia) if cfg.get("google") else []
+    except Exception as e:
+        print(c(f"Agenda fora ({e}): reuniões não entraram.", 214))
+        evs = []
+    reun = {}
+    for i, f, titulo, *_ in evs:
+        if i >= time.time():  # ainda não aconteceu
+            continue
+        info = reuniao_info(i, titulo)
+        if info:  # você disse o projeto (r ou h): vale isso
+            k = (info.get("pid") or info.get("projeto"), CATEGORIA["reuniao"], info.get("contexto") or titulo)
+        else:  # palpite pelo apelido no título
+            achado = projetos_no_texto(cfg, titulo)
+            k = (achado[0] if len(achado) == 1 else None, CATEGORIA["reuniao"], titulo)
+        linhas[k] = linhas.get(k, 0) + round((min(f, time.time()) - i) / 60)
+        reun[k] = (i, titulo, not info)  # ponytail: duas reuniões na mesma linha (mesmo título e projeto): o número define a última
+    return linhas, reun
+
+
+def chave_reuniao(ini, titulo):
+    return datetime.fromtimestamp(ini).strftime("%Y-%m-%d %H:%M ") + titulo
+
+
+def reuniao_info(ini, titulo):
+    """O que você registrou para a reunião: {"pid"} (projeto do jfy) ou {"projeto"} (nome livre), e "contexto"."""
+    try:
+        return json.load(open(REUNIOES)).get(chave_reuniao(ini, titulo))
+    except (OSError, ValueError):
+        return None
+
+
+def gravar_reuniao(ini, titulo, reg):
+    # ponytail: o arquivo cresce uns 100 bytes por reunião; limpar os antigos se um dia pesar
+    try:
+        dados = json.load(open(REUNIOES))
+    except (OSError, ValueError):
+        dados = {}
+    dados[chave_reuniao(ini, titulo)] = reg
+    json.dump(dados, open(REUNIOES, "w"), indent=1, ensure_ascii=False)
+
+
+def nome_projeto(cfg, info_ou_pid):
+    """Apelido do jfy, o nome livre que você digitou, ou '?'."""
+    p = info_ou_pid if isinstance(info_ou_pid, str) or info_ou_pid is None else info_ou_pid.get("pid") or info_ou_pid.get("projeto")
+    return cfg["projetos"].get(p, {}).get("nome", p) if p else "?"
+
+
+def escolher_projeto(cfg, titulo, palpite=None):
+    """Menu dos projetos do jfy. Enter aceita o palpite; texto livre = nome do projeto no Journify (ex.: Souv).
+    Devolve {"pid"} ou {"projeto"}, ou None se voltou."""
+    pids = sorted(cfg["projetos"], key=lambda p: cfg["projetos"][p]["nome"])
+    op = menu(titulo, [c(cfg["projetos"][p]["nome"], cor_projeto(p)) + (dim("  ← enter") if p == palpite else "") for p in pids],
+              [("número", "escolhe")] + ([("enter", nome_projeto(cfg, palpite))] if palpite else [])
+              + [("ou escreva", "o nome do projeto no Journify (ex.: Souv)")])
+    if op == "0" or (not op and not palpite):
+        return None
+    return ({"pid": pids[int(op) - 1]} if op.isdigit() and 1 <= int(op) <= len(pids)
+            else {"projeto": op} if op and not op.isdigit()
+            else {"pid": palpite} if palpite in cfg["projetos"] else {"projeto": palpite})
+
+
+def classificar_reuniao(cfg, ini, titulo):
+    """Projeto e contexto de uma reunião, só gravados (sem Claude). O apelido no título é só o palpite do Enter.
+    Devolve o registro, ou None se voltou."""
+    atual = reuniao_info(ini, titulo) or {}
+    achado = projetos_no_texto(cfg, titulo)
+    palpite = atual.get("pid") or atual.get("projeto") or (achado[0] if len(achado) == 1 else None)
+    hora = datetime.fromtimestamp(ini).strftime("%d/%m %H:%M")
+    reg = escolher_projeto(cfg, f"Projeto da reunião {hora} \"{titulo}\"", palpite)
+    if reg is None:
+        return None
+    ctx = ask(f"Contexto, vira a descrição nas horas [{atual.get('contexto') or titulo}]: ", atual.get("contexto", ""))
+    if ctx:
+        reg["contexto"] = ctx
+    gravar_reuniao(ini, titulo, reg)
+    return reg
+
+
+def rotulo_reuniao(cfg, info):
+    if not info:
+        return dim("sem projeto")
+    p = info.get("pid") or info.get("projeto")
+    return c(nome_projeto(cfg, info), cor_projeto(p)) + (dim(" · " + info["contexto"]) if info.get("contexto") else "")
+
+
+def reunioes_do_dia(dia):
+    return eventos_hoje() if dia == date.today() else agenda_google(dia)
+
+
+def hm(m):
+    return f"{m // 60}:{m % 60:02d}"
+
+
+def ajustes_arq(dia):
+    return os.path.join(HORAS_DIR, dia.isoformat() + ".ajustes.json")
+
+
+def gravar_ajuste(dia, kid, **campos):
+    """O que você mudou numa linha das horas (p, cat, desc, min, fora), só nesse dia. None/False tira o ajuste."""
+    try:
+        aj = json.load(open(ajustes_arq(dia)))
+    except (OSError, ValueError):
+        aj = {}
+    a = aj.setdefault(kid, {})
+    for k, v in campos.items():
+        if v is None or v is False:
+            a.pop(k, None)
+        else:
+            a[k] = v
+    if not a:
+        aj.pop(kid)
+    json.dump(aj, open(ajustes_arq(dia), "w"), indent=1, ensure_ascii=False)
+
+
+def itens_horas(cfg, dia):
+    """As linhas do dia como vão para o Journify: o medido, com os seus ajustes e a regra do config.
+    Devolve (itens, medido, total pela regra). Linha removida fica no fim, com fora=True."""
+    linhas, reun = horas_do_dia(dia)
+    try:
+        aj = json.load(open(ajustes_arq(dia)))
+    except (OSError, ValueError):
+        aj = {}
+    itens = []
+    for k, m in linhas.items():
+        r = reun.get(k)
+        kid = "reuniao|" + chave_reuniao(*r[:2]) if r else "|".join(str(x) for x in k)  # reunião: estável mesmo trocando o projeto
+        a = aj.get(kid, {})
+        itens.append(dict(kid=kid, p=a.get("p", k[0]), cat=a.get("cat", k[1]), desc=a.get("desc", k[2]), med=m,
+                          fixo=a.get("min"), fora=a.get("fora", False), reuniao=r, lanc=0))
+    vivos = {(i, it["cat"]): it["med"] for i, it in enumerate(itens) if not it["fora"]}
+    lanc = inflar(vivos, cfg.get("horas", {}))
+    for (i, _), m in lanc.items():
+        # ponytail: hora fixada à mão substitui a da regra e não rebalanceia as outras linhas
+        itens[i]["lanc"] = m if itens[i]["fixo"] is None else itens[i]["fixo"]
+    itens.sort(key=lambda it: (it["fora"], -it["lanc"]))
+    return itens, sum(vivos.values()), sum(lanc.values())
+
+
+def editar_linha_horas(cfg, dia, it):
+    """Muda uma linha (só nesse dia). Reunião: projeto e descrição vão para o reunioes.json, o mesmo do r."""
+    if it["fora"]:  # removida: o número restaura
+        return gravar_ajuste(dia, it["kid"], fora=False)
+    limpar()
+    print(c(" Editar lançamento ", 39, True) + f"  {dia.strftime('%d/%m/%Y')}\n")
+    print(f" {c(nome_projeto(cfg, it['p']), cor_projeto(it['p']) if it['p'] else 214, True)} · {it['cat']} · "
+          f"{c(hm(it['lanc']), 78, True)} · {it['desc']}\n")
+    op = escolha(" " + acoes_txt([("p", "projeto"), ("c", "categoria"), ("h", "horas"), ("d", "descrição"),
+                                  ("x", "remover")]) + "\n" + seta(), "pchdx")
+    r = it["reuniao"]
+    atual_reuniao = lambda: reuniao_info(*r[:2]) or ({"pid": it["p"]} if it["p"] in cfg["projetos"]
+                                                     else {"projeto": it["p"]} if it["p"] else {})
+    if op == "p":
+        reg = escolher_projeto(cfg, f"Projeto de \"{it['desc']}\"", it["p"])
+        if reg and r:
+            ctx = (reuniao_info(*r[:2]) or {}).get("contexto")
+            gravar_reuniao(*r[:2], dict(reg, **({"contexto": ctx} if ctx else {})))
+        elif reg:
+            gravar_ajuste(dia, it["kid"], p=reg.get("pid") or reg.get("projeto"))
+    elif op == "c":
+        cats = list(dict.fromkeys(CATEGORIA.values()))
+        o = menu("Categoria", cats, [("número", "escolhe"), ("ou escreva", "outra")])
+        cat = cats[int(o) - 1] if o.isdigit() and 1 <= int(o) <= len(cats) else o if o and not o.isdigit() else None
+        if cat:
+            gravar_ajuste(dia, it["kid"], cat=cat)
+    elif op == "h":
+        m = ask("  Horas (80, 1h20, 1:20) [enter = volta para a regra]: ")
+        gravar_ajuste(dia, it["kid"], min=ler_minutos(m))
+    elif op == "d":
+        d = ask(f"  Descrição [{it['desc']}]: ")
+        if d and r:
+            gravar_reuniao(*r[:2], dict(atual_reuniao(), contexto=d))
+        elif d:
+            gravar_ajuste(dia, it["kid"], desc=d)
+    elif op == "x":
+        gravar_ajuste(dia, it["kid"], fora=True)
+
+
+def tela_horas(dia=None):
+    """jfy --horas [data] (ou h no menu): o que vai para o minhas-horas, uma linha por lançamento. Abre em hoje;
+    o número edita a linha, - e + trocam o dia, l chama o Claude para lançar pelo Chrome."""
+    cfg, dia = load(), dia or date.today()
+    nome, regra = lambda p: nome_projeto(cfg, p), cfg.get("horas", {})
+    while True:
+        itens, medido, pela_regra = itens_horas(cfg, dia)
+        vivos = [it for it in itens if not it["fora"]]
+        total, larg = sum(it["lanc"] for it in vivos), min(shutil.get_terminal_size().columns or 100, 110)
+        cab = f" Horas · {['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'][dia.weekday()]} {dia.strftime('%d/%m/%Y')} "
+        limpar()
+        print(c(cab, 39, True) + " " * max(2, larg - len(cab) - 16) + "lançar " + c(fmt_min(total), 78, True))
+        traco = dim(" " + "─" * (larg - 2))
+        print(traco)
+        if not itens:
+            print(dim("\n Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.\n"))
+        else:
+            print(dim(f"     {'projeto':<12} {'categoria':<17} {'horas':>5}  descrição"))
+        for n, it in enumerate(itens, 1):
+            desc = it["desc"] + (" (projeto pelo título)" if it["reuniao"] and it["reuniao"][2] and it["p"] else "")
+            desc, cat = desc[:max(12, larg - 46)], it["cat"][:17].ljust(17)
+            if it["fora"]:
+                print(dim(f" {n:>2}  {nome(it['p'])[:12]:<12} {cat} {'—':>5}  {desc}  · removida, o número restaura"))
+                continue
+            print(f" {c(f'{n:>2}', 39, True)}  {c(nome(it['p'])[:12].ljust(12), cor_projeto(it['p']) if it['p'] else 214)} {cat} "
+                  f"{c(hm(it['lanc']).rjust(5), 78, True)}  {desc}" + (dim("  · horas à mão") if it["fixo"] is not None else ""))
+        print(traco)
+        if itens:
+            fator = f"×{regra.get('fator', 1)}".replace(".", ",")
+            print(dim(f" medido {fmt_min(medido)} · fator {fator} → {fmt_min(pela_regra)}")
+                  + (dim(f" · com seus ajustes: {fmt_min(total)}") if total != pela_regra else ""))
+            sem = sum(1 for it in vivos if not it["p"])
+            if sem:
+                print(c(f" ⚠ {sem} linha(s) sem projeto: edite pelo número ou o Claude pergunta ao lançar", 214))
+        prox = dia < date.today()
+        op = escolha("\n " + acoes_txt(([("número", "edita")] if itens else []) + ([("l", "lança (Claude no Chrome)")] if vivos else [])
+                                      + [("-", "dia anterior")] + ([("+", "próximo dia")] if prox else [])
+                                      + [("ou a data", "20/11")], "0 fecha") + "\n" + seta(), "l-+")
+        d = ler_data(op, futuro=False) if "/" in op else None
+        if op == "0":
+            return
+        if op == "-":
+            dia -= timedelta(days=1)
+        elif op == "+" and prox:
+            dia += timedelta(days=1)
+        elif d and date.fromisoformat(d) <= date.today():
+            dia = date.fromisoformat(d)
+        elif op.isdigit() and 1 <= int(op) <= len(itens):
+            editar_linha_horas(cfg, dia, itens[int(op) - 1])
+        elif op == "l" and vivos:
+            break
+    linhas = "\n".join(f"- projeto: {nome(it['p'])} (id Journify {it['p'] if it['p'] in cfg['projetos'] else '?'}) | "
+                       f"categoria: {it['cat']} | horas: {hm(it['lanc'])} | descrição: {it['desc']}" for it in vivos)
+    pedido = f"""Lance estas horas de {dia.strftime('%d/%m/%Y')} em {cfg.get('journify', JOURNIFY)}/minhas-horas pelo Chrome (já estou logado). Um envio por linha:
+{linhas}
+
+- Projeto: o apelido acima é o do jfy (ou o nome do projeto no Journify, quando não tem id); escolha no select do modal o projeto do Journify que corresponde (o id ajuda). Se a linha tiver projeto "?" ou houver dúvida, me pergunte antes.
+- Categoria: a opção do select mais próxima da sugerida.
+- O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
+- Confira na tela se o dia já tem horas lançadas e me avise antes de duplicar. No fim, confirme que o total do dia ficou {hm(total)}."""
+    subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
 
 
 # ---------- configuração de projeto ----------
@@ -706,8 +1316,9 @@ def inicio(tid):
     print(f"Relógio ligado, status em_progresso: {tid}")
 
 
-def fim(tid, minutos=None, pronta=False, nada=False):
-    """Comenta o tempo gasto e, se pronta, muda o status. Sem minutos, usa o relógio do inicio()."""
+def fim(tid, minutos=None, pronta=False, nada=False, modo="sessao"):
+    """Comenta o tempo gasto e, se pronta, muda o status. Sem minutos, usa o relógio do inicio() (sem as reuniões).
+    O tempo também vai para o log de horas do dia."""
     arq = os.path.join(RUN_DIR, tid + ".t")
     if nada:  # só desliga o relógio, nada vai para o Journify
         if os.path.exists(arq):
@@ -717,6 +1328,7 @@ def fim(tid, minutos=None, pronta=False, nada=False):
     ini = float(open(arq).read()) if os.path.exists(arq) else agora - 60 * (minutos or 1)
     if minutos is None:
         minutos = minutos_uteis(ini, agora)
+    registrar_horas(ini, agora, minutos, modo, tid=tid)  # antes do Journify: o tempo foi trabalhado mesmo se ele falhar
     quando = datetime.now().strftime("%d/%m/%Y %H:%M")
     mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
     if pronta:
@@ -761,8 +1373,8 @@ def rodar(tid, modo="pipeline"):
     if op == "3":
         fim(tid, nada=True)
     else:
-        m = ask(f"Tempo gasto (80, 1h20) [{fmt_min(minutos)}]: ")
-        fim(tid, ler_minutos(m) or minutos, op == "1")
+        m = ask(f"Tempo gasto, já sem as reuniões (80, 1h20) [{fmt_min(minutos)}]: ")
+        fim(tid, ler_minutos(m) or minutos, op == "1", modo=modo)
     fechar(sid, cwd, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
     ask(dim("Enter fecha esta aba."))
 
@@ -812,7 +1424,43 @@ def livre(pasta):
     print(c(f" {nome} ", cor_projeto(achado[0] if achado else pasta), True) + " " + c("terminal livre", 255, True) + "\n")
     contexto = contexto_projeto(achado[1], achado[0]) if achado else "Terminal livre aberto pelo jfy."
     # ponytail: sem lock nem worktree, é uso solto; cuidado ao rodar junto com uma task no mesmo repo
-    abrir_claude(pasta, contexto, None, None, extra=["--dangerously-skip-permissions"])
+    t0 = abrir_claude(pasta, contexto, None, None, extra=["--dangerously-skip-permissions"])
+    registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "livre", pid=achado[0] if achado else None,
+                    titulo="Terminal livre" + ("" if achado else f" em {os.path.basename(pasta)}"))
+
+
+def preparar(ini):
+    """Aba de preparação (p + número no r), opcional: o Claude prepara a pauta com o projeto e o contexto que você deu.
+    Reunião não vira task: o tempo vai para as horas (categoria Reunião) do projeto."""
+    cfg = load()
+    ev = next((e for e in eventos_hoje() if abs(e[0] - float(ini)) < 1), None)
+    if not ev:
+        return ask(c("Reunião não está mais na agenda de hoje. Enter fecha.", 203))
+    i, f, titulo, link, det = (ev + ["", ""])[:5]
+    info = reuniao_info(i, titulo) or {}
+    pid = info.get("pid")
+    proj = cfg["projetos"].get(pid)
+    hora = lambda x: datetime.fromtimestamp(x).strftime("%H:%M")
+    print(c(f" {proj['nome'] if proj else 'reunião'} ", cor_projeto(pid or titulo), True) + " " + c(titulo, 255, True) + "\n")
+    if proj:
+        tarefas = "\n".join(f"- [{t['statusId']}] {t['title']} ({t['id']})" for t in mcp("minhas_tasks", projetoId=pid))
+        sobre = f"Projeto Journify '{proj['nome']}' ({pid}). Minhas tasks abertas nele:\n{tarefas or '(nenhuma)'}"
+    else:
+        sobre = f"Projeto: {info['projeto']} (fora do jfy, sem repo)." if info.get("projeto") else "Sem projeto Journify associado."
+    if info.get("contexto"):
+        sobre += f"\nContexto que eu dei para esta reunião: {info['contexto']}"
+    chamada = f" (chamada: {link})" if link else ""
+    pedido = f"""Reunião "{titulo}" hoje, {hora(i)}–{hora(f)}{chamada}.
+Dados da agenda:
+{det or '(sem descrição)'}
+
+{sobre}
+
+Me prepare em poucas linhas. O que eu avancei desde a última reunião deste projeto (git log dos últimos 7 dias, handoff.md e o resumo da última reunião, se mcp__journify__listar_reunioes / obter_reuniao tiverem), o que está em revisão ou teste esperando alguém, bloqueios e as perguntas que eu devo levar.
+Não crie task para a reunião nem para o que sair dela: o tempo de reunião vai para as horas do projeto, categoria Reunião."""
+    contexto = contexto_projeto(proj, pid) if proj else "Preparação de reunião aberta pelo jfy."
+    t0 = abrir_claude(proj["repo"] if proj else os.path.expanduser("~"), contexto, pedido, None)
+    registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "reuniao", pid=pid or info.get("projeto"), titulo=f"Preparação: {info.get('contexto') or titulo}")
 
 
 def aba(chave):
@@ -844,11 +1492,31 @@ def tela_tema():
     op = menu("Tema", [f"{amostra(TEMAS[n])}  {n:<10} {icones(TEMAS[n])}" + (dim("  (atual)") if n == atual else "")
                        for n in nomes])
     if op.isdigit() and 1 <= int(op) <= len(nomes):
-        cfg = load()  # relê: não sobrescreve o que outro jfy gravou
+        cfg = load()  # relê: não sobrescreve o que outro jfy (ex.: --login) gravou
         cfg["tema"] = nomes[int(op) - 1]
         save(cfg)
         TEMA = TEMAS[cfg["tema"]]
         subprocess.run(TMUX + ["source-file", tmux_conf()])  # barra muda na hora, abas abertas inclusive
+
+
+def tela_reunioes(cfg):
+    if not cfg.get("google"):
+        return ask(c("Agenda não conectada: rode jfy --login. Enter para voltar.", 214))
+    evs, agora = eventos_hoje(forcar=True), time.time()
+    quando = lambda i, f: dim("  já foi") if f < agora else c("  agora", 203, True) if i <= agora else dim(f"  em {fmt_min(int((i - agora) // 60))}")
+    while True:  # número: só grava projeto e contexto (base das horas); p + número: preparação com o Claude, opcional
+        op = menu("Reuniões de hoje: projeto e contexto para as horas",
+                  [f"{c(datetime.fromtimestamp(i).strftime('%H:%M'), 39, True)}  {t}{quando(i, f)}  "
+                   + rotulo_reuniao(cfg, reuniao_info(i, t)) for i, f, t, *_ in evs] or [(dim("nenhuma reunião hoje"),)],
+                  [("número", "projeto e contexto"), ("p + número", "prepara com o Claude")])
+        n = op[1:] if op.startswith("p") else op
+        if not (evs and n.isdigit() and 1 <= int(n) <= len(evs)):
+            return
+        i, _, t, *_ = evs[int(n) - 1]
+        if not op.startswith("p"):
+            classificar_reuniao(cfg, i, t)
+        elif reuniao_info(i, t) or classificar_reuniao(cfg, i, t):  # a preparação usa o projeto que você deu
+            return abrir_aba("reunião: " + t[:20], t, "--reuniao", repr(i))
 
 
 def blocos_task(cfg, t, full, largura):
@@ -1008,8 +1676,8 @@ def principal():
             abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
             dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
             op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
-                      [("l", "terminal livre"), ("t", "tema"), ("enter", "atualiza")],
-                      "sai", teclas="lt")
+                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("t", "tema"), ("enter", "atualiza")],
+                      "sai", teclas="lrht")
             if op == "":  # Enter não sai mais: atualiza as tasks
                 buscado = 0
                 continue
@@ -1020,6 +1688,10 @@ def principal():
                 return
             if op == "t":
                 tela_tema()
+            if op == "r":
+                tela_reunioes(cfg)
+            if op == "h":
+                abrir_aba("horas", "horas", "--horas")
             if op == "l":
                 ultimo = next((os.path.dirname(x["repo"]) for x in cfg["projetos"].values()), os.path.expanduser("~/Documents"))
                 pasta = escolher_pasta(ultimo)
@@ -1055,8 +1727,26 @@ def main():
         return cronometro("alternar")
     if a[:1] == ["--zerar"]:  # Ctrl-b r
         return cronometro("zerar")
+    if a[:1] == ["--notificar"]:
+        return notificar_dia()
+    if a[:1] == ["--hoje"]:  # o dia sem abrir o menu
+        titulo, linhas = resumo_dia()
+        return print(c(titulo, 39, True) + "\n" + "\n".join(linhas))
+    if a[:1] == ["--login"]:  # Google: agenda e Gmail
+        return login()
+    if a[:1] == ["--horas"]:  # jfy --horas [data]: tabela para o minhas-horas
+        d = ler_data(a[1], futuro=False) if a[1:] else None
+        if a[1:] and not d:
+            return print(c(f"Data inválida: {a[1]}", 203))
+        return tela_horas(date.fromisoformat(d) if d else None)  # sem data: hoje
+    if a[:1] == ["--reuniao"]:
+        return preparar(a[1])
     if a[:1] == ["--fechar"]:  # fechamento de uma task em segundo plano
         return fechar_agora(*a[1:4])
+    if a[:1] == ["--email"]:  # clique no ✉ da barra
+        return ler_emails()
+    if a[:1] == ["--entrar"]:  # Ctrl-b m
+        return entrar()
     if a[:1] == ["--atalhos"]:  # Ctrl-b c
         return atalhos()
     if a[:1] == ["--avisar"]:  # hook do Claude Code
@@ -1076,7 +1766,7 @@ def main():
 
 
 def selftest():
-    import glob
+    import base64, glob
     for x in glob.glob(os.path.join(RUN_DIR, "teste-*")):
         shutil.rmtree(x) if os.path.isdir(x) else os.remove(x)
     d = {"type": "doc", "content": [
@@ -1097,6 +1787,18 @@ def selftest():
     assert fmt_min(83) == "1h 23min" and fmt_min(5) == "5min"
     assert not ocupado("/nao/existe")
     assert [ler_minutos(x) for x in ("80", "1h20", "1h", "1:05", "45min", "2 h 5", "x", "")] == [80, 80, 60, 65, 45, 125, None, None]
+    cfg_t = {"projetos": {"a": {"nome": "alpha"}, "r": {"nome": "rpa alpha"}, "p1": {"nome": "plastamp 1"}, "p2": {"nome": "plastamp 2"}}}
+    assert projetos_no_texto(cfg_t, "Kick-off RPA Alpha Plast") == ["r"] and projetos_no_texto(cfg_t, "Entrega Alpha Plast") == ["a"]
+    assert projetos_no_texto(cfg_t, "Alinhamento de infra Plastamp 1-2") == ["p1"] and projetos_no_texto(cfg_t, "Daily") == []
+    b64 = lambda t: base64.urlsafe_b64encode(t.encode()).decode().rstrip("=")
+    so_html = {"mimeType": "multipart/mixed", "parts": [
+        {"mimeType": "multipart/alternative", "parts": [{"mimeType": "text/html", "body": {"data": b64(
+            "<html><head><style>p{}</style></head><body><p>Olá &amp; até</p><p>linha<br>dois</p></body></html>")}}]},
+        {"mimeType": "application/pdf", "filename": "proposta.pdf", "body": {"attachmentId": "x"}}]}
+    assert corpo_email(so_html) == ("Olá & até\nlinha\ndois", ["proposta.pdf"]), corpo_email(so_html)
+    com_plain = {"mimeType": "multipart/alternative", "parts": [{"mimeType": "text/plain", "body": {"data": b64("oi\n")}},
+                                                               {"mimeType": "text/html", "body": {"data": b64("<b>x</b>")}}]}
+    assert corpo_email(com_plain) == ("oi", [])
     global TEMA
     for nome, t in TEMAS.items():  # cor de aba igual a um papel seria trocada duas vezes
         assert not set(t.get("projetos", [])) & {k for k in t if k != "projetos"}, nome
@@ -1116,12 +1818,19 @@ def selftest():
     assert ler_data("31/02", h) is None and ler_data("amanhã", h) is None and ler_data("", h) is None
     assert ler_data("-1", h) == "2026-11-20" and ler_data("+0", h) == "2026-11-21"
     assert ler_data("20/11", h, futuro=False) == "2026-11-20" and ler_data("20/11", h) == "2027-11-20"
+    # horas: fator só no trabalho, reunião como está, múltiplos de 5, nada negativo nem divisão por zero
+    x, y, daily = (0, "Desenvolvimento"), (1, "Desenvolvimento"), (2, "Reunião")
+    assert inflar({x: 120, y: 60, daily: 30}, {"fator": 1.2}) == {x: 145, y: 70, daily: 30}
+    assert inflar({x: 120, daily: 30}, {}) == {x: 120, daily: 30} and inflar({}, {"fator": 2}) == {}
+    assert inflar({x: 4, y: 1, (3, "Desenvolvimento"): 1, (4, "Desenvolvimento"): 1}, {}) == \
+        {x: 5, y: 5, (3, "Desenvolvimento"): 5, (4, "Desenvolvimento"): 5}
+    assert inflar({x: 0, daily: 30}, {"fator": 1.2}) == {x: 0, daily: 30}
     d = lambda n: (date.today() + timedelta(days=n)).isoformat()
     ts = [{"id": "longe", "dueDate": d(30), "priority": "media"}, {"id": "atrasada", "dueDate": d(-2), "priority": "media"},
           {"id": "critica", "dueDate": None, "priority": "critica"}, {"id": "em3", "dueDate": d(3), "priority": "baixa"},
           {"id": "alta", "dueDate": None, "priority": "alta"}, {"id": "hoje", "dueDate": d(0) + "T03:00:00Z", "priority": "media"}]
     assert [t["id"] for t in foco(ts)] == ["atrasada", "hoje", "em3", "critica"], foco(ts)
-    global DIA, USO
+    global mcp, DIA, USO
     DIA = os.path.join(RUN_DIR, "teste-dia.json")
     cronometro("ligar")
     assert cronometro()[1]
@@ -1149,22 +1858,119 @@ def selftest():
     assert " 83%" in barra_ia(), barra_ia()
     os.remove(USO)
     os.remove(USO + ".ok")
-    global mcp
+    # agenda: tira dia inteiro, cancelada, recusada por mim e ausência; aceita fuso com offset e com Z
+    it = lambda **k: dict({"summary": "R", "start": {"dateTime": "2026-11-23T10:00:00-03:00"},
+                           "end": {"dateTime": "2026-11-23T10:30:00-03:00"}}, **k)
+    evs = reunioes([it(summary="Daily"), it(start={"date": "2026-11-23"}, end={"date": "2026-11-24"}),
+                    it(status="cancelled"), it(attendees=[{"self": True, "responseStatus": "declined"}]),
+                    it(eventType="outOfOffice"), it(eventType="workingLocation"),
+                    it(summary="Cedo", start={"dateTime": "2026-11-23T11:00:00Z"}, end={"dateTime": "2026-11-23T11:15:00Z"}),
+                    it(summary="Aceita", attendees=[{"self": True, "responseStatus": "accepted"}, {"responseStatus": "declined"}])])
+    assert [e[2] for e in evs] == ["Cedo", "Aceita", "Daily"], evs
+    assert evs[0][0] == datetime.fromisoformat("2026-11-23T11:00:00+00:00").timestamp()
+    assert evs[2][1] - evs[2][0] == 1800
+    # link da chamada: Meet, senão vídeo do conferenceData, senão local que é link
+    evs = {e[2]: e[3:] for e in reunioes([
+        it(hangoutLink="https://meet/x", attendees=[{"self": True}, {"displayName": "Ana"}, {"email": "b@x"}], description="pauta"),
+        it(summary="Z", conferenceData={"entryPoints": [{"entryPointType": "phone", "uri": "tel:1"},
+                                                        {"entryPointType": "video", "uri": "https://zoom/y"}]}),
+        it(summary="L", location="https://teams/z"), it(summary="S", location="Sala 2")])}
+    assert evs == {"R": ["https://meet/x", "Participantes: Ana, b@x\npauta"], "Z": ["https://zoom/y", ""],
+                   "L": ["https://teams/z", ""], "S": ["", ""]}, evs
+    # tempo da task sem as reuniões do meio; a que ainda não começou não conta
+    global eventos_hoje, HORAS_DIR
+    agora, HORAS_DIR = time.time(), os.path.join(RUN_DIR, "teste-horas")
+    os.makedirs(HORAS_DIR, exist_ok=True)
+    eventos_hoje = lambda forcar=False: [[agora - 3600, agora - 1800, "Daily"], [agora + 60, agora + 600, "Futura"]]
+    assert minutos_uteis(agora - 7200, agora) == 90
+    eventos_hoje = lambda forcar=False: []
     chamadas = []
     mcp = lambda tool, **kw: chamadas.append((tool, kw))  # Journify falso
     inicio("TESTE")
     open(os.path.join(RUN_DIR, "TESTE.t"), "w").write(str(time.time() - 125 * 60))
     fim("TESTE", pronta=True)
     assert chamadas[1][1]["texto"].startswith("Tempo gasto: 2h 05min"), chamadas
+    log = [json.loads(l) for f in os.listdir(HORAS_DIR) for l in open(os.path.join(HORAS_DIR, f))]
+    assert [(e["tid"], e["min"], e["modo"]) for e in log] == [("TESTE", 125, "sessao")], log
+    shutil.rmtree(HORAS_DIR)
     assert chamadas[2] == ("atualizar_task", {"taskId": "TESTE", "statusId": STATUS_FIM})
     assert not os.path.exists(os.path.join(RUN_DIR, "TESTE.t"))
     inicio("TESTE")
     fim("TESTE", nada=True)
     assert len(chamadas) == 4 and not os.path.exists(os.path.join(RUN_DIR, "TESTE.t"))
+    # token do Google: reaproveita do Chaves até 5min antes de vencer, depois renova
+    global EMAIL, load, google_token, gmail_nao_lidos, gmail_cabecalho, notificar, chaves, http_json
+    load = lambda: {"projetos": {}, "google": {"client_id": "x", "client_secret": "y"}}
+    cofre, pedidos = {"jfy-google": "RT"}, []
+    chaves = lambda serv, valor=None: cofre.get(serv, "") if valor is None else cofre.update({serv: valor})
+    def http_falso(url, dados=None, token=None):
+        pedidos.append(dados)
+        return {"access_token": f"AT{len(pedidos)}", "expires_in": 3600}
+    http_json = http_falso
+    assert google_token() == "AT1" and google_token() == "AT1" and len(pedidos) == 1
+    assert pedidos[0]["refresh_token"] == "RT"
+    cofre["jfy-google-acesso"] = json.dumps({"token": "AT1", "expira": time.time() + 200})  # vence em menos de 5min
+    assert google_token() == "AT2" and len(pedidos) == 2
+    # email: a 1ª olhada só marca a base; id novo avisa e aparece na barra; erro não re-tenta a cada 15s
+    EMAIL, avisos, caixa = os.path.join(RUN_DIR, "teste-email.json"), [], {"ids": ["b", "a"]}  # ids em hex
+    load = lambda: {"projetos": {}, "google": {"client_id": "x", "client_secret": "y"}}
+    def token_falso():
+        if caixa.get("erro"):
+            raise RuntimeError("revogado")
+        return "tok"
+    google_token, notificar = token_falso, lambda titulo, texto, **kw: avisos.append(texto)
+    gmail_nao_lidos, gmail_cabecalho = lambda tok: caixa["ids"], lambda tok, mid: f"Ana #{mid}: Oi"
+    assert email_barra() == "#[range=user|email fg=colour39]✉ 2#[norange]  " and not avisos
+    caixa["ids"] = ["c", "b", "a"]
+    assert email_barra() == "#[range=user|email fg=colour39]✉ 2#[norange]  "  # acabou de olhar: não olha o Gmail de novo
+    st = json.load(open(EMAIL)); st["checado"] = 0; json.dump(st, open(EMAIL, "w"))
+    assert "Ana ##c: Oi" in email_barra() and avisos == ["Ana #c: Oi"]
+    olhar = lambda: (json.dump(dict(json.load(open(EMAIL)), checado=0, chegou=0), open(EMAIL, "w")), email_barra())[1]
+    caixa["ids"] = ["c", "b", "a", "9"]  # um antigo entrou na janela (li outros): não é novo
+    assert olhar() == "#[range=user|email fg=colour39]✉ 4#[norange]  " and len(avisos) == 1
+    caixa["ids"] = []
+    assert olhar() == "#[range=user|email fg=colour244]✉#[norange]  "  # caixa zerada: só o ícone
+    caixa["ids"] = ["d"]
+    assert "Ana ##d" in olhar() and avisos[-1] == "Ana #d: Oi"  # chegou com a caixa zerada: avisa
+    caixa["erro"] = True
+    st = json.load(open(EMAIL)); st.update(checado=0, chegou=0); json.dump(st, open(EMAIL, "w"))
+    assert "erro" in email_barra() and time.time() - json.load(open(EMAIL))["checado"] < 5
+    os.remove(EMAIL)
+    # reuniões: o que você deu (r ou h) vale sobre o palpite pelo título; nome livre vira o projeto da linha
+    global REUNIOES, reunioes_do_dia
+    REUNIOES, agora = os.path.join(RUN_DIR, "teste-reunioes.json"), time.time()
+    load = lambda: {"projetos": {"a": {"nome": "alpha"}, "r": {"nome": "rpa alpha"}}, "google": {"client_id": "x"}}
+    reunioes_do_dia = lambda dia: [[agora - 7200, agora - 5400, "Entrega Alpha Plast"], [agora - 3600, agora - 3000, "Alinhamento Decal"],
+                                   [agora + 600, agora + 1200, "Futura"]]
+    linhas, reun = horas_do_dia(date.today())
+    assert linhas == {("a", "Reunião", "Entrega Alpha Plast"): 30, (None, "Reunião", "Alinhamento Decal"): 10}, linhas
+    assert reun[("a", "Reunião", "Entrega Alpha Plast")][2] and reun[(None, "Reunião", "Alinhamento Decal")][1] == "Alinhamento Decal"
+    gravar_reuniao(agora - 7200, "Entrega Alpha Plast", {"pid": "r"})
+    gravar_reuniao(agora - 3600, "Alinhamento Decal", {"projeto": "Souv", "contexto": "protótipos Decal"})
+    linhas, reun = horas_do_dia(date.today())
+    assert linhas == {("r", "Reunião", "Entrega Alpha Plast"): 30, ("Souv", "Reunião", "protótipos Decal"): 10}, linhas
+    assert not any(x[2] for x in reun.values()) and nome_projeto(load(), "Souv") == "Souv" and nome_projeto(load(), "r") == "rpa alpha"
+    # horas: cada linha é um lançamento; o ajuste (horas, categoria, removida) vale só no dia e se desfaz
+    HORAS_DIR, hoje = os.path.join(RUN_DIR, "teste-horas"), date.today()
+    os.makedirs(HORAS_DIR, exist_ok=True)
+    cfg_h = dict(load(), horas={})
+    itens, med, pela_regra = itens_horas(cfg_h, hoje)
+    assert [(x["p"], x["lanc"]) for x in itens] == [("r", 30), ("Souv", 10)] and med == pela_regra == 40, itens
+    entrega, decal = itens
+    gravar_ajuste(hoje, decal["kid"], min=25, cat="Análise e estudo")
+    gravar_ajuste(hoje, entrega["kid"], fora=True)
+    itens, med, _ = itens_horas(cfg_h, hoje)
+    assert [(x["p"], x["cat"], x["lanc"], x["fora"]) for x in itens] == [("Souv", "Análise e estudo", 25, False),
+                                                                         ("r", "Reunião", 0, True)] and med == 10, itens
+    gravar_ajuste(hoje, entrega["kid"], fora=False)
+    gravar_ajuste(hoje, decal["kid"], min=None, cat=None)
+    assert json.load(open(ajustes_arq(hoje))) == {} and [x["lanc"] for x in itens_horas(cfg_h, hoje)[0]] == [30, 10]
+    shutil.rmtree(HORAS_DIR)
+    os.remove(REUNIOES)
     print("ok")
 
 
 if __name__ == "__main__":
-    for d in (MEM_DIR, RUN_DIR, WT_DIR):
+    for d in (MEM_DIR, RUN_DIR, WT_DIR, HORAS_DIR):
         os.makedirs(d, exist_ok=True)
     selftest() if sys.argv[1:] == ["--selftest"] else main()
