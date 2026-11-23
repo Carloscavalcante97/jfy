@@ -48,7 +48,7 @@ Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou 
 
 **Menu principal**: três seções. **Foco**: tasks de todos os projetos com prazo vencido ou nos próximos 7 dias e as de prioridade crítica, da mais urgente para a menos; o número abre a task direto. **Projetos**: os que têm tasks suas, com a contagem. **Sem task**: os configurados sem task aberta (manutenção: terminal livre ou sessão quando surgir algo). O repositório de cada projeto aparece no `c` da tela do projeto.
 - `jfy --hoje` imprime as reuniões de hoje e o foco, sem abrir o menu.
-- Na primeira vez em cada projeto, o jfy pede a pasta do repositório (navegador de pastas: número entra, `..` sobe, `s` escolhe, ou cole o caminho) e um nome.
+- Na primeira vez em cada projeto, o jfy pede a pasta do repositório (navegador de pastas: número entra, `..` sobe, `s` escolhe, ou cole o caminho) e um nome. Projeto com mais de um repositório (front e back, por exemplo): responda `s` em "Mais um repositório" e escolha o próximo. Na hora da task, o jfy pergunta quais ela usa (número = só esse, Enter = todos); o Claude abre no primeiro e enxerga os outros, e a branch da task é criada em cada um.
 - `l` abre um **terminal livre**: Claude com `--dangerously-skip-permissions` numa pasta que você escolhe, sem task.
 - `r` **reuniões de hoje**: escolha uma pelo número e diga o projeto (Enter aceita o palpite pelo título; ou escreva o nome do projeto no Journify, como `Souv`, se ele não estiver no jfy) e, se quiser, uma linha de contexto (ex.: "alinhamento de infra das duas Plastamps"). O jfy só grava: nada de Claude, nada de task. Nas horas, a reunião vai para esse projeto com o contexto como descrição. `p` + número abre a preparação com o Claude (opcional): o que avançou, o que espera alguém, bloqueios e perguntas.
 - `h` **horas**: abre a tabela de hoje para o [minhas-horas](https://journify.souv.tech/minhas-horas), uma linha por lançamento (veja [Horas](#horas)). `l` chama o Claude para lançar pelo Chrome. Também dá para rodar `jfy --horas -1` (ontem) ou `jfy --horas 20/11`.
@@ -64,7 +64,7 @@ Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou 
   - Depois de escolher, o jfy pergunta **"Algo a mais para o Claude?"**. Digite ou cole instruções extras e arraste arquivos (prints, PDFs, planilhas) para o terminal. Eles vão junto com a descrição da task. Linha vazia continua; Enter direto pula.
 - `s` **sessão**: um chat só para várias tasks, uma atrás da outra. O Claude lista as tasks, você escolhe, ele faz e no fim pergunta se segue com outra. No `/exit`, o jfy registra o tempo das tasks que ficaram abertas e garante o `handoff.md` de todas as tasks trabalhadas.
 - `l` **terminal livre** direto no repositório do projeto.
-- `c` troca o repositório do projeto.
+- `c` troca os repositórios do projeto.
 
 ### Abas
 

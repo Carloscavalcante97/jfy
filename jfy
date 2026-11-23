@@ -1255,16 +1255,48 @@ def escolher_pasta(inicio):
 def configurar(cfg, pid):
     p = cfg["projetos"].get(pid, {})
     ultimo = next((os.path.dirname(x["repo"]) for x in cfg["projetos"].values()), None)
-    repo = escolher_pasta(os.path.dirname(p["repo"]) if p else ultimo or os.path.expanduser("~/Documents"))
-    if not repo:
-        return False
-    padrao = p.get("nome") or os.path.basename(repo)
+    repos = []
+    while True:  # front e back, por exemplo: a task escolhe quais usa
+        repo = escolher_pasta(os.path.dirname(repos[-1] if repos else p["repo"]) if repos or p
+                              else ultimo or os.path.expanduser("~/Documents"))
+        if repo and repo not in repos:
+            repos.append(repo)
+        if not repos:
+            return False
+        print("\n Repositórios: " + ", ".join(c(os.path.basename(r), 78) for r in repos))
+        if escolha(" Mais um repositório neste projeto (front e back, por exemplo)? (s/n) [n] ", "sn") != "s":
+            break
+    padrao = p.get("nome") or os.path.basename(repos[0])
     nome = ask(f"Nome do projeto [{padrao}] (0 volta): ", padrao)
     if nome == "0":
         return False
-    cfg["projetos"][pid] = {"nome": nome, "repo": repo}
+    cfg["projetos"][pid] = {"nome": nome, "repo": repos[0], "repos": repos}
     save(cfg)
     return True
+
+
+def repos_de(proj):
+    return proj.get("repos") or [proj["repo"]]
+
+
+def repos_da_task(proj):
+    """Projeto com mais de um repo: a task escolhe um deles ou todos."""
+    rs = repos_de(proj)
+    if len(rs) < 2:
+        return rs
+    print(" Repositórios desta task:\n" + "\n".join(f" {c(f'{i:>2}', 39, True)}  {os.path.basename(r)}" for i, r in enumerate(rs, 1))
+          + "\n " + acoes_txt([("número", "só esse"), ("enter", "todos")], ""))
+    op = escolha(seta(), "", len(rs))
+    return [rs[int(op) - 1]] if op.isdigit() and 1 <= int(op) <= len(rs) else rs
+
+
+def add_dir(pastas):
+    """O Claude abre na primeira pasta e enxerga as outras."""
+    return ["--add-dir", *pastas[1:]] if pastas[1:] else []
+
+
+def nos_repos(pastas):
+    return f" Esta task usa {len(pastas)} repositórios: {', '.join(pastas)}." if pastas[1:] else ""
 
 
 # ---------- execução de uma task (roda na própria aba do tmux) ----------
@@ -1287,18 +1319,21 @@ def base(repo, tipo="feature"):
     return "HEAD"
 
 
-def garantir_branch(repo, titulo):
+def garantir_branch(repo, titulo, tipo=None):
+    """Devolve o tipo escolhido, para o próximo repo da mesma task não perguntar de novo."""
     atual = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if not atual or BRANCH_OK.match(atual):
-        return
-    op = escolha(f"Branch atual '{atual}' não é gitflow. Criar a branch da task:\n"
-                 f"  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "123") or "1"
-    if op == "0":
-        return
-    tipo = {"2": "bugfix", "3": "hotfix"}.get(op, "feature")
+        return tipo
+    if not tipo:
+        op = escolha(f"{os.path.basename(repo)}: branch atual '{atual}' não é gitflow. Criar a branch da task:\n"
+                     f"  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "123") or "1"
+        tipo = {"0": "nenhum", "2": "bugfix", "3": "hotfix"}.get(op, "feature")
+    if tipo == "nenhum":
+        return tipo
     nova = f"{tipo}/{slug(titulo)}"
     if git(repo, "switch", nova).returncode != 0:
         subprocess.run(["git", "switch", "--no-track", "-c", nova, base(repo, tipo)], cwd=repo)
+    return tipo
 
 
 def criar_worktree(repo, titulo):
@@ -1329,7 +1364,7 @@ def fechamento(pid_proj, task="a task que acabou de terminar"):
     mem = os.path.join(MEM_DIR, pid_proj + ".md")
     return (
         f"Encerramento de {task}. Faça as duas coisas abaixo e responda em uma linha.\n"
-        "1. Atualize handoff.md na raiz do repo. Se não existir, crie do zero lendo o repo (README, CLAUDE.md, "
+        "1. Atualize handoff.md na raiz do repo (de cada repo que a task mexeu, se forem vários). Se não existir, crie do zero lendo o repo (README, CLAUDE.md, "
         "specs/, git log, estrutura de pastas) com as seções: Visão geral; Stack e como rodar/testar; Estado atual "
         "(o que está pronto, branch, pendências); Histórico de tasks (uma linha por task: data, id Journify, título, "
         "resultado); Próximos passos; Decisões e pontos em aberto. Se já existir, atualize só as seções afetadas e "
@@ -1339,24 +1374,24 @@ def fechamento(pid_proj, task="a task que acabou de terminar"):
     )
 
 
-def fechar(sid, cwd, pedido):
+def fechar(sid, pastas, pedido):
     """Depois do /exit: handoff.md e memória, garantidos mesmo se o Claude não fez. Roda em segundo plano (jfy --fechar)
     para a aba fechar na hora."""
     # ponytail: reabrir a task no mesmo repo antes disso acabar (~1 min) pode cruzar com a escrita do handoff.md
     arq = os.path.join(RUN_DIR, sid + ".fechar")
     open(arq, "w").write(pedido)
-    subprocess.Popen([SELF, "--fechar", sid, cwd, arq], start_new_session=True, stdin=subprocess.DEVNULL,
+    subprocess.Popen([SELF, "--fechar", sid, pastas[0], arq, *pastas[1:]], start_new_session=True, stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "fechar.log"), "a"))
     print(dim("handoff.md e memória do projeto: atualizando em segundo plano."))
 
 
-def fechar_agora(sid, cwd, arq):
+def fechar_agora(sid, cwd, arq, *outras):
     pedido = open(arq).read()
     os.remove(arq)
     # retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
     subprocess.call(["claude", "-p", "--resume", sid, "--permission-mode", "acceptEdits", "--allowedTools",
                      "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
-                     "Bash(ls:*)", "--", pedido], cwd=cwd, env=dict(os.environ, JFY_SEM_AVISO="1"),
+                     "Bash(ls:*)", *add_dir([cwd, *outras]), "--", pedido], cwd=cwd, env=dict(os.environ, JFY_SEM_AVISO="1"),
                     stdout=subprocess.DEVNULL)
     # ponytail: o worktree fica (com o handoff.md pendente); git worktree remove depois do merge
 
@@ -1370,15 +1405,24 @@ def preparar_repo(repo, nome_wt):
     return repo, lock
 
 
-def abrir_claude(cwd, contexto, pedido, lock, sid=None, extra=()):
+def preparar_repos(repos, nome_wt):
+    pastas, locks = [], []
+    for r in repos:
+        cwd, lock = preparar_repo(r, nome_wt)
+        pastas.append(cwd)
+        locks += [lock] if lock else []
+    return pastas, locks
+
+
+def abrir_claude(cwd, contexto, pedido, locks, sid=None, extra=()):
     """Roda o Claude até o /exit. Devolve a hora (epoch) em que ele abriu."""
     cronometro("ligar")
     t0 = time.time()
     try:
         subprocess.call(["claude", "--append-system-prompt", contexto, *extra] + (["--session-id", sid] if sid else [])
-                        + ([pedido] if pedido else []), cwd=cwd)
+                        + (["--", pedido] if pedido else []), cwd=cwd)
     finally:
-        if lock:
+        for lock in locks or ():
             os.remove(lock)
     return t0
 
@@ -1417,12 +1461,13 @@ def rodar(tid, modo="pipeline"):
     task = mcp("obter_task", taskId=tid)["task"]
     pid_proj = task["projectId"]
     proj = cfg["projetos"][pid_proj]
-    repo = proj["repo"]
     print(c(f" {proj['nome']} ", cor_projeto(pid_proj), True) + " " + c(task["title"], 255, True) + "\n")
 
-    cwd, lock = preparar_repo(repo, task["title"])
-    if lock and modo == "pipeline":
-        garantir_branch(repo, task["title"])
+    pastas, locks = preparar_repos(repos_da_task(proj), task["title"])
+    tipo = None
+    for p in pastas if modo == "pipeline" else ():
+        if not p.startswith(WT_DIR):  # worktree já nasce na branch da task
+            tipo = garantir_branch(p, task["title"], tipo)
     inicio(tid)
     arq = os.path.join(RUN_DIR, tid + ".extra")  # escrito pela tela_task
     notas = ""
@@ -1436,9 +1481,10 @@ def rodar(tid, modo="pipeline"):
         pedido = (f"Task Journify {tid}: \"{task['title']}\". Leia com mcp__journify__obter_task e me ajude a entregá-la "
                   "(estudo, análise, documento, o que ela pedir). Nada vai para o Journify (comentário, status) sem eu aprovar."
                   + notas)
-    contexto = contexto_projeto(proj, pid_proj) + " Não mude status nem registre tempo no Journify: o jfy faz isso ao sair."
+    contexto = (contexto_projeto(proj, pid_proj) + nos_repos(pastas)
+                + " Não mude status nem registre tempo no Journify: o jfy faz isso ao sair.")
     sid = str(uuid.uuid4())
-    minutos = minutos_uteis(abrir_claude(cwd, contexto, pedido, lock, sid), time.time())
+    minutos = minutos_uteis(abrir_claude(pastas[0], contexto, pedido, locks, sid, add_dir(pastas)), time.time())
 
     print("\n" + c(" Fim da sessão ", 39, True) + " " + task["title"])
     op = escolha(f" 1) pronta: registrar tempo e mover para {status(STATUS_FIM)}\n"
@@ -1449,7 +1495,7 @@ def rodar(tid, modo="pipeline"):
     else:
         m = ask(f"Tempo gasto, já sem as reuniões (80, 1h20) [{fmt_min(minutos)}]: ")
         fim(tid, ler_minutos(m) or minutos, op == "1", modo=modo)
-    fechar(sid, cwd, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
+    fechar(sid, pastas, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
     ask(dim("Enter fecha esta aba."))
 
 
@@ -1457,10 +1503,9 @@ def sessao(pid_proj):
     """Um chat só para várias tasks do projeto, uma atrás da outra."""
     cfg = load()
     proj = cfg["projetos"][pid_proj]
-    repo = proj["repo"]
     tasks = mcp("minhas_tasks", projetoId=pid_proj)
     print(c(f" {proj['nome']} ", cor_projeto(pid_proj), True) + " " + c("sessão de tasks", 255, True) + "\n")
-    cwd, lock = preparar_repo(repo, "sessao")
+    pastas, locks = preparar_repos(repos_de(proj), "sessao")
     lista = "\n".join(f"{i}. [{t['statusId']}] {t['title']} ({t['id']})" for i, t in enumerate(tasks, 1))
     pedido = f"""Sessão de várias tasks do projeto '{proj['nome']}' num chat só. Minhas tasks abertas:
 {lista}
@@ -1474,7 +1519,7 @@ Regras desta sessão:
 - Logo depois do --fim, faça o encerramento da task: {fechamento(pid_proj)}
 - Depois atualize a lista com mcp__journify__minhas_tasks (projetoId {pid_proj}) e pergunte se seguimos com outra."""
     sid = str(uuid.uuid4())
-    abrir_claude(cwd, contexto_projeto(proj, pid_proj), pedido, lock, sid)
+    abrir_claude(pastas[0], contexto_projeto(proj, pid_proj) + nos_repos(pastas), pedido, locks, sid, add_dir(pastas))
 
     for t in tasks:  # tasks que ficaram com o relógio ligado
         if os.path.exists(os.path.join(RUN_DIR, t["id"] + ".t")):
@@ -1483,7 +1528,7 @@ Regras desta sessão:
                 os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
                 continue
             fim(t["id"], ler_minutos(m), escolha("Está pronta? (s/n) [n]: ", "sn") == "s")
-    fechar(sid, cwd, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
+    fechar(sid, pastas, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
                      "'nada a atualizar'. Senão, confira o encerramento de todas as tasks trabalhadas (inclusive as "
                      "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"))
     ask(dim("Enter fecha esta aba."))
@@ -1494,11 +1539,12 @@ def livre(pasta):
     Se a pasta é o repo de um projeto configurado, carrega a memória dele."""
     achado = next(((k, p) for k, p in load()["projetos"].items()
                    if os.path.realpath(p["repo"]).lower() == os.path.realpath(pasta).lower()), None)
+    pastas = [pasta] + [r for r in repos_de(achado[1]) if r != pasta] if achado else [pasta]
     nome = achado[1]["nome"] if achado else os.path.basename(pasta)
     print(c(f" {nome} ", cor_projeto(achado[0] if achado else pasta), True) + " " + c("terminal livre", 255, True) + "\n")
     contexto = contexto_projeto(achado[1], achado[0]) if achado else "Terminal livre aberto pelo jfy."
     # ponytail: sem lock nem worktree, é uso solto; cuidado ao rodar junto com uma task no mesmo repo
-    t0 = abrir_claude(pasta, contexto, None, None, extra=["--dangerously-skip-permissions"])
+    t0 = abrir_claude(pasta, contexto + nos_repos(pastas), None, None, extra=["--dangerously-skip-permissions", *add_dir(pastas)])
     registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "livre", pid=achado[0] if achado else None,
                     titulo="Terminal livre" + ("" if achado else f" em {os.path.basename(pasta)}"))
 
@@ -1704,7 +1750,7 @@ def tela_projeto(cfg, pid):
             itens.append((f"{col}  " if w else "") + tit + (dim(f"  · {st}") if st else ""))
         nome = c(cfg["projetos"][pid]["nome"], cor_projeto(pid), True)
         op = menu(f"{nome} · minhas tasks ({len(tasks)})", itens or [(dim("nenhuma task sua neste projeto"),)],
-                  [("s", "sessão (várias tasks num chat)"), ("l", "terminal livre"), ("c", "trocar repo"),
+                  [("s", "sessão (várias tasks num chat)"), ("l", "terminal livre"), ("c", "trocar repos"),
                    ("enter", "atualiza")], teclas="slc")
         if op == "0":
             return
@@ -2024,7 +2070,7 @@ def main():
     if a[:1] == ["--reuniao"]:
         return preparar(a[1])
     if a[:1] == ["--fechar"]:  # fechamento de uma task em segundo plano
-        return fechar_agora(*a[1:4])
+        return fechar_agora(*a[1:])
     if a[:1] == ["--email"]:  # clique no ✉ da barra
         return ler_emails()
     if a[:1] == ["--entrar"]:  # Ctrl-b m
@@ -2049,6 +2095,8 @@ def main():
 
 def selftest():
     import base64, glob
+    assert repos_de({"repo": "/a"}) == ["/a"] and repos_da_task({"repo": "/a", "repos": ["/a"]}) == ["/a"]
+    assert add_dir(["/a"]) == [] and add_dir(["/a", "/b", "/c"]) == ["--add-dir", "/b", "/c"]
     for x in glob.glob(os.path.join(RUN_DIR, "teste-*")):
         shutil.rmtree(x) if os.path.isdir(x) else os.remove(x)
     d = {"type": "doc", "content": [
