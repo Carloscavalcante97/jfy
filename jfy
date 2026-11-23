@@ -603,6 +603,7 @@ def login():
                                     grant_type="authorization_code", code_verifier=verif))
     chaves("jfy-google", tok["refresh_token"])
     chaves("jfy-google-acesso", json.dumps({"token": tok["access_token"], "expira": time.time() + tok.get("expires_in", 3600)}))
+    cfg["google"].pop("conta", None)
     save(cfg)
     try:
         n, m = len(agenda_google()), len(gmail_nao_lidos(tok["access_token"]))
@@ -720,6 +721,16 @@ def corpo_email(payload):
     return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip(), anexos
 
 
+def link_gmail(tok, thread):
+    """Link do email no Gmail na conta do jfy. u/0 abre a primeira conta logada no navegador, que pode ser outra."""
+    cfg = load()
+    conta = cfg["google"].get("conta")
+    if not conta:  # uma vez só; o jfy --login limpa (pode ter trocado de conta)
+        conta = cfg["google"]["conta"] = http_json(GMAIL.rsplit("/", 1)[0] + "/profile", token=tok)["emailAddress"]
+        save(cfg)
+    return f"https://mail.google.com/mail/u/{urllib.parse.quote(conta, safe='@')}/#inbox/{thread}"
+
+
 def ler_email(tok, mid):
     """Abre um email no less (q volta). Só lê: continua não lido no Gmail."""
     m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
@@ -728,7 +739,7 @@ def ler_email(tok, mid):
     topo = (f"{c('De:', 39, True)} {h.get('from', '')}\n{c('Para:', 39, True)} {h.get('to', '')}\n"
             f"{c('Data:', 39, True)} {h.get('date', '')}\n{c(h.get('subject') or '(sem assunto)', 255, True)}\n"
             + (dim("Anexos: " + ", ".join(anexos)) + "\n" if anexos else ""))
-    link = f"https://mail.google.com/mail/u/0/#inbox/{m['threadId']}"
+    link = link_gmail(tok, m["threadId"])
     subprocess.run(["less", "-R", "-Ps q volta "], input=f"{topo}\n{texto}\n\n{dim('No Gmail: ' + link)}\n", text=True)
 
 
@@ -760,7 +771,7 @@ def ler_emails():
         try:
             if op.startswith("o"):
                 m = http_json(f"{GMAIL}/{ids[int(n) - 1]}?format=minimal", token=tok)
-                subprocess.run(["open", f"https://mail.google.com/mail/u/0/#inbox/{m['threadId']}"])
+                subprocess.run(["open", link_gmail(tok, m["threadId"])])
             else:
                 ler_email(tok, ids[int(n) - 1])
         except Exception as e:

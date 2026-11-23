@@ -96,10 +96,30 @@ if ja "jfy.*--avisar" || quer "Aviso no macOS quando o Claude responde ou pede p
   fi
   ajustar aviso && ok "aviso do Claude no macOS" || aviso "não liguei o aviso do Claude"
 fi
-if [ -f "$HOME/Library/Fonts/JFYMono.ttf" ] || quer "Fonte JFY Mono, com os ícones em pixel art dos temas? Vai para ~/Library/Fonts."; then
-  mkdir -p "$HOME/Library/Fonts"
-  cp "$DIR/fonte/JFYMono.ttf" "$HOME/Library/Fonts/JFYMono.ttf"
-  ok "fonte JFY Mono: escolha \"JFY Mono\" no seu terminal e reinicie ele (os temas, menos o Padrão, usam os ícones dela)"
+# fonte JFY Mono (Maple Mono + ícones em pixel art dos temas): sempre; sem ela os temas mostram "?"
+mkdir -p "$HOME/Library/Fonts"
+cp "$DIR/fonte/JFYMono.ttf" "$HOME/Library/Fonts/JFYMono.ttf"
+ok "fonte JFY Mono instalada"
+WARP="$HOME/.warp/settings.toml"
+if grep -qs '^font_name = "JFY Mono"' "$WARP"; then
+  ok "Warp já usa a JFY Mono"
+elif [ -f "$WARP" ] && quer "Usar a JFY Mono no Warp? Muda a fonte do terminal em ~/.warp/settings.toml (o tamanho continua)."; then
+  /usr/bin/python3 - "$WARP" <<'EOF'
+import re, shutil, sys
+p = sys.argv[1]
+shutil.copy2(p, p + ".antes-do-jfy")  # cópia para voltar atrás
+s = open(p).read()
+if re.search(r"(?m)^font_name = ", s):
+    s = re.sub(r'(?m)^font_name = .*$', 'font_name = "JFY Mono"', s, count=1)
+elif "[appearance.text]" in s:
+    s = s.replace("[appearance.text]\n", '[appearance.text]\nfont_name = "JFY Mono"\n', 1)
+else:
+    s = s.rstrip("\n") + '\n\n[appearance.text]\nfont_name = "JFY Mono"\n'
+open(p, "w").write(s)
+EOF
+  ok "Warp com a JFY Mono: feche e abra o Warp (⌘Q) para valer"
+else
+  aviso "escolha \"JFY Mono\" como fonte do seu terminal e reinicie ele, senão os ícones dos temas aparecem como ?"
 fi
 PLIST="$HOME/Library/LaunchAgents/jfy.dia.plist"
 if [ -f "$PLIST" ] || quer "Notificação às 7h (seg a sex) com as reuniões e as tasks no foco? Cria um LaunchAgent."; then

@@ -20,10 +20,10 @@ O `install.sh`:
 - coloca o comando `jfy` no PATH;
 - baixa a pipeline oficial do time ([pipeline-Claude](https://github.com/Carloscavalcante97/pipeline-Claude)) em `~/.jfy/pipeline-Claude` e liga o `/pipeline`, os agentes (planner, builder, verifier, e2e-tester, committer, pr-creator) e os hooks no seu `~/.claude`. Se você já tem um arquivo com o mesmo nome e conteúdo diferente, ele mantém o seu e avisa;
 - confere se o MCP do Journify está configurado e roda um autoteste;
+- instala a fonte **JFY Mono** (a Maple Mono com os ícones em pixel art dos temas) e, no Warp, oferece já deixar ela como fonte do terminal. Em outro terminal, escolha "JFY Mono" nas preferências. Nos dois casos, feche e abra o terminal (⌘Q);
 - pergunta, um por um, se você quer os extras. Responda `n` em todos para ficar só com o menu de tasks. O que você já ligou antes não é perguntado de novo:
   - **uso da IA na barra**: muda o `statusLine` do `~/.claude/settings.json`;
   - **aviso do Claude no macOS**: dois hooks no `~/.claude/settings.json` (valem para todo Claude Code) e o `terminal-notifier`;
-  - **fonte JFY Mono** (a Maple Mono com os ícones em pixel art dos temas). Escolha "JFY Mono" como fonte do seu terminal (no Warp: Settings > Appearance) e reinicie o terminal com ⌘Q;
   - **notificação das 7h**: um LaunchAgent.
 
 ### 2. Rodar
@@ -112,7 +112,7 @@ O uso da IA vem do statusline do Claude Code (o `install.sh` faz ele gravar uma 
 | GTA | mira | celular | nota de dinheiro | saco de dinheiro | palmeira | estrelas de procurado |
 | Mordor | vulcão | lobo | chama | o Anel | caveira | o Olho |
 
-Os ícones em pixel art só aparecem com a fonte **JFY Mono** no terminal (o `install.sh` instala, se você aceitar). O Padrão usa caracteres comuns e funciona com qualquer fonte. Para mudar ou criar um ícone, edite o desenho em `fonte/icones.txt` e gere a fonte de novo (o comando está no topo de `fonte/patch.py`).
+Os ícones em pixel art só aparecem com a fonte **JFY Mono** no terminal (o `install.sh` instala). O Padrão usa caracteres comuns e funciona com qualquer fonte. Para mudar ou criar um ícone, edite o desenho em `fonte/icones.txt` e gere a fonte de novo (o comando está no topo de `fonte/patch.py`).
 
 ### Google: agenda e Gmail
 
