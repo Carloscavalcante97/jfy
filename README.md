@@ -20,7 +20,7 @@ O `install.sh`:
 - coloca o comando `jfy` no PATH;
 - baixa a pipeline oficial do time ([pipeline-Claude](https://github.com/Carloscavalcante97/pipeline-Claude)) em `~/.jfy/pipeline-Claude` e liga o `/pipeline`, os agentes (planner, builder, verifier, e2e-tester, committer, pr-creator) e os hooks no seu `~/.claude`. Se você já tem um arquivo com o mesmo nome e conteúdo diferente, ele mantém o seu e avisa;
 - confere se o MCP do Journify está configurado e roda um autoteste;
-- instala a fonte **JFY Mono** (a Maple Mono com os ícones em pixel art dos temas) e, no Warp, oferece já deixar ela como fonte do terminal. Em outro terminal, escolha "JFY Mono" nas preferências. Nos dois casos, feche e abra o terminal (⌘Q);
+- instala a fonte **JFY Mono** (a Maple Mono com os ícones em pixel art dos temas) e oferece já deixar ela como fonte do terminal: no Terminal do macOS vale na hora; no Warp, feche e abra ele (⌘Q). Em outro terminal, escolha "JFY Mono" nas preferências. `jfy --fonte` faz isso de novo;
 - pergunta, um por um, se você quer os extras. Responda `n` em todos para ficar só com o menu de tasks. O que você já ligou antes não é perguntado de novo:
   - **uso da IA na barra**: muda o `statusLine` do `~/.claude/settings.json`;
   - **aviso do Claude no macOS**: dois hooks no `~/.claude/settings.json` (valem para todo Claude Code) e o `terminal-notifier`;

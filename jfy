@@ -1896,13 +1896,44 @@ def ok_tema():
     return "tema" in load()
 
 
-def guia_tema(cfg):
+def usar_fonte():
+    """Instala a JFY Mono (se faltar) e põe ela no terminal de onde o jfy foi aberto: Terminal do macOS na hora,
+    Warp no settings.toml (vale depois de reabrir). Outro terminal: só a instrução. Devolve a mensagem."""
     fonte = os.path.expanduser("~/Library/Fonts/JFYMono.ttf")
-    if not os.path.exists(fonte):  # quem disse n à fonte no install.sh
+    if not os.path.exists(fonte):
         os.makedirs(os.path.dirname(fonte), exist_ok=True)
         shutil.copy2(os.path.join(os.path.dirname(SELF), "fonte", "JFYMono.ttf"), fonte)
-    print(" Os temas usam a fonte " + c("JFY Mono", 255, True) + " (já instalada). Escolha ela no terminal:\n"
-          + dim(" no Warp, Settings > Appearance > Text > Font; depois feche e abra o Warp (⌘Q).") + "\n")
+    app = os.environ.get("__CFBundleIdentifier", "")  # o terminal de onde o jfy veio (o tmux mantém)
+    if app == "com.apple.Terminal":
+        # perfil padrão (janelas novas) e as abas abertas; o tamanho da letra continua
+        r = subprocess.run(["osascript", "-e", '''tell application "Terminal"
+            set font name of default settings to "JFY Mono"
+            repeat with w in windows
+                repeat with t in tabs of w
+                    set font name of current settings of t to "JFY Mono"
+                end repeat
+            end repeat
+        end tell'''], capture_output=True)
+        if r.returncode == 0:
+            return "Terminal com a JFY Mono."
+    warp = os.path.expanduser("~/.warp/settings.toml")
+    if app.startswith("dev.warp") and os.path.exists(warp):
+        t = open(warp).read()
+        if not re.search(r'(?m)^font_name = "JFY Mono"$', t):
+            shutil.copy2(warp, warp + ".antes-do-jfy")  # cópia para voltar atrás
+            if re.search(r"(?m)^font_name = ", t):
+                t = re.sub(r"(?m)^font_name = .*$", 'font_name = "JFY Mono"', t, count=1)
+            elif "[appearance.text]\n" in t:
+                t = t.replace("[appearance.text]\n", '[appearance.text]\nfont_name = "JFY Mono"\n', 1)
+            else:
+                t = t.rstrip("\n") + '\n\n[appearance.text]\nfont_name = "JFY Mono"\n'
+            open(warp, "w").write(t)
+        return "Warp com a JFY Mono: feche e abra o Warp (⌘Q) para valer."
+    return 'Escolha "JFY Mono" como fonte nas preferências do seu terminal e reabra ele.'
+
+
+def guia_tema(cfg):
+    print(" Os temas usam a fonte " + c("JFY Mono", 255, True) + ". " + usar_fonte() + "\n")
     ask(dim(" Enter para escolher o tema."))
     tela_tema()
     return ok_tema()
@@ -1979,6 +2010,8 @@ def main():
     if a[:1] == ["--hoje"]:  # o dia sem abrir o menu
         titulo, linhas = resumo_dia()
         return print(c(titulo, 39, True) + "\n" + "\n".join(linhas))
+    if a[:1] == ["--fonte"]:  # install.sh: JFY Mono no terminal em uso
+        return print(usar_fonte())
     if a[:1] == ["--comecar"]:  # primeiros passos de novo (Journify, notificações, Google, projetos, tema)
         return primeiros_passos()
     if a[:1] == ["--login"]:  # Google: agenda e Gmail
