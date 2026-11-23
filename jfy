@@ -127,7 +127,7 @@ def mcp(tool, **args):
     # ponytail: lê URL e token do ~/.claude.json, um só lugar para trocar o token (claude mcp add)
     srv = json.load(open(os.path.expanduser("~/.claude.json"))).get("mcpServers", {}).get("journify")
     if not srv:
-        raise RuntimeError("MCP 'journify' não configurado no escopo user (veja o README, passo 2)")
+        raise RuntimeError("MCP 'journify' não configurado: rode jfy --comecar")
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}
     hdr = dict(srv["headers"], **{"Content-Type": "application/json", "Accept": "application/json, text/event-stream"})
     raw = urllib.request.urlopen(urllib.request.Request(srv["url"], json.dumps(body).encode(), hdr), timeout=30).read().decode()
@@ -400,15 +400,56 @@ def git(cwd, *args):
 
 
 # ---------- barra do tmux (reunião, uso da IA, jornada) e notificações do macOS ----------
+def rgb256(n):
+    """Cor 256 do terminal -> (r, g, b). ponytail: só 16-255 (as dos temas); as 16 básicas variam por terminal."""
+    if n >= 232:
+        return (8 + 10 * (n - 232),) * 3
+    nv = [0, 95, 135, 175, 215, 255]
+    return nv[(n - 16) // 36], nv[(n - 16) // 6 % 6], nv[(n - 16) % 6]
+
+
+def png(caminho, desenho, rgb, escala=12):
+    """Pixel art ('#' pinta, '.' vazio) -> PNG quadrado, fundo transparente, sem dependência (zlib + struct)."""
+    import struct, zlib
+    larg = max(map(len, desenho))
+    lado = max(len(desenho), larg) + 2  # quadrado, com 1 pixel de margem
+    y0, x0 = (lado - len(desenho)) // 2, (lado - larg) // 2
+    cheio = lambda y, x: 0 <= y - y0 < len(desenho) and 0 <= x - x0 < len(desenho[y - y0]) and desenho[y - y0][x - x0] == "#"
+    cor, nada = bytes(rgb) + b"\xff", bytes(4)
+    linha = lambda y: b"\0" + b"".join((cor if cheio(y, x) else nada) * escala for x in range(lado))
+    bruto = b"".join(linha(y) * escala for y in range(lado))
+    bloco = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    open(caminho, "wb").write(b"\x89PNG\r\n\x1a\n" + bloco(b"IHDR", struct.pack(">IIBBBBB", lado * escala, lado * escala, 8, 6, 0, 0, 0))
+                              + bloco(b"IDAT", zlib.compress(bruto)) + bloco(b"IEND", b""))
+
+
+def imagem_tema():
+    """Imagem do tema atual para a direita da notificação: quem anda na barra da IA, ou a chama do jfy.
+    Gerada uma vez em ~/.jfy/notif/ (apague a pasta para gerar de novo depois de mexer no icones.txt)."""
+    nome = load().get("tema", "Padrão")
+    tema, arq = TEMAS.get(nome, {}), os.path.join(HOME, "notif", slug(nome) + ".png")
+    if not os.path.exists(arq):
+        txt = open(os.path.join(os.path.dirname(SELF), "fonte", "icones.txt")).read()
+        quem = (tema.get("andador") or ["chama"])[0]
+        desenho = re.search(rf"^== {re.escape(quem)} [0-9A-F ]+\n((?:[.#]+\n)+)", txt, re.M)[1].split()
+        os.makedirs(os.path.dirname(arq), exist_ok=True)
+        png(arq, desenho, rgb256(tema.get(39, 202)))  # cor de destaque do tema; no Padrão, o laranja da chama do jfy
+    return arq
+
+
 def notificar(titulo, texto, abrir=None, executar=None):
     """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
-    (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, a do osascript (clique não faz nada)."""
+    (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, ou sem permissão, a do osascript (o clique abre o Editor de Scripts)."""
     tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
                                                                  "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
     if tn:
         app = os.environ.get("__CFBundleIdentifier")  # o terminal de onde o jfy (ou o Claude) foi aberto
         extra = (["-open", abrir] if abrir else []) + (["-execute", executar] if executar else []) \
             + (["-activate", app] if app and not abrir else [])
+        try:
+            extra += ["-contentImage", "file://" + urllib.parse.quote(imagem_tema())]
+        except Exception:  # sem imagem, a notificação sai do mesmo jeito
+            pass
         if subprocess.run([tn, "-title", titulo, "-message", texto.lstrip("-[") or " ", "-sound", "Glass", *extra],
                           capture_output=True).returncode == 0:
             return
@@ -827,7 +868,8 @@ def atalhos():
                   ("d", "descrição inteira e comentários"), ("a + número", "abre o anexo no navegador"),
                   ("p", "definir prazo"), ("w", "abre a task no Journify"),
                   ("/exit", "no Claude: encerra e registra o tempo")]),
-        ("No terminal", [("jfy", "abre ou volta para o jfy"), ("jfy --hoje", "reuniões e foco de hoje"),
+        ("No terminal", [("jfy", "abre ou volta para o jfy"), ("jfy --comecar", "primeiros passos de novo"),
+                         ("jfy --hoje", "reuniões e foco de hoje"),
                          ("jfy --horas -1", "horas de ontem (ou 20/11)"), ("jfy --login", "conecta agenda e Gmail")]),
     ]
     for titulo, itens in secoes:
@@ -1651,6 +1693,8 @@ def tela_projeto(cfg, pid):
 
 
 def principal():
+    if not load().get("comecou"):  # primeiro acesso: guia o que falta antes do menu
+        primeiros_passos()
     tasks, buscado = [], 0
     while True:
         try:
@@ -1715,6 +1759,177 @@ def principal():
             ask(c(f"Erro: {e}. Enter para tentar de novo.", 203))
 
 
+# ---------- primeiro acesso: um caminho guiado, um passo de cada vez ----------
+MCP_URL = "https://journify.souv.tech/api/mcp/journify/mcp"
+AJUSTES_NOTIF = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+
+
+def ok_journify():
+    try:
+        mcp("minhas_tasks")
+        return True
+    except Exception:
+        return False
+
+
+def guia_journify(cfg):
+    import getpass
+    subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/settings"])
+    print(" Abri as Configurações do Journify. Em " + c("Conectar meu Claude", 255, True) + ", clique em "
+          + c("Gerar token", 255, True) + " e copie o token.\n Ele é pessoal: não aparece na tela nem vai para outro lugar.\n")
+    tok = getpass.getpass(" Cole o token e dê Enter (vazio volta): ").strip().removeprefix("Bearer ").strip()
+    if not tok:
+        return False
+    subprocess.run(["claude", "mcp", "remove", "journify", "--scope", "user"], capture_output=True)  # troca um token velho
+    subprocess.run(["claude", "mcp", "add", "--transport", "http", "journify", MCP_URL,
+                    "--header", f"Authorization: Bearer {tok}", "--scope", "user"], capture_output=True)
+    if ok_journify():
+        return True
+    ask(c(" O Journify não aceitou esse token. Enter para continuar.", 203))
+    return False
+
+
+def ok_notificacoes():
+    return bool(load().get("notificacoes"))
+
+
+def guia_notificacoes(cfg):
+    tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
+                                                                 "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
+    if not tn and shutil.which("brew"):
+        print(dim(" Instalando o terminal-notifier (é ele que faz o clique levar para a aba certa)...\n"))
+        subprocess.run(["brew", "install", "terminal-notifier"])
+        tn = shutil.which("terminal-notifier") or "/opt/homebrew/bin/terminal-notifier"
+    if not tn or not os.path.exists(tn):
+        ask(c(" Sem Homebrew não dá para instalar o terminal-notifier. Instale o Homebrew (brew.sh) e rode jfy --comecar.", 214))
+        return False
+    while True:
+        rc = subprocess.run([tn, "-title", "jfy", "-message", "Notificações ligadas. Pode clicar: volta para o terminal.",
+                             "-sound", "Glass", "-contentImage", "file://" + urllib.parse.quote(imagem_tema()),
+                             *(["-activate", os.environ["__CFBundleIdentifier"]] if os.environ.get("__CFBundleIdentifier") else [])],
+                            capture_output=True).returncode
+        if rc == 0:
+            r = escolha(" Mandei uma notificação de teste. Ela apareceu?\n " + acoes_txt([("enter", "sim"), ("n", "não")], "")
+                        + "\n" + seta(), "n")
+            if r != "n":
+                gravar = load()
+                gravar["notificacoes"] = True
+                save(gravar)
+                return True
+        subprocess.run(["open", AJUSTES_NOTIF])
+        print("\n Abri " + c("Ajustes do Sistema > Notificações", 255, True) + ". Procure " + c("terminal-notifier", 255, True)
+              + " na lista e ligue " + c("Permitir notificações", 255, True) + ".\n Em estilo, " + c("Alertas", 255, True)
+              + " deixa o aviso na tela até você clicar.\n")
+        if escolha(" " + acoes_txt([("enter", "testar de novo"), ("p", "pular")], "") + "\n" + seta(), "p") == "p":
+            return False
+
+
+def ok_google():
+    return bool(chaves("jfy-google"))
+
+
+def guia_google(cfg):
+    login()  # abre o JSON do app no Drive na primeira vez
+    return ok_google()
+
+
+def projetos_sem_pasta():
+    try:
+        tasks = mcp("minhas_tasks")
+    except Exception:
+        return None  # sem Journify não dá para saber
+    cfg = load()
+    sem = {}
+    for t in tasks:
+        if t["projectId"] not in cfg["projetos"]:
+            sem.setdefault(t["projectId"], t["title"])
+    return sem
+
+
+def ok_projetos():
+    return projetos_sem_pasta() == {}
+
+
+def guia_projetos(cfg):
+    sem = projetos_sem_pasta()
+    if sem is None:
+        ask(c(" Sem o Journify não dá para saber seus projetos: fica para depois. Enter para continuar.", 214))
+        return None  # conta como pulado
+    for i, (pid, exemplo) in enumerate(sem.items(), 1):
+        limpar()
+        print(c(f" Seus projetos · {i} de {len(sem)} ", 39, True) + "\n\n Projeto com task sua, ainda sem pasta. Uma das tasks:\n "
+              + c(corta(exemplo, 90), 255, True) + "\n\n Escolha a pasta do repositório dele; o jfy abre o Claude ali.\n")
+        if escolha(" " + acoes_txt([("enter", "escolher a pasta"), ("p", "pular este")], "") + "\n" + seta(), "p") != "p":
+            configurar(load(), pid)
+    return ok_projetos()
+
+
+def ok_tema():
+    return "tema" in load()
+
+
+def guia_tema(cfg):
+    fonte = os.path.expanduser("~/Library/Fonts/JFYMono.ttf")
+    if not os.path.exists(fonte):  # quem disse n à fonte no install.sh
+        os.makedirs(os.path.dirname(fonte), exist_ok=True)
+        shutil.copy2(os.path.join(os.path.dirname(SELF), "fonte", "JFYMono.ttf"), fonte)
+    print(" Os temas usam a fonte " + c("JFY Mono", 255, True) + " (já instalada). Escolha ela no terminal:\n"
+          + dim(" no Warp, Settings > Appearance > Text > Font; depois feche e abra o Warp (⌘Q).") + "\n")
+    ask(dim(" Enter para escolher o tema."))
+    tela_tema()
+    return ok_tema()
+
+
+PASSOS = [("Journify", "suas tasks e projetos", ok_journify, guia_journify),
+          ("Notificações", "o clique leva para a aba do Claude", ok_notificacoes, guia_notificacoes),
+          ("Agenda e Gmail", "próxima reunião e emails na barra", ok_google, guia_google),
+          ("Seus projetos", "a pasta de cada projeto", ok_projetos, guia_projetos),
+          ("Tema e fonte", "cores e ícones do jfy", ok_tema, guia_tema)]
+
+
+def primeiros_passos():
+    """Primeiro acesso (ou jfy --comecar): confere cada passo de verdade e guia só o que falta, em ordem.
+    Enter faz, p pula, 0 deixa para depois. Passo já feito nem aparece como pergunta."""
+    estado = [ok() for _, _, ok, _ in PASSOS]  # True feito, False falta, None pulado
+    fez_algo = False
+    for i, (nome, para, ok, guia) in enumerate(PASSOS):
+        while estado[i] is False:
+            limpar()
+            print(c(f" jfy · primeiros passos  {i + 1} de {len(PASSOS)} ", 39, True) + "\n")
+            for k, (n, p, *_) in enumerate(PASSOS):
+                marca = (c("✓", 78, True) if estado[k] else dim("–") if estado[k] is None
+                         else c("●", 39, True) if k == i else dim("○"))
+                print(f" {marca} {c(n.ljust(16), 255, True) if k == i else n.ljust(16)} {dim(p)}")
+            print("\n " + acoes_txt([("enter", f"fazer: {nome.lower()}"), ("p", "pular")], "0 deixa para depois (jfy --comecar)"))
+            op = escolha(seta(), "p")
+            if op == "0":
+                gravar = load()
+                gravar["comecou"] = True
+                return save(gravar)
+            if op == "p":
+                estado[i] = None
+                continue
+            print()
+            fez_algo = True
+            r = guia(load())
+            estado[i] = None if r is None else bool(r)  # None: o próprio passo desistiu (ex.: sem Journify)
+    gravar = load()
+    gravar["comecou"] = True
+    save(gravar)
+    if not fez_algo:  # já estava tudo pronto: direto para o menu
+        return
+    limpar()
+    pulados = [n for (n, *_), e in zip(PASSOS, estado) if e is None]
+    print(c(" jfy · tudo pronto ", 39, True) + "\n\n"
+          + (dim(f" Ficou para depois: {', '.join(pulados)}. Rode jfy --comecar quando quiser.\n\n") if pulados else "")
+          + " " + c("Como usar", 244, True) + "\n"
+          + "\n".join(f" {c(k.ljust(9), 39, True)} {t}" for k, t in (
+              ("número", "abre o projeto ou a task"), ("1 / 2", "na task: implementar (/pipeline) ou conversar com o Claude"),
+              ("r", "reuniões de hoje: projeto e contexto para as horas"), ("h", "horas do dia para o Journify"),
+              ("Ctrl-b c", "todos os atalhos"))) + "\n")
+    ask(dim(" Enter abre o menu."))
+
+
 def main():
     a = sys.argv[1:]
     if a[:1] == ["--run"]:
@@ -1736,6 +1951,8 @@ def main():
     if a[:1] == ["--hoje"]:  # o dia sem abrir o menu
         titulo, linhas = resumo_dia()
         return print(c(titulo, 39, True) + "\n" + "\n".join(linhas))
+    if a[:1] == ["--comecar"]:  # primeiros passos de novo (Journify, notificações, Google, projetos, tema)
+        return primeiros_passos()
     if a[:1] == ["--login"]:  # Google: agenda e Gmail
         return login()
     if a[:1] == ["--horas"]:  # jfy --horas [data]: tabela para o minhas-horas
@@ -1786,6 +2003,10 @@ def selftest():
     assert ls == ["Meta", "", "Contexto. algo", "", "▣ imagem a3", "", "• item", "│ código"], ls
     assert faixas([1, 2, 3, 4, 7, 9, 10]) == "a1–a4, a7, a9–a10"
     assert corta(" abcdef ", 4) == "abc…" and corta("abc", 4) == "abc"
+    arq = os.path.join(RUN_DIR, "teste-icone.png")
+    png(arq, ["#.", ".#"], rgb256(202), escala=3)
+    b = open(arq, "rb").read()
+    assert b[:8] == b"\x89PNG\r\n\x1a\n" and int.from_bytes(b[16:20], "big") == int.from_bytes(b[20:24], "big") == 12 and rgb256(202) == (255, 95, 0), b[:24]
     assert [etapa({"statusId": s, "dueDate": None, "priority": "media"}) for s in ("em_progresso", "em_teste", "bloqueado", "em_aberto")] == [1, 3, 4, 2]
     assert slug("Estudar o escopo do projeto!") == "estudar-o-escopo-do-projeto"
     assert fmt_min(83) == "1h 23min" and fmt_min(5) == "5min"
@@ -1971,6 +2192,18 @@ def selftest():
     assert json.load(open(ajustes_arq(hoje))) == {} and [x["lanc"] for x in itens_horas(cfg_h, hoje)[0]] == [30, 10]
     shutil.rmtree(HORAS_DIR)
     os.remove(REUNIOES)
+    # primeiros passos: o que já está feito não pergunta nada; o que falta é guiado e p pula
+    global PASSOS, escolha, save, limpar
+    salvo, feitos, respostas = {}, [], iter(["p", ""])
+    load, save, limpar = (lambda: dict(salvo)), salvo.update, (lambda: None)
+    escolha = lambda *a: next(respostas)
+    PASSOS = [("A", "", lambda: True, None), ("B", "", lambda: False, lambda cfg: feitos.append("B")),
+              ("C", "", lambda: False, lambda cfg: feitos.append("C") or True)]
+    ask_real = ask
+    globals()["ask"] = lambda *a, **k: ""
+    primeiros_passos()
+    globals()["ask"] = ask_real
+    assert salvo.get("comecou") and feitos == ["C"], (salvo, feitos)  # B pulado com p, C feito com Enter
     print("ok")
 
 

@@ -55,9 +55,7 @@ ok "/pipeline, agentes e hooks em ~/.claude (de github.com/Carloscavalcante97/pi
 if /usr/bin/python3 -c "import json,os,sys; sys.exit(0 if json.load(open(os.path.expanduser('~/.claude.json'))).get('mcpServers',{}).get('journify') else 1)" 2>/dev/null; then
   ok "MCP do Journify"
 else
-  aviso "Falta o MCP do Journify. Rode (com o SEU token):"
-  echo '  claude mcp add --transport http journify https://journify.souv.tech/api/mcp/journify/mcp \'
-  echo '    --header "Authorization: Bearer SEU_TOKEN" --scope user'
+  aviso "Falta o MCP do Journify: na primeira vez, o jfy pede o seu token e configura"
 fi
 
 # ---------- extras: cada um pergunta antes; o que já está ligado só é atualizado, sem perguntar de novo ----------
@@ -124,3 +122,4 @@ echo
 "$DIR/jfy" --selftest >/dev/null && ok "autoteste"
 echo
 echo "Pronto. Rode: jfy"
+echo "Na primeira vez ele te guia pelo resto: Journify, notificações, agenda e Gmail, seus projetos e tema."
