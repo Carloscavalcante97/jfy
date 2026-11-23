@@ -20,11 +20,12 @@ if ! command -v tmux >/dev/null; then
 fi
 ok "tmux"
 
-# notificação clicável: o clique leva para a aba do Claude, abre a chamada ou o email (sem ele, a do osascript, que não faz nada no clique)
+# notificação clicável: o clique leva para a aba do Claude, abre a chamada ou o email
+# (sem ele, ou sem permissão, sai a do osascript, e o clique abre o Editor de Scripts)
 if ! command -v terminal-notifier >/dev/null; then
   if command -v brew >/dev/null; then brew install terminal-notifier; else echo "  (sem Homebrew: notificações sem clique)"; fi
 fi
-command -v terminal-notifier >/dev/null && ok "terminal-notifier"
+command -v terminal-notifier >/dev/null && ok "terminal-notifier (a permissão de notificação o jfy pede na primeira vez)"
 
 # comando jfy no PATH
 for BIN in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do
@@ -61,9 +62,7 @@ ok "/pipeline, agentes e hooks em ~/.claude (de github.com/Carloscavalcante97/pi
 if /usr/bin/python3 -c "import json,os,sys; sys.exit(0 if json.load(open(os.path.expanduser('~/.claude.json'))).get('mcpServers',{}).get('journify') else 1)" 2>/dev/null; then
   ok "MCP do Journify"
 else
-  aviso "Falta o MCP do Journify. Rode (com o SEU token):"
-  echo '  claude mcp add --transport http journify https://journify.souv.tech/api/mcp/journify/mcp \'
-  echo '    --header "Authorization: Bearer SEU_TOKEN" --scope user'
+  aviso "Falta o MCP do Journify: na primeira vez, o jfy pede o seu token e configura"
 fi
 
 # fonte JFY Mono: Maple Mono + ícones em pixel art dos temas (fonte/icones.txt)
@@ -109,3 +108,4 @@ launchctl bootstrap "gui/$(id -u)" "$PLIST" && ok "notificação do dia às 7h (
 "$DIR/jfy" --selftest >/dev/null && ok "autoteste"
 echo
 echo "Pronto. Rode: jfy"
+echo "Na primeira vez ele te guia pelo resto: Journify, notificações, agenda e Gmail, seus projetos e tema."

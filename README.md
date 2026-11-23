@@ -22,22 +22,21 @@ O `install.sh`:
 - baixa a pipeline oficial do time ([pipeline-Claude](https://github.com/Carloscavalcante97/pipeline-Claude)) em `~/.jfy/pipeline-Claude` e liga o `/pipeline`, os agentes (planner, builder, verifier, e2e-tester, committer, pr-creator) e os hooks no seu `~/.claude`. Se você já tem um arquivo com o mesmo nome e conteúdo diferente, ele mantém o seu e avisa;
 - confere se o MCP do Journify está configurado e roda um autoteste.
 
-### 2. Conectar o Journify
-
-Gere o seu token MCP no Journify e rode, trocando `SEU_TOKEN`:
-
-```bash
-claude mcp add --transport http journify https://journify.souv.tech/api/mcp/journify/mcp \
-  --header "Authorization: Bearer SEU_TOKEN" --scope user
-```
-
-Use `--scope user` e o nome `journify`: é ali que o jfy procura o token. O token é pessoal, não mande print dele para ninguém.
-
-### 3. Rodar
+### 2. Rodar
 
 ```bash
 jfy
 ```
+
+Na primeira vez, antes do menu, o jfy te guia por **primeiros passos**, um de cada vez. Ele confere cada um de verdade e só pergunta o que falta:
+
+1. **Journify**: abre as Configurações do Journify; em *Conectar meu Claude*, clique em *Gerar token* e cole o token no jfy (ele não aparece na tela). O jfy configura o MCP `journify` no seu Claude Code.
+2. **Notificações**: manda uma notificação de teste. Se o macOS bloquear, abre Ajustes do Sistema > Notificações para você ligar o **terminal-notifier** e testa de novo.
+3. **Agenda e Gmail**: login do Google (só leitura). Precisa do JSON do client OAuth da empresa: peça para quem configurou o projeto no Google Cloud.
+4. **Seus projetos**: para cada projeto com task sua, escolha a pasta do repositório.
+5. **Tema e fonte**: escolha a fonte JFY Mono no terminal e um tema.
+
+`Enter` faz o passo, `p` pula e `0` deixa para depois. Para voltar a eles quando quiser: `jfy --comecar`.
 
 ## Como usar
 
@@ -125,7 +124,7 @@ De segunda a sexta, às 7h, chega uma notificação do macOS com as reuniões do
 
 ### Aviso do Claude
 
-Quando um Claude responde ou pede permissão, chega uma notificação do macOS com o nome da aba (ou da pasta). **Clicar nela traz o terminal já na aba daquele Claude.** O clique também funciona na notificação de email (abre o leitor) e na de reunião (abre a chamada). Isso usa o `terminal-notifier`, que o `install.sh` instala; libere **terminal-notifier** em Ajustes do Sistema > Notificações. Sem ele, a notificação aparece, mas o clique não faz nada. Vale para todo Claude Code, dentro e fora do jfy. Ela não aparece se você já está olhando: terminal na frente e, dentro do jfy, a aba daquele Claude aberta. O `install.sh` liga isso com dois hooks (`Stop` e `Notification`) no `~/.claude/settings.json`.
+Quando um Claude responde ou pede permissão, chega uma notificação do macOS com o nome da aba (ou da pasta). **Clicar nela traz o terminal já na aba daquele Claude.** O clique também funciona na notificação de email (abre o leitor) e na de reunião (abre a chamada). Isso usa o `terminal-notifier`, que o `install.sh` instala; libere **terminal-notifier** em Ajustes do Sistema > Notificações. Sem essa permissão, a notificação sai pelo Editor de Scripts e o clique abre o Editor de Scripts em vez do terminal (o `install.sh` avisa quando isso acontece). Vale para todo Claude Code, dentro e fora do jfy. Ela não aparece se você já está olhando: terminal na frente e, dentro do jfy, a aba daquele Claude aberta. O `install.sh` liga isso com dois hooks (`Stop` e `Notification`) no `~/.claude/settings.json`.
 
 Para a aba também ficar vermelha, no Claude rode `/config` e ponha **Notifications** em **Terminal Bell**.
 
@@ -196,7 +195,7 @@ Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git
 
 ## Problemas comuns
 
-- **"MCP 'journify' não configurado"**: faça o passo 2.
+- **"MCP 'journify' não configurado"** ou token recusado: rode `jfy --comecar` e cole um token novo.
 - **O `/pipeline` para dizendo que a branch está errada**: ele só roda em `feature/`, `bugfix/`, `hotfix/` ou `release/`. Escolha o tipo quando o jfy oferecer criar a branch.
 - **O `/pipeline` diz que a task não é de código**: use a opção `2` (conversar com o Claude).
 - **Um projeto não aparece no menu**: o menu mostra os projetos configurados e os que têm tasks abertas atribuídas a você. Um projeto novo, sem task sua, só aparece depois de configurado (ou quando chegar uma task).
