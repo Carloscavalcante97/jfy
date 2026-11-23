@@ -476,6 +476,8 @@ ESCOPOS = ["https://www.googleapis.com/auth/calendar.events.readonly",  # só l�
            "https://www.googleapis.com/auth/gmail.readonly"]  # lê o email no popup do ✉; não marca, não apaga, não envia
 # gmail.metadata não entra junto: com ele no token o Gmail recusa format=full mesmo tendo o readonly
 TOKEN_URL = "https://oauth2.googleapis.com/token"
+# JSON do client OAuth do app "jfy" da Souv: fica no Drive, fora do repo (o GitHub barra segredo em commit)
+GOOGLE_JSON = "https://drive.google.com/file/d/12zl0qgv3LfCi5dNgVzhNtyvpgUzZOS8a/view?usp=sharing"
 GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 
 
@@ -523,7 +525,9 @@ def login():
     import base64, hashlib, http.server, secrets
     cfg = load()
     if not cfg.get("google"):
-        arq = ask("Arraste aqui o JSON do client OAuth (baixado no Google Cloud) e dê Enter:\n> ")
+        subprocess.run(["open", GOOGLE_JSON])
+        arq = ask(f"Abri no navegador o JSON do app jfy da Souv ({GOOGLE_JSON}).\n"
+                  "Baixe o arquivo, arraste ele aqui e dê Enter:\n> ")
         j = json.load(open(os.path.expanduser(arq.strip("'\" ").replace("\\ ", " "))))["installed"]
         cfg["google"] = {"client_id": j["client_id"], "client_secret": j["client_secret"]}
     cli, recebido = cfg["google"], {}

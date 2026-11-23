@@ -117,7 +117,7 @@ Os ícones em pixel art só aparecem com a fonte **JFY Mono** no terminal (o `in
 
 ### Google: agenda e Gmail
 
-Rode `jfy --login`. Na primeira vez ele pede o JSON do client OAuth da empresa (arraste o arquivo para o terminal; peça para quem configurou o projeto `jfy` no Google Cloud). Depois abre o login do Google no navegador. Você entra com a conta da empresa e autoriza:
+Rode `jfy --login`. Na primeira vez ele abre no navegador o [JSON do app jfy da Souv](https://drive.google.com/file/d/12zl0qgv3LfCi5dNgVzhNtyvpgUzZOS8a/view?usp=sharing), no Drive da empresa: baixe e arraste o arquivo para o terminal. O JSON só identifica o app; cada pessoa autoriza a própria conta e o acesso fica no Chaves do Mac dela. Depois abre o login do Google no navegador. Você entra com a conta da empresa e autoriza:
 - **agenda**: só leitura de eventos. Reuniões recusadas, eventos de dia inteiro e ausências ficam de fora;
 - **Gmail**: só leitura (`gmail.readonly`): o jfy lê os emails para o popup do ✉, mas não marca como lido, não apaga e não envia. Quem fez login antes dessa mudança precisa rodar `jfy --login` uma vez.
 
