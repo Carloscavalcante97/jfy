@@ -60,6 +60,51 @@ else
   echo '    --header "Authorization: Bearer SEU_TOKEN" --scope user'
 fi
 
+# ---------- extras: cada um pergunta antes; o que já está ligado só é atualizado, sem perguntar de novo ----------
+quer() { local r; read -r -p "  $1 (s/n) [s] " r </dev/tty || return 1; [ "${r:-s}" = s ]; }
+ja() { grep -qs -- "$1" "$HOME/.claude/settings.json"; }
+ajustar() {  # ajustar ia|aviso: liga a barra de uso da IA ou o aviso do Claude no ~/.claude/settings.json
+  /usr/bin/python3 - "$1" "$DIR/jfy" <<'EOF'
+import json, os, shlex, sys
+p = os.path.expanduser("~/.claude/settings.json")
+try:
+    s = json.load(open(p)) if os.path.exists(p) else {}
+except ValueError as e:
+    sys.exit(f"  ~/.claude/settings.json não é um JSON válido ({e}): não mexi nele")
+if sys.argv[1] == "ia":  # o statusline passa a gravar uma cópia do que recebe em ~/.jfy/claude-status.json
+    sl = s.get("statusLine") or {"type": "command", "command": "cat >/dev/null"}
+    if "claude-status.json" not in sl.get("command", ""):
+        sl["command"] = "tee ~/.jfy/claude-status.json | " + sl["command"]
+        s["statusLine"] = sl
+else:  # hooks Stop/Notification: jfy --avisar
+    cmd, hooks = shlex.quote(sys.argv[2]) + " --avisar", s.setdefault("hooks", {})
+    for ev, grupo in (("Stop", {}), ("Notification", {"matcher": "permission_prompt|elicitation_dialog"})):
+        if not any("jfy" in h.get("command", "") and "--avisar" in h.get("command", "")
+                   for g in hooks.get(ev, []) for h in g.get("hooks", [])):
+            hooks.setdefault(ev, []).append(dict(grupo, hooks=[{"type": "command", "command": cmd}]))
+os.makedirs(os.path.dirname(p), exist_ok=True)
+json.dump(s, open(p, "w"), indent=2, ensure_ascii=False)
+EOF
+}
+echo
+echo "Extras (opcionais; n em todos deixa só o menu de tasks):"
+if ja "claude-status.json" || quer "Uso da IA na barra do jfy? Muda o statusLine do ~/.claude/settings.json."; then
+  mkdir -p "$HOME/.jfy"
+  ajustar ia && ok "uso da IA na barra do jfy" || aviso "não liguei o uso da IA"
+fi
+if ja "jfy.*--avisar" || quer "Aviso no macOS quando o Claude responde ou pede permissão? Liga dois hooks no ~/.claude/settings.json (valem para todo Claude Code, dentro e fora do jfy) e instala o terminal-notifier."; then
+  if ! command -v terminal-notifier >/dev/null; then  # notificação clicável; sem ele, a do osascript (clique não faz nada)
+    if command -v brew >/dev/null; then brew install terminal-notifier; else aviso "sem Homebrew: notificações sem clique"; fi
+  fi
+  ajustar aviso && ok "aviso do Claude no macOS" || aviso "não liguei o aviso do Claude"
+fi
+if [ -f "$HOME/Library/Fonts/JFYMono.ttf" ] || quer "Fonte JFY Mono, com os ícones em pixel art dos temas? Vai para ~/Library/Fonts."; then
+  mkdir -p "$HOME/Library/Fonts"
+  cp "$DIR/fonte/JFYMono.ttf" "$HOME/Library/Fonts/JFYMono.ttf"
+  ok "fonte JFY Mono: escolha \"JFY Mono\" no seu terminal e reinicie ele (os temas, menos o Padrão, usam os ícones dela)"
+fi
+echo
+
 "$DIR/jfy" --selftest >/dev/null && ok "autoteste"
 echo
 echo "Pronto. Rode: jfy"
