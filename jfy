@@ -15,6 +15,7 @@ USO = os.path.join(HOME, "claude-status.json")  # gravado pelo statusline do Cla
 AGENDA = os.path.join(HOME, "agenda.json")  # cache das reuniões de hoje
 REUNIOES = os.path.join(HOME, "reunioes.json")  # projeto e contexto que você deu a cada reunião (r ou h): base das horas
 EMAIL = os.path.join(HOME, "email.json")  # estado da caixa: não lidos, último uid visto, email que acabou de chegar
+SEM_REPO = os.path.join(HOME, "sem-repo")  # <id>/: pasta do projeto sem repositório (estudo, teste), com o handoff.md
 HORAS_DIR = os.path.join(HOME, "horas")  # AAAA-MM-DD.jsonl: cada trabalho medido (task, terminal livre, reunião)
 JOURNIFY = "https://journify.souv.tech"  # padrão; quem entra por outro domínio põe "journify" no config.json
 CATEGORIA = {"pipeline": "Desenvolvimento", "sessao": "Desenvolvimento", "livre": "Análise e estudo", "reuniao": "Reunião"}
@@ -1221,7 +1222,8 @@ def tela_horas(dia=None):
 
 
 # ---------- configuração de projeto ----------
-def escolher_pasta(inicio):
+def escolher_pasta(inicio, sem_repo=False):
+    """Pasta escolhida, None se voltou, "" se o projeto não tem repositório (só com sem_repo)."""
     cur = inicio
     while True:
         subs = sorted((d for d in os.listdir(cur) if not d.startswith(".") and os.path.isdir(os.path.join(cur, d))), key=str.lower)
@@ -1230,10 +1232,13 @@ def escolher_pasta(inicio):
         for i, d in enumerate(subs, 1):
             eh_git = os.path.isdir(os.path.join(cur, d, ".git"))
             print(f" {c(f'{i:>2}', 39, True)}  {c(d, 78) if eh_git else d}{dim('  git') if eh_git else ''}")
-        print("\n " + acoes_txt([("número", "entra"), ("s", "usa esta pasta"), ("..", "sobe"), ("ou cole", "um caminho")]))
-        op = escolha(seta(), "s", len(subs))  # .. e caminho colado vão até o Enter
+        print("\n " + acoes_txt([("número", "entra"), ("s", "usa esta pasta"), ("..", "sobe"), ("ou cole", "um caminho")]
+                                 + ([("n", "sem repositório (estudo, teste)")] if sem_repo else [])))
+        op = escolha(seta(), "sn" if sem_repo else "s", len(subs))  # .. e caminho colado vão até o Enter
         if op == "0":
             return None
+        if op == "n":
+            return ""
         if op == "s":
             return cur
         if op == "..":
@@ -1252,13 +1257,21 @@ def escolher_pasta(inicio):
             ask(c("Pasta não existe. Enter para continuar.", 203))
 
 
+def ultima_pasta(cfg, p=None):
+    """Onde o navegador de pastas começa: ao lado do repo do projeto ou do último configurado."""
+    reais = [x["repo"] for x in [p or {}, *cfg["projetos"].values()] if x.get("repo") and not x["repo"].startswith(SEM_REPO)]
+    return os.path.dirname(reais[0]) if reais else os.path.expanduser("~/Documents")
+
+
 def configurar(cfg, pid):
     p = cfg["projetos"].get(pid, {})
-    ultimo = next((os.path.dirname(x["repo"]) for x in cfg["projetos"].values()), None)
     repos = []
     while True:  # front e back, por exemplo: a task escolhe quais usa
-        repo = escolher_pasta(os.path.dirname(repos[-1] if repos else p["repo"]) if repos or p
-                              else ultimo or os.path.expanduser("~/Documents"))
+        repo = escolher_pasta(os.path.dirname(repos[-1]) if repos else ultima_pasta(cfg, p), sem_repo=not repos)
+        if repo == "":  # estudo, teste: o Claude abre numa pasta só do projeto
+            repos = [os.path.join(SEM_REPO, pid)]
+            os.makedirs(repos[0], exist_ok=True)
+            break
         if repo and repo not in repos:
             repos.append(repo)
         if not repos:
@@ -1266,8 +1279,8 @@ def configurar(cfg, pid):
         print("\n Repositórios: " + ", ".join(c(os.path.basename(r), 78) for r in repos))
         if escolha(" Mais um repositório neste projeto (front e back, por exemplo)? (s/n) [n] ", "sn") != "s":
             break
-    padrao = p.get("nome") or os.path.basename(repos[0])
-    nome = ask(f"Nome do projeto [{padrao}] (0 volta): ", padrao)
+    padrao = p.get("nome") or ("" if repos[0].startswith(SEM_REPO) else os.path.basename(repos[0]))
+    nome = ask(f"Nome do projeto{f' [{padrao}]' if padrao else ''} (0 volta): ", padrao) or pid
     if nome == "0":
         return False
     cfg["projetos"][pid] = {"nome": nome, "repo": repos[0], "repos": repos}
@@ -1400,7 +1413,8 @@ def preparar_repo(repo, nome_wt):
     """Trava o repo para esta aba. Se outra aba já usa o repo, devolve um worktree."""
     lock = os.path.join(RUN_DIR, re.sub(r"\W", "_", repo))
     if ocupado(lock):
-        return criar_worktree(repo, nome_wt), None
+        # ponytail: pasta sem git (projeto sem repo) é dividida entre as abas, não tem worktree
+        return (criar_worktree(repo, nome_wt) if os.path.isdir(os.path.join(repo, ".git")) else repo), None
     open(lock, "w").write(str(os.getpid()))
     return repo, lock
 
@@ -1789,7 +1803,7 @@ def principal():
                 if pc:
                     return c(pc["nome"][:12].ljust(12), cor_projeto(p), True) + " " + qtd
                 exemplo = next((x["title"] for x in tasks if x["projectId"] == p), "")  # o MCP não dá o nome do projeto
-                return (dim(p[:8].ljust(12)) + " " + qtd + "  " + c("sem repo: escolha para configurar", 214)
+                return (dim(p[:8].ljust(12)) + " " + qtd + "  " + c("sem nome: escolha para configurar", 214)
                         + dim(f"  ex.: {corta(exemplo, 40)}"))
             com, sem = [p for p in pids if n_tasks(p)], [p for p in pids if not n_tasks(p)]  # = ordem de pids
             itens = (([("FOCO",)] + [linha_foco(cfg, t, larg) for t in urgentes] if urgentes else [])
@@ -1815,8 +1829,7 @@ def principal():
             if op == "h":
                 abrir_aba("horas", "horas", "--horas")
             if op == "l":
-                ultimo = next((os.path.dirname(x["repo"]) for x in cfg["projetos"].values()), os.path.expanduser("~/Documents"))
-                pasta = escolher_pasta(ultimo)
+                pasta = escolher_pasta(ultima_pasta(cfg))
                 if pasta:
                     abrir_aba(os.path.basename(pasta)[:20] + ": livre", pasta, "--livre", pasta)
             k = int(op) if op.isdigit() else 0
@@ -1932,7 +1945,7 @@ def guia_projetos(cfg):
     for i, (pid, exemplo) in enumerate(sem.items(), 1):
         limpar()
         print(c(f" Seus projetos · {i} de {len(sem)} ", 39, True) + "\n\n Projeto com task sua, ainda sem pasta. Uma das tasks:\n "
-              + c(corta(exemplo, 90), 255, True) + "\n\n Escolha a pasta do repositório dele; o jfy abre o Claude ali.\n")
+              + c(corta(exemplo, 90), 255, True) + "\n\n Escolha a pasta do repositório dele; o jfy abre o Claude ali. Sem repositório (estudo, teste)? n e dê um nome.\n")
         if escolha(" " + acoes_txt([("enter", "escolher a pasta"), ("p", "pular este")], "") + "\n" + seta(), "p") != "p":
             configurar(load(), pid)
     return ok_projetos()
