@@ -6,7 +6,16 @@ Cada task roda numa aba própria (tmux), então dá para tocar várias ao mesmo 
 
 ## Instalação
 
-Precisa de macOS e do [Claude Code](https://docs.claude.com/claude-code) instalado e logado.
+### O que você precisa
+
+- **macOS** (o app do Mac pede o macOS 15 ou mais novo).
+- **[Claude Code](https://docs.claude.com/claude-code)** instalado e logado.
+- **[Homebrew](https://brew.sh)**: o `install.sh` usa ele para instalar o `tmux`, o `terminal-notifier` (notificações) e o SwiftBar (ícone na barra de cima).
+- **Xcode** (App Store), só para o app do Mac: é com o Swift dele que o app é montado no seu Mac. Abra o Xcode uma vez depois de instalar, para ele terminar a instalação.
+- **GitHub CLI** (`gh`), para a aba GitHub do app: `brew install gh` e depois `gh auth login` (ou, no app, Configurações › GitHub › Adicionar conta).
+- **Google Chrome** com a extensão **Claude in Chrome** e logado no Journify: é por ele que o Claude lança as horas no minhas-horas.
+- A **conta Google da Souv** (Agenda e Gmail) e acesso ao [JSON do app jfy](https://drive.google.com/file/d/12zl0qgv3LfCi5dNgVzhNtyvpgUzZOS8a/view?usp=sharing) no Drive da empresa.
+- Um **token do Journify**: no Journify, Configurações › Conectar meu Claude › Gerar token (o jfy pede no primeiro uso).
 
 ### 1. Clonar e instalar
 
@@ -38,7 +47,7 @@ Na primeira vez, antes do menu, o jfy te guia por **primeiros passos**, um de ca
 
 1. **Journify**: abre as Configurações do Journify; em *Conectar meu Claude*, clique em *Gerar token* e cole o token no jfy (ele não aparece na tela). O jfy configura o MCP `journify` no seu Claude Code.
 2. **Notificações**: manda uma notificação de teste. Se o macOS bloquear, abre Ajustes do Sistema > Notificações para você ligar o **terminal-notifier** e testa de novo.
-3. **Agenda e Gmail**: login do Google (só leitura). O jfy abre o JSON do app no Drive da empresa: baixe e arraste o arquivo para o terminal.
+3. **Agenda e Gmail**: login do Google, que libera ler, criar e editar eventos e ler, marcar como lido e responder emails (nada é apagado, e nada é enviado sem você apertar Enviar). O jfy abre o JSON do app no Drive da empresa: baixe e arraste o arquivo para o terminal. Detalhes em [Google: agenda e Gmail](#google-agenda-e-gmail).
 4. **Seus projetos**: para cada projeto com task sua, escolha a pasta do repositório.
 5. **Fonte**: o jfy instala a fonte JFY Mono, se faltar, e põe ela no terminal (os ícones do jfy precisam dela). O tema se escolhe no [app](#app-do-mac).
 
@@ -62,6 +71,16 @@ O jfy também é um app (`jfy.app`): o mesmo jfy do terminal, mais as abas de pr
 7. **Atualize** depois de um `git pull`: `~/jfy/app/build.sh` (o `install.sh` faz isso sozinho se o app estiver instalado).
 
 Se o app abrir sem janela, clique no ícone dele no Dock. Se ele pedir permissões de novo a cada versão, rode `~/jfy/app/build.sh` para recriar a assinatura local.
+
+### 4. Ajustes de uma vez só
+
+Coisas que o jfy não consegue fazer por você, mas que você só faz uma vez:
+
+1. **Assinatura do email.** Os emails que saem pelo app levam a assinatura que estiver como **padrão** no Gmail: a API do Gmail só enxerga essa (as outras assinaturas com nome ficam invisíveis). No Gmail: engrenagem › **Ver todas as configurações** › **Geral** › **Assinatura**. Crie a sua (ex.: "Souv") se ainda não tiver e, em **Padrões de assinatura**, escolha ela em **"Para uso em novos e-mails"** e em **"Para respostas/encaminhamentos"**. Clique em **Salvar alterações**, no fim da página. Vale na hora, sem reinstalar. Enquanto não houver padrão, o app avisa antes de enviar e tem um link para essa tela.
+2. **GitHub.** `gh auth login` (ou Configurações › GitHub › Adicionar conta no app), com a conta que você usa nos repositórios da Souv. Mais de uma conta? Adicione todas; o app troca a que está em uso.
+3. **Chrome para as horas.** Instale a extensão Claude in Chrome, conecte ela ao Claude Code e deixe o Journify logado no Chrome. Sem isso, o "Lançar no Journify" não tem como preencher o minhas-horas.
+4. **Permissões do macOS.** Deixe ligadas as notificações do **terminal-notifier** e do **jfy** (Ajustes do Sistema › Notificações). Se o macOS perguntar se o jfy pode controlar outro app, permita.
+5. **Agenda das outras pessoas** ("Reunião com…" na Agenda): aparece a agenda de quem compartilha com você. Na Souv, as agendas já vêm compartilhadas dentro do domínio; se a de alguém não aparecer, a etiqueta da pessoa mostra o motivo.
 
 ## Como usar
 
@@ -233,6 +252,9 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 | ajustes que você fez na tabela de horas de um dia | `~/.jfy/horas/AAAA-MM-DD.ajustes.json` |
 | notificação das 7h | `~/Library/LaunchAgents/jfy.dia.plist` |
 | histórico de notificações | `~/.jfy/notificacoes.jsonl` (a aba Notificações do app) |
+| sugestões de contatos (emails e convidados) | `~/.jfy/contatos.json` |
+| projetos e categorias do minhas-horas (o menu da aba Horas) | `~/.jfy/projetos_journify.json` |
+| o que foi lançado em cada dia (o aviso de dia já lançado) | `~/.jfy/horas/AAAA-MM-DD.lancado.json` |
 | app do Mac | `/Applications/jfy.app`, montado por `app/build.sh` a partir de `app/` |
 | ícone na barra de cima | plugin em `~/.jfy/swiftbar/jfy.1m.sh` (ou na pasta de plugins do seu SwiftBar); abre com o Mac por `~/Library/LaunchAgents/jfy.swiftbar.plist` |
 | acesso ao Google | Chaves do macOS, item `jfy-google` |
@@ -243,11 +265,17 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 
 ```bash
 cd ~/jfy && git pull
+~/jfy/app/build.sh   # se você usa o app do Mac: monta e instala a versão nova
 ```
 
 Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git pull` na pipeline oficial e liga arquivos novos.
 
 ## Problemas comuns
+
+- **O email saiu sem assinatura**: não há assinatura **padrão** no Gmail. Veja o passo 1 de [Ajustes de uma vez só](#4-ajustes-de-uma-vez-só).
+- **A aba GitHub diz "Instale o GitHub CLI"** ou fica vazia: `brew install gh` e `gh auth login`.
+- **"Lançar no Journify" não preenche nada**: confira a extensão Claude in Chrome conectada e o Journify logado no Chrome.
+- **A Agenda ou os Emails dizem "não conectados"** ou pedem permissão: rode `jfy --login` (ou use Configurações › Google no app).
 
 - **"MCP 'journify' não configurado"** ou token recusado: rode `jfy --comecar` e cole um token novo.
 - **O `/pipeline` para dizendo que a branch está errada**: ele só roda em `feature/`, `bugfix/`, `hotfix/` ou `release/`. Escolha o tipo quando o jfy oferecer criar a branch.
