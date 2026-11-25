@@ -49,9 +49,6 @@ struct ProjetosTela: View {
     // seleção (botão direito › Selecionar): bolinhas em todas as tasks para mudar status ou prazo de várias de uma vez
     @State private var selecionando = false
     @State private var marcadas: Set<String> = []
-    @State private var pedidoLote: (campo: String, valor: String, rotulo: String)?
-    @State private var prazoLote = Date()
-    @State private var escolhendoPrazo = false
     @State private var resultadoLote: String?
     @AppStorage("projetos.tabela") private var modoTabela = false  // a tabela agrupada, como no ClickUp
     @State private var pontos: [String: Double] = [:]  // carregam depois da lista (o MCP só dá na task inteira)
@@ -77,6 +74,17 @@ struct ProjetosTela: View {
             }
         }
         }
+        .overlay(alignment: .bottom) {
+            if selecionando || modoTabela && !marcadas.isEmpty {
+                BarraLote(quantas: marcadas.count, total: tasks.count,
+                          statusOrdem: (dados?.statusLote ?? []) + ["finalizado_validacao", "fechado"],
+                          pedeVideo: ["finalizado_validacao", "fechado"], ocupado: carregando,
+                          aplicar: aplicarLote, todas: { marcadas = Set(tasks.map(\.id)) }, limpar: sairDaSelecao)
+                    .padding(.bottom, 22)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: selecionando || modoTabela && !marcadas.isEmpty)
         // na tabela, a task abre ao lado, num painel que fecha
         .inspector(isPresented: Binding(get: { modoTabela && task != nil }, set: { if !$0 { task = nil } })) {
             if let task { detalhe(task).inspectorColumnWidth(min: 380, ideal: 480, max: 720) }
@@ -89,10 +97,7 @@ struct ProjetosTela: View {
             deFora = false
             sairDaSelecao()
         }
-        .confirmationDialog(pedidoLote.map { "\($0.rotulo) de \(marcadas.count) task\(marcadas.count == 1 ? "" : "s")?" } ?? "",
-                            isPresented: Binding(get: { pedidoLote != nil }, set: { if !$0 { pedidoLote = nil } })) {
-            Button("Mudar no Journify") { if let p = pedidoLote { aplicarLote(p.campo, p.valor) } }
-        } message: { Text("A mudança vai direto para o Journify, em cada task escolhida.") }
+
         .onChange(of: nav.abrirProjeto) {
             guard let p = nav.abrirProjeto, dados != nil else { return }  // sem dados ainda: o carregarProjetos abre
             projeto = p
@@ -189,7 +194,6 @@ struct ProjetosTela: View {
             .pickerStyle(.segmented).labelsHidden().fixedSize()
         }
         .padding(12)
-        if selecionando || modoTabela && !marcadas.isEmpty { barraLote }
         if let resultadoLote {
             Label(resultadoLote, systemImage: "info.circle").font(.caption).foregroundStyle(Souv.texto2)
                 .textSelection(.enabled).padding(.horizontal, 12).padding(.bottom, 8)
@@ -284,37 +288,6 @@ struct ProjetosTela: View {
         }
     }
 
-    private var barraLote: some View {
-        HStack(spacing: 8) {
-            Button(marcadas.count == tasks.count ? "Nenhuma" : "Todas") {
-                marcadas = marcadas.count == tasks.count ? [] : Set(tasks.map(\.id))
-            }
-            .buttonStyle(.link)
-            Text("\(marcadas.count) marcada\(marcadas.count == 1 ? "" : "s")").font(.caption).foregroundStyle(Souv.texto2)
-            Spacer(minLength: 4)
-            SouvSelect(opcoes: (dados?.statusLote ?? []).map { .init(valor: $0, rotulo: rotulo($0), cor: CORES_STATUS[$0] ?? .gray) },
-                       selecionado: nil, vazio: "Status") { s in pedidoLote = ("status", s, "Mudar para \(rotulo(s)) o status") }
-                .frame(width: 110)
-            Button { prazoLote = Date(); escolhendoPrazo = true } label: { Label("Prazo", systemImage: "calendar") }
-                .popover(isPresented: $escolhendoPrazo) {
-                    VStack(alignment: .trailing, spacing: 8) {
-                        DatePicker("Prazo", selection: $prazoLote, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
-                        Button("Usar este prazo") {
-                            escolhendoPrazo = false
-                            pedidoLote = ("prazo", diaLocal(prazoLote),
-                                          "Pôr o prazo de \(prazoLote.formatted(.dateTime.day().month(.twoDigits).year())) em")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    .padding(12)
-                }
-            Button { sairDaSelecao() } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Sair da seleção (Esc)")
-        }
-        .disabled(carregando)
-        .padding(.horizontal, 12).padding(.bottom, 8)
-        .onExitCommand { sairDaSelecao() }
-    }
-
     private func marcar(_ id: String) {
         if marcadas.contains(id) { marcadas.remove(id) } else { marcadas.insert(id) }
     }
@@ -324,12 +297,12 @@ struct ProjetosTela: View {
         marcadas = []
     }
 
-    private func aplicarLote(_ campo: String, _ valor: String) {
+    private func aplicarLote(_ campo: String, _ valor: String, _ extra: String) {
         let ids = tasks.map(\.id).filter(marcadas.contains)  // na ordem da lista
         guard !ids.isEmpty else { return }
         Task {
             carregando = true
-            let (r, msg): (Lote?, String?) = await JFY.ler(["--tasks-mudar", campo, valor] + ids)
+            let (r, msg): (Lote?, String?) = await JFY.ler(["--tasks-mudar", campo, valor] + (extra.isEmpty ? [] : ["--extra=" + extra]) + ids)
             if let r {
                 let titulo = { (id: String) in tasks.first { $0.id == id }?.titulo ?? id }
                 resultadoLote = "\(r.ok) de \(ids.count) mudada\(r.ok == 1 ? "" : "s") no Journify."
@@ -746,5 +719,109 @@ struct Markdown: View {
     private func linha(_ t: String) -> some View {
         Text((try? AttributedString(markdown: t, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(t))
             .fixedSize(horizontal: false, vertical: true)  // parágrafo longo quebra linha, não corta com "…"
+    }
+}
+
+/// O painel das tasks marcadas, como no ClickUp: "Definir [status, prioridade ou prazo] para [o valor]" e Aplicar;
+/// Limpar desmarca. O valor muda conforme o campo: todos os status (os que pedem o vídeo do teste perguntam o link, que
+/// vale para todas), as prioridades ou um dia no calendário.
+struct BarraLote: View {
+    let quantas, total: Int
+    let statusOrdem: [String]
+    let pedeVideo: Set<String>
+    let ocupado: Bool
+    let aplicar: (String, String, String) -> Void  // campo, valor, link do vídeo (ou motivo)
+    let todas: () -> Void
+    let limpar: () -> Void
+
+    @State private var campo = "status"
+    @State private var valor: String?
+    @State private var data = Date()
+    @State private var escolhendoData = false
+    @State private var pedindoVideo = false
+    @State private var video = ""
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                Text("\(quantas) selecionada\(quantas == 1 ? "" : "s")").fontWeight(.semibold).foregroundStyle(Souv.texto)
+                    .monospacedDigit().fixedSize()
+                Text("Definir").foregroundStyle(Souv.texto2).fixedSize()
+                SouvSelect(opcoes: [.init(valor: "status", rotulo: "Status"), .init(valor: "prioridade", rotulo: "Prioridade"),
+                                    .init(valor: "prazo", rotulo: "Prazo")], selecionado: campo) { campo = $0; valor = nil }
+                    .frame(width: 150)
+                Text("para").foregroundStyle(Souv.texto2).fixedSize()
+                escolhaDoValor.frame(width: 200)
+                Button(action: aplicarAgora) {
+                    Label("Aplicar", systemImage: "checkmark").fontWeight(.semibold).foregroundStyle(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Souv.primaria))
+                        .opacity(valor == nil || quantas == 0 || ocupado ? 0.45 : 1)
+                }
+                .buttonStyle(.plain)
+                .disabled(valor == nil || quantas == 0 || ocupado)
+                .keyboardShortcut(.defaultAction)
+            }
+            HStack(spacing: 18) {
+                if quantas < total {
+                    Button(action: todas) { Label("Selecionar todas (\(total))", systemImage: "checklist") }.buttonStyle(.plain)
+                }
+                Button(action: limpar) { Label("Limpar", systemImage: "xmark") }.buttonStyle(.plain)
+            }
+            .font(.callout).foregroundStyle(Souv.texto2)
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Souv.superficie))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Souv.primaria.opacity(0.55)))
+        .shadow(color: Color(claro: 0x8C93AD, escuro: 0x000000).opacity(0.35), radius: 18, y: 8)  // no claro, uma sombra leve
+        .onExitCommand(perform: limpar)
+        .alert("Vídeo do teste", isPresented: $pedindoVideo) {
+            TextField("link do vídeo, ou por que não tem", text: $video)
+            Button("Aplicar") {
+                if let v = valor, video.trimmingCharacters(in: .whitespaces).count >= 3 { aplicar(campo, v, video); valor = nil }
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("O Journify só move para \(rotulo(valor ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo. Ele vale para as \(quantas) tasks.")
+        }
+    }
+
+    /// O segundo seletor segue o primeiro: status, prioridade ou o calendário do prazo.
+    @ViewBuilder private var escolhaDoValor: some View {
+        switch campo {
+        case "status":
+            SouvSelect(opcoes: statusOrdem.map { .init(valor: $0, rotulo: rotulo($0), cor: CORES_STATUS[$0] ?? .gray) },
+                       selecionado: valor, vazio: "Selecione…") { valor = $0 }
+        case "prioridade":
+            SouvSelect(opcoes: ["critica", "alta", "media", "baixa"].map { .init(valor: $0, rotulo: rotuloPrioridade($0), cor: corPrioridade($0)) },
+                       selecionado: valor, vazio: "Selecione…") { valor = $0 }
+        default:
+            Button { data = valor.flatMap(dataLocal) ?? Date(); escolhendoData = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar").foregroundStyle(Souv.texto2)
+                    Text(valor.flatMap(dataLocal)?.formatted(.dateTime.day(.twoDigits).month(.twoDigits).year()) ?? "Selecione…")
+                        .foregroundStyle(valor == nil ? Souv.texto2 : Souv.texto)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(Souv.texto2)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Souv.superficie2))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(escolhendoData ? Souv.destaque : Souv.borda))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $escolhendoData, arrowEdge: .top) {
+                VStack(alignment: .trailing, spacing: 8) {
+                    DatePicker("Prazo", selection: $data, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
+                    Button("Usar este dia") { valor = diaLocal(data); escolhendoData = false }.buttonStyle(.borderedProminent)
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private func aplicarAgora() {
+        guard let v = valor else { return }
+        if campo == "status", pedeVideo.contains(v) { video = ""; pedindoVideo = true } else { aplicar(campo, v, ""); valor = nil }
     }
 }

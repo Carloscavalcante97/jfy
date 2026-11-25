@@ -2030,20 +2030,23 @@ def tasks_pontos(*tids):
     return {t: cache[t][0] for t in tids if t in cache and cache[t][0] is not None}
 
 
-def tasks_mudar(campo, valor, *tids):
-    """Mudança em lote (a seleção da lista de tasks do app): status ou prazo de várias tasks, 4 por vez. Uma que falha
-    não para as outras: volta na lista de erros. Status que pede o vídeo do teste não vai em lote (cada task tem o seu)."""
+def tasks_mudar(campo, valor, *resto):
+    """Mudança em lote (as tasks marcadas no app): status, prioridade ou prazo de várias tasks, 4 por vez. Uma que falha
+    não para as outras: volta na lista de erros. Status que pede o vídeo do teste (fechado, finalizado validação) leva o
+    mesmo link ou motivo para todas: jfy --tasks-mudar status fechado --extra=<link ou motivo> <ids>."""
     from concurrent.futures import ThreadPoolExecutor
-    if campo not in ("status", "prazo"):
-        sys.exit(f"Em lote, só status ou prazo (não {campo}).")
-    if campo == "status" and valor in PEDE_VIDEO:
-        sys.exit("Esse status pede o vídeo do teste de cada task: mude uma por vez, na tela da task.")
+    extra = resto[0][len("--extra="):] if resto and resto[0].startswith("--extra=") else ""
+    tids = resto[1:] if resto and resto[0].startswith("--extra=") else resto
+    if campo not in ("status", "prioridade", "prazo"):
+        sys.exit(f"Em lote, só status, prioridade ou prazo (não {campo}).")
+    if campo == "status" and valor in PEDE_VIDEO and len(extra.strip()) < 3:
+        sys.exit("Esse status pede o link do vídeo do teste (ou o motivo de não ter), que vale para todas as tasks.")
     if not tids:
         sys.exit("Nenhuma task escolhida.")
 
     def uma(tid):
         try:
-            task_mudar(tid, campo, valor)
+            task_mudar(tid, campo, valor, extra)
         except Exception as e:
             return {"id": tid, "erro": str(e)[:200]}
     with ThreadPoolExecutor(4) as ex:
@@ -4307,10 +4310,14 @@ def selftest():
     assert h["lancado"]["removidas"] == 1 and [x["estado"] for x in h["itens"]] == ["mudou", "nova"], h["itens"]
     os.remove(arq_lancado(hoje))
     real_tm, feitos = task_mudar, []
-    globals()["task_mudar"] = lambda t, c, v: feitos.append((t, c, v)) if t != "ruim" else (_ for _ in ()).throw(RuntimeError("negado"))
+    globals()["task_mudar"] = lambda t, c, v, e="": feitos.append((t, c, v, e)) if t != "ruim" else (_ for _ in ()).throw(RuntimeError("negado"))
     r = tasks_mudar("status", "em_revisao", "t1", "ruim", "t2")
+    tasks_mudar("status", "fechado", "--extra=sem vídeo: só backend", "t3")  # com o motivo, vale para todas
     globals()["task_mudar"] = real_tm
-    assert r == {"ok": 2, "erros": [{"id": "ruim", "erro": "negado"}]} and sorted(feitos) == [("t1", "status", "em_revisao"), ("t2", "status", "em_revisao")], r
+    assert feitos[-1] == ("t3", "status", "fechado", "sem vídeo: só backend"), feitos
+    feitos.pop()
+    globals()["task_mudar"] = real_tm
+    assert r == {"ok": 2, "erros": [{"id": "ruim", "erro": "negado"}]} and sorted(feitos) == [("t1", "status", "em_revisao", ""), ("t2", "status", "em_revisao", "")], r
     try:
         tasks_mudar("status", "fechado", "t1")
         assert False
