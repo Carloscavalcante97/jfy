@@ -431,6 +431,9 @@ struct CampoEmails: View {
                 Text(rotulo).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
                 TextField("emails, separados por vírgula", text: $texto, axis: .vertical).lineLimit(1...3)
                     .textFieldStyle(.roundedBorder).focused($focado)
+                    .onSubmit {  // Enter fecha o email digitado, como no Gmail (na Agenda, ele vira uma pessoa)
+                        if let s = sugestoes.first { escolher(s) } else if digitando.contains("@") { texto += ", " }
+                    }
             }
             if !sugestoes.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {

@@ -2044,9 +2044,36 @@ def evento_app(e, cfg):
             "cor": cor_hex(p) if p else None, "contexto": info.get("contexto"), "palpite": bool(p) and not info}
 
 
-def agenda_json(de, ate):
+CORES_PESSOAS = ["#14b8a6", "#f97316", "#ec4899", "#a855f7", "#84cc16", "#eab308", "#06b6d4", "#f43f5e"]
+
+
+def agenda_pessoa(email, ini, fim, cfg, meus, cor):
+    """A agenda de outra pessoa da empresa, como no "Reunião com…" do Google: os eventos dela no período, com o nome
+    dela no título e a cor dela. Os que você também tem ficam de fora (já aparecem). Evento privado vira "Ocupado"."""
+    q = {"timeMin": ini.isoformat(), "timeMax": fim.isoformat(), "singleEvents": "true", "orderBy": "startTime", "maxResults": 500}
+    try:
+        r = http_json(f"https://www.googleapis.com/calendar/v3/calendars/{urllib.parse.quote(email)}/events?{urllib.parse.urlencode(q)}",
+                      token=google_token())
+    except RuntimeError as e:
+        erro = "essa agenda não está compartilhada com você (ou o email não existe)" if " 404" in str(e) or " 403" in str(e) else str(e)[:120]
+        return {"email": email, "nome": None, "erro": erro, "eventos": []}
+    nome = (r.get("summary") or email) if "@" not in (r.get("summary") or "@") else None
+    primeiro = (nome or email.split("@")[0]).split()[0].split(".")[0].capitalize()
+    eventos = []
+    for e in r.get("items", []):
+        if e.get("status") == "cancelled" or e["id"] in meus or e.get("eventType") == "workingLocation":
+            continue
+        ev = evento_app(dict(e, summary=e.get("summary") or "Ocupado"), cfg)
+        ev.update(titulo=f"{primeiro}: {ev['titulo']}", cor=cor, pessoa=email, p=None, projeto=None, palpite=False,
+                  pode_editar=False, eu_organizo=False, id=f"{email}|{e['id']}")
+        eventos.append(ev)
+    return {"email": email, "nome": nome, "erro": None, "eventos": eventos}
+
+
+def agenda_json(de, ate, pessoas=""):
     """Aba Reuniões (calendário): os eventos da agenda principal de um dia a outro (AAAA-MM-DD, os dois inclusive), as
-    recorrentes já abertas uma a uma, e os projetos para o menu das horas."""
+    recorrentes já abertas uma a uma, e os projetos para o menu das horas. pessoas: emails (vírgula) de quem mais
+    mostrar junto, como o "Reunião com…" do Google."""
     cfg = load()
     if not cfg.get("google"):
         sys.exit("Agenda não conectada: rode jfy --login no terminal.")
@@ -2061,9 +2088,15 @@ def agenda_json(de, ate):
         pagina = r.get("nextPageToken")
         if not pagina:
             break
+    from concurrent.futures import ThreadPoolExecutor
+    emails = [x.strip().lower() for x in pessoas.split(",") if "@" in x][:8]
+    meus = {e["id"] for e in itens}
+    with ThreadPoolExecutor(4) as ex:
+        outras = list(ex.map(lambda i: agenda_pessoa(emails[i], ini, fim, cfg, meus, CORES_PESSOAS[i % len(CORES_PESSOAS)]),
+                             range(len(emails))))
     return {"eventos": [evento_app(e, cfg) for e in itens if e.get("status") != "cancelled"
                         and e.get("eventType") not in ("workingLocation",)],
-            "projetos": menu_projetos(cfg)}
+            "projetos": menu_projetos(cfg), "pessoas": outras}
 
 
 def corpo_evento(d, atual=None):

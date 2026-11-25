@@ -20,6 +20,7 @@ struct ReunioesTela: View {
         let diaInteiro, euOrganizo, podeEditar, recorrente, palpite: Bool
         let local, link, url, organizador, minhaResposta, p, projeto, cor, contexto: String?
         let convidados: [Convidado]
+        let pessoa: String?  // evento da agenda de outra pessoa (o "Reunião com…")
         var inicio: Date { Date(timeIntervalSince1970: ini) }
         var termino: Date { Date(timeIntervalSince1970: fim) }
         var recusado: Bool { minhaResposta == "declined" }
@@ -33,7 +34,17 @@ struct ReunioesTela: View {
     struct Agenda: Decodable {
         let eventos: [Evento]
         let projetos: [Projeto]
+        let pessoas: [Pessoa]?
     }
+
+    struct Pessoa: Decodable {
+        let email: String
+        let nome, erro: String?
+        let eventos: [Evento]
+    }
+
+    /// As cores das pessoas, na ordem em que entram (as mesmas do jfy, CORES_PESSOAS).
+    static let coresPessoas = ["#14b8a6", "#f97316", "#ec4899", "#a855f7", "#84cc16", "#eab308", "#06b6d4", "#f43f5e"]
 
     enum Modo: String, CaseIterable { case dia = "Dia", semana = "Semana", mes = "Mês" }
 
@@ -44,6 +55,11 @@ struct ReunioesTela: View {
     @State private var carregando = false
     @State private var aberto: Evento?
     @State private var formulario: FormEvento?
+    @AppStorage("agenda.pessoas") private var pessoasTxt = ""  // emails de quem aparece junto (vírgula)
+    @State private var buscaPessoa = ""
+
+    private var pessoas: [String] { pessoasTxt.split(separator: ",").map(String.init).filter { $0.contains("@") } }
+    private var todos: [Evento] { (agenda?.eventos ?? []) + (agenda?.pessoas ?? []).flatMap(\.eventos) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,19 +81,31 @@ struct ReunioesTela: View {
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).padding(.horizontal, 20).padding(.bottom, 8).textSelection(.enabled) }
+            reuniaoCom.padding(.horizontal, 20).padding(.bottom, 10)
             Divider()
             switch modo {
             case .mes:
-                MesView(ref: ref, eventos: agenda?.eventos ?? [], abrir: { aberto = $0 }, irDia: { ref = $0; modo = .dia })
+                MesView(ref: ref, eventos: todos, abrir: { aberto = $0 }, irDia: { ref = $0; modo = .dia })
             case .semana:
-                GradeHoras(dias: diasDaSemana, eventos: agenda?.eventos ?? [], abrir: { aberto = $0 },
+                GradeHoras(dias: diasDaSemana, eventos: todos, abrir: { aberto = $0 },
                            novo: { formulario = FormEvento(inicio: $0) })
             case .dia:
-                GradeHoras(dias: [cal.startOfDay(for: ref)], eventos: agenda?.eventos ?? [], abrir: { aberto = $0 },
+                GradeHoras(dias: [cal.startOfDay(for: ref)], eventos: todos, abrir: { aberto = $0 },
                            novo: { formulario = FormEvento(inicio: $0) })
             }
         }
-        .task(id: "\(ativa)|\(intervalo.0)|\(intervalo.1)") { if ativa { await carregar() } }
+        .task(id: "\(ativa)|\(intervalo.0)|\(intervalo.1)|\(pessoasTxt)") { if ativa { await carregar() } }
+        .onChange(of: buscaPessoa) {  // a sugestão escolhida (ou a vírgula digitada) fecha o email: vira uma pessoa
+            guard buscaPessoa.contains(",") else { return }
+            let partes = buscaPessoa.split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+            let novas = partes.dropLast().compactMap { p -> String? in
+                let e = p.components(separatedBy: "<").last?.replacingOccurrences(of: ">", with: "").lowercased() ?? p
+                return e.contains("@") ? e : nil
+            }
+            buscaPessoa = partes.last ?? ""
+            let lista = pessoas + novas.filter { !pessoas.contains($0) }
+            pessoasTxt = lista.prefix(8).joined(separator: ",")
+        }
         .task(id: nav.abrirEvento) {  // o clique na notificação de evento adicionado ou remarcado
             guard let id = nav.abrirEvento else { return }
             nav.abrirEvento = nil
@@ -152,11 +180,43 @@ struct ReunioesTela: View {
         return cal.date(byAdding: .minute, value: (30 - m % 30) % 30, to: cal.date(bySetting: .second, value: 0, of: base) ?? base) ?? base
     }
 
+    // ---------- reunião com… ----------
+    /// Como o "Reunião com…" do Google: as pessoas escolhidas aparecem junto na agenda, cada uma com a sua cor.
+    private var reuniaoCom: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "person.2").foregroundStyle(Souv.texto2)
+            CampoEmails(rotulo: "Reunião com…", texto: $buscaPessoa).frame(width: 320)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(pessoas.enumerated()), id: \.element) { i, email in
+                        let info = agenda?.pessoas?.first { $0.email == email }
+                        HStack(spacing: 5) {
+                            Circle().fill(Color(hex: Self.coresPessoas[i % Self.coresPessoas.count])).frame(width: 8, height: 8)
+                            Text(info?.nome ?? email.components(separatedBy: "@")[0]).lineLimit(1)
+                            if let erro = info?.erro {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(erro)
+                            }
+                            Button { pessoasTxt = pessoas.filter { $0 != email }.joined(separator: ",") } label: {
+                                Image(systemName: "xmark").font(.caption2.weight(.bold))
+                            }
+                            .buttonStyle(.plain).foregroundStyle(Souv.texto2).help("Tirar da agenda")
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Capsule().fill(Souv.superficie2)).overlay(Capsule().strokeBorder(Souv.borda))
+                        .help(email)
+                    }
+                }
+            }
+            if pessoas.count > 1 { Button("Limpar") { pessoasTxt = "" }.buttonStyle(.link) }
+        }
+    }
+
     // ---------- jfy ----------
     private func carregar() async {
         carregando = true
         defer { carregando = false }
-        let (a, msg): (Agenda?, String?) = await JFY.ler(["--agenda-json", intervalo.0, intervalo.1])
+        let (a, msg): (Agenda?, String?) = await JFY.ler(["--agenda-json", intervalo.0, intervalo.1] + (pessoasTxt.isEmpty ? [] : [pessoasTxt]))
         if let a { agenda = a }
         aviso = msg
     }
@@ -436,7 +496,7 @@ private struct EventoDetalhe: View {
                             Text(desc).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    if !evento.diaInteiro { paraAsHoras }
+                    if !evento.diaInteiro && evento.pessoa == nil { paraAsHoras }  // agenda de outra pessoa: não vai para as suas horas
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
