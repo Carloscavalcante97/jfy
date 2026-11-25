@@ -54,6 +54,10 @@ struct ProjetosTela: View {
     @AppStorage("projetos.tabela") private var modoTabela = false  // a tabela agrupada, como no ClickUp
     @State private var pontos: [String: Double] = [:]  // carregam depois da lista (o MCP só dá na task inteira)
     @State private var configurando: PedidoProjeto?  // novo projeto, ou configurar/editar um que já existe
+    @State private var secao = SecaoProjeto.tasks  // Tasks, Documentos, Reuniões, Arquivos ou Formulários
+
+    /// O projeto escolhido de verdade (não o Foco): só ele tem as outras seções.
+    private var projetoReal: String? { projeto == Self.foco ? nil : projeto }
 
     var body: some View {
         GeometryReader { g in
@@ -62,22 +66,29 @@ struct ProjetosTela: View {
         HStack(spacing: 0) {
             listaProjetos.frame(width: largProjetos)
             Divider()
-            if modoTabela {
-                areaTabela
-            } else {
-                listaTasks.frame(width: largTasks)
-                Divider()
-                if let task {
-                    detalhe(task)
+            VStack(spacing: 0) {
+                if projetoReal != nil { barraSecoes; Divider() }
+                if secao != .tasks, let p = projetoReal {
+                    ProjetoConteudo(secao: secao, pid: p) { tid in secao = .tasks; task = tid }.id("\(p)|\(secao)")
+                } else if modoTabela {
+                    areaTabela
                 } else {
-                    Text(projeto == nil ? "Escolha um projeto" : "Escolha uma task").foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    HStack(spacing: 0) {
+                        listaTasks.frame(width: largTasks)
+                        Divider()
+                        if let task {
+                            detalhe(task)
+                        } else {
+                            Text(projeto == nil ? "Escolha um projeto" : "Escolha uma task").foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
                 }
             }
         }
         }
         .overlay(alignment: .bottom) {
-            if selecionando || modoTabela && !marcadas.isEmpty {
+            if secao == .tasks || projetoReal == nil, selecionando || modoTabela && !marcadas.isEmpty {
                 BarraLote(quantas: marcadas.count, total: tasks.count,
                           statusOrdem: (dados?.statusLote ?? []) + ["finalizado_validacao", "fechado"],
                           pedeVideo: ["finalizado_validacao", "fechado"], ocupado: carregando,
@@ -88,10 +99,12 @@ struct ProjetosTela: View {
         }
         .animation(.snappy(duration: 0.25), value: selecionando || modoTabela && !marcadas.isEmpty)
         // na tabela, a task abre ao lado, num painel que fecha
-        .inspector(isPresented: Binding(get: { modoTabela && task != nil }, set: { if !$0 { task = nil } })) {
+        .inspector(isPresented: Binding(get: { modoTabela && task != nil && (secao == .tasks || projetoReal == nil) },
+                                        set: { if !$0 { task = nil } })) {
             if let task { detalhe(task).inspectorColumnWidth(min: 380, ideal: 480, max: 720) }
         }
         .onChange(of: modoTabela) { sairDaSelecao() }
+        .onChange(of: secao) { sairDaSelecao() }
         .task(id: ativa) { if ativa, dados == nil { await carregarProjetos() } }
         .task(id: "\(projeto ?? "")|\(todas)") { await carregarTasks() }
         .onChange(of: projeto) {
@@ -109,9 +122,29 @@ struct ProjetosTela: View {
             guard let ref = nav.abrirTask else { return }
             deFora = projeto != ref.pid
             projeto = ref.pid
+            secao = .tasks
             task = ref.tid
             nav.abrirTask = nil
         }
+    }
+
+    /// As seções do projeto, como as abas do projeto no Journify.
+    private var barraSecoes: some View {
+        HStack(spacing: 4) {
+            ForEach(SecaoProjeto.allCases, id: \.self) { s in
+                Button { secao = s } label: {
+                    Label(s.rawValue, systemImage: s.icone)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .foregroundStyle(secao == s ? Souv.texto : Souv.texto2)
+                        .background(RoundedRectangle(cornerRadius: 7).fill(secao == s ? Souv.primaria.opacity(0.2) : .clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Souv.superficie)
     }
 
     // ---------- projetos ----------

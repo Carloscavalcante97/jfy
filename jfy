@@ -2391,15 +2391,15 @@ def task_mudar(tid, campo, valor, extra=""):
     mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
 
 
-def tasks_pontos(*tids):
-    """Os pontos das tasks (a tabela do app carrega depois da lista: a lista do MCP não traz a estimativa, só a task
-    inteira). Guarda por 15 min e só busca o que falta, 4 por vez; a que falhar tenta de novo, uma por vez (muitas
-    chamadas seguidas e o Journify recusa todas). O MCP não grava pontos: mudar é no Journify."""
+def detalhes_tasks(tids):
+    """O que a lista do MCP não traz e só vem na task inteira (obter_task): os pontos e os anexos. Guarda por 30 min em
+    RUN_DIR/tasks-detalhe.json e só busca o que falta, 4 por vez; a que falhar tenta de novo, uma por vez (muitas chamadas
+    seguidas e o Journify recusa todas). As que o Journify recusou ficam de fora da resposta."""
     from concurrent.futures import ThreadPoolExecutor
-    arq, agora = os.path.join(RUN_DIR, "pontos.json"), time.time()
+    arq, agora = os.path.join(RUN_DIR, "tasks-detalhe.json"), time.time()
     try:
-        cache = {k: v for k, v in json.load(open(arq)).items() if agora - v[1] < 15 * 60}
-    except (OSError, ValueError):
+        cache = {k: v for k, v in json.load(open(arq)).items() if agora - v["em"] < 30 * 60}
+    except (OSError, ValueError, KeyError, TypeError):
         cache = {}
     erros = []
 
@@ -2408,19 +2408,91 @@ def tasks_pontos(*tids):
             t = mcp("obter_task", taskId=tid)["task"]
         except Exception as e:
             erros.append(str(e))
-            return tid, False
-        return tid, (t.get("estimate") or {}).get("value") or (t.get("estimateV2") or {}).get("points")
-    faltam = [t for t in tids[:120] if t not in cache]
+            return tid, None
+        return tid, {"em": agora, "pontos": (t.get("estimate") or {}).get("value") or (t.get("estimateV2") or {}).get("points"),
+                     "anexos": t.get("attachments") or []}
+    faltam = [t for t in tids if t not in cache]
     with ThreadPoolExecutor(4) as ex:
         achados = dict(ex.map(uma, faltam))
-    for tid in [t for t, v in achados.items() if v is False]:  # devagar, uma por vez
+    for tid in [t for t, v in achados.items() if v is None]:  # devagar, uma por vez
         time.sleep(0.5)
         achados[tid] = uma(tid)[1]
-    cache.update({t: [v, agora] for t, v in achados.items() if v is not False})
+    cache.update({t: v for t, v in achados.items() if v})
     json.dump(cache, open(arq, "w"))
-    if any(v is False for v in achados.values()):
-        print(f"pontos: o Journify recusou {sum(v is False for v in achados.values())} task(s): {erros[-1][:120]}", file=sys.stderr)
-    return {t: cache[t][0] for t in tids if t in cache and cache[t][0] is not None}
+    if any(v is None for v in achados.values()):
+        print(f"o Journify recusou {sum(v is None for v in achados.values())} task(s): {erros[-1][:120]}", file=sys.stderr)
+    return {t: cache[t] for t in tids if t in cache}
+
+
+def tasks_pontos(*tids):
+    """Os pontos das tasks (a tabela do app carrega depois da lista). O MCP não grava pontos: mudar é no Journify."""
+    return {t: d["pontos"] for t, d in detalhes_tasks(list(tids[:120])).items() if d["pontos"] is not None}
+
+
+SENSIVEL = re.compile(r"(?i)(^|[^a-z])(\.?env|senhas?|passwords?|secrets?|segredos?|credenciai?s?|credentials?|tokens?|chaves?|api[ _-]?keys?)([^a-z]|$)")
+
+
+def docs_json(pid):
+    """Aba Documentos do projeto: título e quando mudou, os mais recentes primeiro. Título com cara de credencial (Env
+    prod, .env, senha, token…) vem marcado: o app esconde o conteúdo até a pessoa pedir."""
+    return sorted(({"id": d["id"], "titulo": d.get("title") or "Sem título", "atualizado": d.get("updatedAt"),
+                    "sensivel": bool(SENSIVEL.search(d.get("title") or ""))} for d in mcp("listar_documentos", projetoId=pid)),
+                  key=lambda d: d["atualizado"] or "", reverse=True)
+
+
+def doc_json(did):
+    d = mcp("obter_documento", docId=did)
+    return {"titulo": d.get("title") or "", "texto": d.get("content") or ""}
+
+
+def pega(d, *ks):
+    return next((d[k] for k in ks if d.get(k)), None)
+
+
+def reunioes_projeto_json(pid):
+    """Aba Reuniões do projeto: as reuniões registradas no Journify (id, título, data, se já tem resumo)."""
+    # ponytail: nomes dos campos adivinhados com folga (nenhum projeto tinha reunião para conferir); ajustar quando vier uma
+    rs = mcp("listar_reunioes", projetoId=pid)
+    rs = rs if isinstance(rs, list) else pega(rs, "reunioes", "meetings") or []
+    return sorted(({"id": r["id"], "titulo": pega(r, "title", "titulo") or "Reunião",
+                    "data": pega(r, "date", "data", "startsAt", "startedAt", "scheduledAt", "createdAt"),
+                    "resumo": bool(pega(r, "hasSummary", "temResumo", "summary", "resumo"))} for r in rs),
+                  key=lambda r: r["data"] or "", reverse=True)
+
+
+def reuniao_json(rid):
+    r = mcp("obter_reuniao", meetingId=rid)
+    r = pega(r, "meeting", "reuniao") or r
+    gente = pega(r, "participants", "participantes", "attendees") or []
+    return {"titulo": pega(r, "title", "titulo") or "Reunião", "data": pega(r, "date", "data", "startsAt", "startedAt", "createdAt"),
+            "participantes": [p if isinstance(p, str) else pega(p, "name", "nome", "email") or "?" for p in gente],
+            "resumo": doc_texto(pega(r, "summary", "resumo") or "")}
+
+
+def categoria_arquivo(nome, tipo):
+    """As categorias da aba Arquivos do Journify: Documentos, Planilhas, Imagens ou Outros."""
+    t, ext = (tipo or "").lower(), os.path.splitext(nome or "")[1].lower()
+    if t.startswith("image/"):
+        return "Imagens"
+    if "sheet" in t or "excel" in t or ext in (".xlsx", ".xls", ".csv", ".ods"):
+        return "Planilhas"
+    if t.startswith("text/") or any(x in t for x in ("pdf", "word", "document", "presentation")) \
+            or ext in (".pdf", ".doc", ".docx", ".txt", ".md", ".odt", ".ppt", ".pptx", ".key", ".pages"):
+        return "Documentos"
+    return "Outros"
+
+
+def arquivos_json(pid):
+    """Aba Arquivos do projeto: os anexos das tasks, os mais novos primeiro. O MCP não lista os arquivos enviados direto
+    no projeto, e os anexos só vêm task a task (a primeira leitura de um projeto grande demora; depois, 30 min de cache)."""
+    ts = mcp("listar_tasks_projeto", projetoId=pid)
+    titulo, det = {t["id"]: t["title"] for t in ts}, detalhes_tasks([t["id"] for t in ts])
+    out = [{"id": a.get("id") or a.get("url") or f"{tid}{n}", "nome": a.get("name") or "anexo", "url": a.get("url"),
+            "tipo": a.get("contentType") or "", "tamanho": a.get("size") if isinstance(a.get("size"), (int, float)) else None,
+            "por": a.get("uploadedByName"), "quando": a.get("uploadedAt"), "task": tid, "task_titulo": titulo.get(tid),
+            "categoria": categoria_arquivo(a.get("name"), a.get("contentType"))}
+           for tid, d in det.items() for n, a in enumerate(d["anexos"])]
+    return {"arquivos": sorted(out, key=lambda a: a["quando"] or "", reverse=True), "tasks": len(ts), "lidas": len(det)}
 
 
 def tasks_mudar(campo, valor, *resto):
@@ -4339,7 +4411,7 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher,
+                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--docs-json": docs_json, "--doc-json": doc_json, "--reunioes-projeto-json": reunioes_projeto_json, "--reuniao-json": reuniao_json, "--arquivos-json": arquivos_json, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher,
                 "--sessao-json": sessao_json, "--login-cliente": guardar_cliente,
                 "--agentes-json": agentes_json, "--agente-modelo": agente_modelo, "--agentes-oficial": agentes_oficial,
                 "--agentes-aplicar": agentes_aplicar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
@@ -4415,6 +4487,8 @@ def selftest():
     # o autoteste nunca avisa de verdade: o fim() e outros chamam o notificar (que manda notificação ao macOS e grava no
     # histórico do app). Antes, cada autoteste gerava duas "Horas registradas" falsas
     globals()["notificar"] = lambda *a, **k: None
+    assert [bool(SENSIVEL.search(x)) for x in ("Env prod", ".env Dev", "Senhas do cliente", "API key", "Regras de Negócio (Design)", "Environment", "E-mail de Entrega")] == [True, True, True, True, False, False, False]
+    assert [categoria_arquivo(*x) for x in (("a.png", "image/png"), ("b.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), ("c.pdf", "application/pdf"), ("d.mp4", "video/mp4"), ("e.csv", ""))] == ["Imagens", "Planilhas", "Documentos", "Outros", "Planilhas"]
     salvo = {k: globals()[k] for k in ("load", "save", "chaves", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
     cfg_f, apagados = {"google": {"client_id": "i", "client_secret": "s", "conta": "a@b"}}, []
     tmp = os.path.join(RUN_DIR, "teste-sair")

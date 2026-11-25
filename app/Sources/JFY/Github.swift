@@ -787,9 +787,15 @@ private func ESTADO_CHECK(_ e: String) -> (String, Color) {
     }
 }
 
-private func relativo(_ iso: String?) -> String {
-    guard let iso, let d = (try? Date(iso, strategy: .iso8601)) ?? (try? Date(iso, strategy: .iso8601.year().month().day()
-        .time(includingFractionalSeconds: true).timeZone(separator: .omitted))) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
+/// Data e hora ISO (com ou sem frações de segundo), como o GitHub e o Journify mandam.
+func dataISO(_ iso: String?) -> Date? {
+    guard let iso else { return nil }
+    return (try? Date(iso, strategy: .iso8601)) ?? (try? Date(iso, strategy: .iso8601.year().month().day()
+        .time(includingFractionalSeconds: true).timeZone(separator: .omitted))) ?? ISO8601DateFormatter().date(from: iso)
+}
+
+func relativo(_ iso: String?) -> String {
+    guard let d = dataISO(iso) else { return "" }
     let f = RelativeDateTimeFormatter()
     f.locale = Locale(identifier: "pt_BR")
     f.unitsStyle = .short
