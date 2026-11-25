@@ -63,6 +63,16 @@ struct ConfiguracoesTela: View {
     @State private var pedido: Pedido?
     @State private var colandoToken = false
     @State private var modelos: Modelos?
+    @State private var agentes: Agentes?
+
+    struct Agentes: Decodable {
+        struct Agente: Decodable, Identifiable {
+            let id, papel, modelo: String
+            let atual, oficial: String?
+        }
+        let opcoes: [String]
+        let agentes: [Agente]
+    }
 
     struct Modelos: Decodable {
         struct Atividade: Decodable, Identifiable {
@@ -90,6 +100,7 @@ struct ConfiguracoesTela: View {
                         github(c.github)
                         journify(c.journify)
                         if let m = modelos { cartaoModelos(m) }
+                        if let ag = agentes, !ag.agentes.isEmpty { cartaoAgentes(ag) }
                     }
                     .disabled(ocupado != nil)
                 } else if aviso == nil {
@@ -255,6 +266,45 @@ struct ConfiguracoesTela: View {
         if let c { contas = c } else { aviso = msg }
         let (m, _): (Modelos?, String?) = await JFY.ler(["--modelos-json"])
         if let m { modelos = m }
+        let (ag, _): (Agentes?, String?) = await JFY.ler(["--agentes-json"])
+        if let ag { agentes = ag }
+    }
+
+    // ---------- agentes da pipeline ----------
+    private func cartaoAgentes(_ ag: Agentes) -> some View {
+        cartao("Agentes da pipeline", "person.3.sequence", "O modelo de cada agente do /pipeline") {
+            Text("O /pipeline roda no modelo de \"Tasks pelo /pipeline\"; cada agente que ele chama pode ter o seu. A escolha fica no jfy e volta sozinha depois de atualizar a pipeline do time (o install.sh).")
+                .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+            ForEach(ag.agentes) { a in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(a.id).fontWeight(.medium)
+                        Text(a.papel).font(.caption).foregroundStyle(Souv.texto2).lineLimit(2)
+                    }
+                    Spacer(minLength: 8)
+                    SouvSelect(opcoes: ag.opcoes.map { .init(valor: $0, rotulo: rotuloAgente($0, oficial: a.oficial)) }, selecionado: a.modelo) { novo in
+                        Task {
+                            if let e = await JFY.fazer(["--agente-modelo", a.id, novo]) { aviso = e } else {
+                                feito = "\(a.id): \(rotuloAgente(novo, oficial: a.oficial))."
+                            }
+                            let (ag, _): (Agentes?, String?) = await JFY.ler(["--agentes-json"])
+                            if let ag { agentes = ag }
+                        }
+                    }
+                    .frame(width: 230)
+                }
+                .padding(.vertical, 2)
+                if a.id != ag.agentes.last?.id { Divider().opacity(0.5) }
+            }
+        }
+    }
+
+    private func rotuloAgente(_ v: String, oficial: String?) -> String {
+        switch v {
+        case "oficial": "Padrão da pipeline" + (oficial.map { " (\(Self.nomesModelo[$0] ?? $0))" } ?? "")
+        case "inherit": "O mesmo da sessão"
+        default: Self.nomesModelo[v] ?? v
+        }
     }
 
     // ---------- modelos do Claude ----------

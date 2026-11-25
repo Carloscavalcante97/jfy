@@ -1759,6 +1759,82 @@ def modelos_json():
                                                      "padrao_jfy": m or "padrao"} for i, n, d, m in MODELOS]}
 
 
+# ---------- os agentes da pipeline: o modelo de cada um ----------
+PIPE = os.path.expanduser("~/.jfy/pipeline-Claude")  # o clone da pipeline oficial (o install.sh liga os agentes daqui)
+OPCOES_AGENTE = ["oficial", "inherit", "fable", "opus", "sonnet", "haiku"]
+PAPEL_AGENTE = {"planner": "escreve a spec quando o pedido não está pronto", "builder": "implementa com os testes primeiro",
+                "verifier": "ataca e revisa o que o builder fez", "e2e-tester": "testa a interface de ponta a ponta",
+                "committer": "divide em commits no padrão gitflow", "pr-creator": "abre o PR e liga as tasks"}
+
+
+def modelo_do_agente(txt):
+    m = re.search(r"(?m)^model:\s*(\S+)", txt or "")
+    return m[1] if m else None
+
+
+def com_modelo_no_agente(txt, modelo):
+    """O arquivo do agente com a linha model: do cabeçalho trocada (ou posta), sem mexer em mais nada."""
+    if re.search(r"(?m)^model:\s*\S+", txt):
+        return re.sub(r"(?m)^model:\s*\S+", f"model: {modelo}", txt, count=1)
+    return re.sub(r"\A---\n", f"---\nmodel: {modelo}\n", txt, count=1)
+
+
+def modelo_oficial(agente):
+    """O model: do agente na versão da pipeline oficial (o commit atual do clone), sem as trocas locais."""
+    r = subprocess.run(["git", "-C", PIPE, "show", f"HEAD:agents/{agente}.md"], capture_output=True, text=True)
+    return modelo_do_agente(r.stdout) if r.returncode == 0 else None
+
+
+def gravar_modelo_agente(agente, modelo):
+    arq = os.path.join(PIPE, "agents", f"{agente}.md")
+    txt = open(arq).read()
+    if modelo and modelo_do_agente(txt) != modelo:
+        open(arq, "w").write(com_modelo_no_agente(txt, modelo))
+
+
+def agentes_json():
+    """Configurações do app: os agentes da pipeline, com o modelo de agora, o oficial e o que você escolheu."""
+    if not os.path.isdir(os.path.join(PIPE, "agents")):
+        return {"opcoes": OPCOES_AGENTE, "agentes": []}
+    escolhas = load().get("modelos_agentes", {})
+    out = []
+    for nome in sorted(x for x in os.listdir(os.path.join(PIPE, "agents")) if x.endswith(".md")):
+        a, txt = nome[:-3], open(os.path.join(PIPE, "agents", nome)).read()
+        desc = re.search(r"(?m)^description:\s*(.+)$", txt)
+        out.append({"id": a, "papel": PAPEL_AGENTE.get(a) or (desc[1].split(". ")[0] if desc else ""),
+                    "modelo": escolhas.get(a, "oficial"), "atual": modelo_do_agente(txt), "oficial": modelo_oficial(a)})
+    return {"opcoes": OPCOES_AGENTE, "agentes": out}
+
+
+def agente_modelo(agente, valor):
+    """Escolhe o modelo de um agente da pipeline: fica no config (a escolha volta depois de atualizar a pipeline) e vai
+    para a linha model: do agente. "oficial" volta ao valor da pipeline do time."""
+    if valor not in OPCOES_AGENTE or not os.path.exists(os.path.join(PIPE, "agents", f"{agente}.md")):
+        sys.exit("Agente ou modelo desconhecido.")
+    cfg = load()
+    esc = cfg.setdefault("modelos_agentes", {})
+    if valor == "oficial":
+        esc.pop(agente, None)
+    else:
+        esc[agente] = valor
+    save(cfg)
+    gravar_modelo_agente(agente, modelo_oficial(agente) if valor == "oficial" else valor)
+
+
+def agentes_oficial():
+    """install.sh, antes do git pull da pipeline: os agentes que você trocou voltam ao modelo oficial (só a linha
+    model:), para o pull não brigar com a troca. Depois, o --agentes-aplicar põe de volta."""
+    for a in load().get("modelos_agentes", {}):
+        if os.path.exists(os.path.join(PIPE, "agents", f"{a}.md")):
+            gravar_modelo_agente(a, modelo_oficial(a))
+
+
+def agentes_aplicar():
+    for a, m in load().get("modelos_agentes", {}).items():
+        if os.path.exists(os.path.join(PIPE, "agents", f"{a}.md")):
+            gravar_modelo_agente(a, m)
+
+
 def modelo_escolher(atividade, valor):
     if atividade not in {i for i, *_ in MODELOS} or valor not in OPCOES_MODELO:
         sys.exit("Atividade ou modelo desconhecido.")
@@ -4184,7 +4260,9 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
+                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher,
+                "--agentes-json": agentes_json, "--agente-modelo": agente_modelo, "--agentes-oficial": agentes_oficial,
+                "--agentes-aplicar": agentes_aplicar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
                 "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
@@ -4617,6 +4695,9 @@ def selftest():
     finally:
         globals().update(load=salvo_cfg[0], save=salvo_cfg[1])
         shutil.rmtree(pasta_t)
+    ag = "---\nname: builder\ndescription: x\nmodel: opus\nomitClaudeMd: true\n---\ncorpo com model: opus no texto\n"
+    assert com_modelo_no_agente(ag, "sonnet") == ag.replace("model: opus\nomit", "model: sonnet\nomit", 1), "só a linha do cabeçalho"
+    assert modelo_do_agente(com_modelo_no_agente("---\nname: x\n---\ncorpo\n", "haiku")) == "haiku"
     salvo_load = globals()["load"]
     globals()["load"] = lambda: {"projetos": {}, "modelos": {"horas": "haiku", "pipeline": "padrao", "revisao": "opus"}}
     try:

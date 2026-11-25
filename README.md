@@ -241,6 +241,8 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 
 O modelo de cada atividade se escolhe no app, em **Configurações › Modelos do Claude**: tasks pelo /pipeline, tasks em conversa, terminal livre, revisar PR, preparar reunião, avaliar o uso, fechar a task, lançar horas, emails, mensagem de commit e abrir PR. As opções: o padrão do Claude Code (o modelo do `/model` do terminal), Fable, Opus, Sonnet ou Haiku. A troca vale na hora, também para o jfy do terminal, e fica em `"modelos"` no `~/.jfy/config.json`.
 
+Logo abaixo, **Agentes da pipeline** escolhe o modelo de cada agente que o /pipeline chama (planner, builder, verifier, e2e-tester, committer, pr-creator): o padrão da pipeline do time, o mesmo da sessão, Fable, Opus, Sonnet ou Haiku. O jfy troca só a linha `model:` do agente no clone da pipeline (`~/.jfy/pipeline-Claude`) e guarda a escolha em `"modelos_agentes"` no config; ao atualizar a pipeline, o `install.sh` volta essa linha ao oficial antes do `git pull` e reaplica a sua escolha depois, sem mexer em mais nada dos arquivos.
+
 Sem escolha, as tarefas simples (lançar horas, emails, commit e abrir PR) rodam no **Sonnet**, e o resto no padrão do Claude Code. O fechamento da task fica no modelo da conversa de propósito: ele retoma a conversa ainda em cache, e trocar de modelo faria reler tudo a preço cheio.
 
 ## Onde ficam as coisas

@@ -34,7 +34,9 @@ case ":$PATH:" in *":$BIN:"*) ;; *) aviso "$BIN não está no PATH. Adicione ao 
 # Não sobrescreve arquivo seu.
 PIPE="$HOME/.jfy/pipeline-Claude"
 if [ -d "$PIPE/.git" ]; then
+  "$DIR/jfy" --agentes-oficial 2>/dev/null  # o modelo que você trocou num agente (pelo app) volta ao oficial para o pull...
   git -C "$PIPE" pull -q --ff-only || aviso "não consegui atualizar $PIPE, segui com a versão atual"
+  "$DIR/jfy" --agentes-aplicar 2>/dev/null  # ...e a sua escolha volta depois dele
 else
   git clone -q https://github.com/Carloscavalcante97/pipeline-Claude.git "$PIPE" || erro "Não consegui clonar a pipeline"
 fi
