@@ -89,24 +89,27 @@ enum Tela: String, CaseIterable, Identifiable {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    // fechar a janela fecha o app; as tasks continuam no tmux e voltam ao abrir de novo
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    // fechar a janela não fecha o app: o jfy segue rodando em segundo plano (o terminal e as notificações são do app,
+    // não da janela) e volta igual pelo ícone do Dock ou por Janela > jfy. ⌘Q sai de verdade; as tasks ficam no tmux
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 @main
 struct JFYApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @StateObject private var terminal = TerminalHost()
+    @StateObject private var notificacoes = Notificacoes()
 
     var body: some Scene {
-        Window("jfy", id: "jfy") { Principal() }
+        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes) }
             .defaultSize(width: 1200, height: 780)
     }
 }
 
 struct Principal: View {
+    @ObservedObject var terminal: TerminalHost
+    @ObservedObject var notificacoes: Notificacoes
     @State private var tela: Tela? = .terminal
-    @StateObject private var terminal = TerminalHost()
-    @StateObject private var notificacoes = Notificacoes()
 
     var body: some View {
         NavigationSplitView {

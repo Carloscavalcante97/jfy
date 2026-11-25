@@ -16,10 +16,13 @@ final class Notificacoes: ObservableObject {
     }
 
     static let arquivo = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/notificacoes.jsonl")
-    @Published private(set) var itens: [Item] = []
-    /// Até onde você já viu; o que veio depois conta como novo na barra lateral.
+    @Published private(set) var itens: [Item] = [] { didSet { selo() } }
+    /// Até onde você já viu; o que veio depois conta como novo na barra lateral e no ícone do Dock.
     @Published var vistoAte = UserDefaults.standard.double(forKey: "notificacoesVistoAte") {
-        didSet { UserDefaults.standard.set(vistoAte, forKey: "notificacoesVistoAte") }
+        didSet {
+            UserDefaults.standard.set(vistoAte, forKey: "notificacoesVistoAte")
+            selo()
+        }
     }
     private var lidoEm: Date?
     private var timer: Timer?
@@ -40,6 +43,9 @@ final class Notificacoes: ObservableObject {
         // ponytail: lê o arquivo todo quando ele muda; só as 300 últimas aparecem
         itens = txt.split(separator: "\n").suffix(300).compactMap { try? d.decode(Item.self, from: Data($0.utf8)) }.reversed()
     }
+
+    /// O número de novas no ícone do Dock: com a janela fechada, é por ele que você vê que chegou algo.
+    private func selo() { NSApp?.dockTile.badgeLabel = novas > 0 ? "\(novas)" : nil }
 
     func marcarLidas() { vistoAte = max(vistoAte, itens.first?.ts ?? 0) }
 

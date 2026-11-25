@@ -135,7 +135,7 @@ Com o extra do SwiftBar, o jfy ganha um ícone (a chama) ao lado do relógio do 
 
 ### App do Mac
 
-O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Na barra lateral (ou ⌘1 a ⌘8). O jfy no terminal continua igual; o app é a interface de gestão em cima dele:
+O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Fechar a janela não fecha o app: o jfy segue rodando em segundo plano (o número de notificações novas aparece no ícone do Dock) e volta igual clicando no ícone ou em Janela > jfy. ⌘Q sai de verdade. Na barra lateral (ou ⌘1 a ⌘8). O jfy no terminal continua igual; o app é a interface de gestão em cima dele:
 
 - **jfy**: o menu de sempre, num terminal embutido que já vem com a JFY Mono (não precisa configurar fonte). As tasks continuam no tmux: fechar o app não encerra nenhuma, e abrir de novo volta para o mesmo lugar. Dá para usar o app e um terminal ao mesmo tempo. Com o app aberto, "Abrir o jfy" na barra de cima e o clique nas notificações trazem o app.
 - **Projetos**: os projetos (e o Foco: prazo perto ou crítica), as tasks nas mesmas seções da tela do projeto (só as suas, ou todas do projeto com as 30 encerradas mais recentes) e a task inteira: a descrição formatada com as imagens, os anexos (clique abre pelo link; nada é baixado), os comentários e um campo para comentar. Status, prioridade e prazo mudam por clique; mover para `fechado` ou `finalizado validação` pede o link do vídeo do teste ou o motivo, como o Journify exige. "Implementar (/pipeline)" e "Conversar com o Claude" abrem a mesma aba do `1` e do `2` e levam você ao terminal.
