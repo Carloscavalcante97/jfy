@@ -71,7 +71,8 @@ extension Color {
 }
 
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Reuniões", uso = "Uso da IA",
+    case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Reuniões", emails = "Emails",
+         portas = "Portas", uso = "Uso da IA",
          chat = "Chat", notificacoes = "Notificações", temas = "Temas"
     var id: Self { self }
     var icone: String {
@@ -81,6 +82,8 @@ enum Tela: String, CaseIterable, Identifiable {
         case .github: "arrow.triangle.branch"
         case .horas: "clock"
         case .reunioes: "calendar"
+        case .emails: "envelope"
+        case .portas: "network"
         case .uso: "chart.bar.xaxis"
         case .chat: "bubble.left.and.bubble.right"
         case .notificacoes: "bell"
@@ -100,9 +103,11 @@ struct JFYApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var terminal = TerminalHost()
     @StateObject private var notificacoes = Notificacoes()
+    @StateObject private var caixa = CaixaEmail()
+    @StateObject private var portas = PortasAbertas()
 
     var body: some Scene {
-        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes) }
+        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas) }
             .defaultSize(width: 1200, height: 780)
     }
 }
@@ -110,13 +115,15 @@ struct JFYApp: App {
 struct Principal: View {
     @ObservedObject var terminal: TerminalHost
     @ObservedObject var notificacoes: Notificacoes
+    @ObservedObject var caixa: CaixaEmail
+    @ObservedObject var portas: PortasAbertas
     @State private var tela: Tela? = .terminal
 
     var body: some View {
         NavigationSplitView {
             List(Tela.allCases, selection: $tela) { t in
                 Label(t.rawValue, systemImage: t.icone).tag(t)
-                    .badge(t == .notificacoes ? notificacoes.novas : 0)
+                    .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
         } detail: {
@@ -127,6 +134,8 @@ struct Principal: View {
                 mostrar(.github) { GithubTela(ativa: tela == .github, irParaJFY: { tela = .terminal }) }
                 mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: { tela = .terminal }) }
                 mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: { tela = .terminal }) }
+                mostrar(.emails) { EmailsTela(caixa: caixa, ativa: tela == .emails) }
+                mostrar(.portas) { PortasTela(portas: portas, ativa: tela == .portas) }
                 mostrar(.uso) { UsoTela() }
                 mostrar(.chat) { ChatTela(ativa: tela == .chat) }
                 mostrar(.notificacoes) {
@@ -146,9 +155,9 @@ struct Principal: View {
         return conteudo().opacity(ativa ? 1 : 0).allowsHitTesting(ativa).accessibilityHidden(!ativa)
     }
 
-    /// ⌘1 a ⌘9, na ordem da barra lateral
+    /// ⌘1 a ⌘9 para as nove primeiras da barra lateral (não existe ⌘10)
     private var atalhos: some View {
-        ForEach(Array(Tela.allCases.enumerated()), id: \.element) { i, t in
+        ForEach(Array(Tela.allCases.prefix(9).enumerated()), id: \.element) { i, t in
             Button("") { tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
         }
     }

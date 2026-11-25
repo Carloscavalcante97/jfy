@@ -777,14 +777,18 @@ def url_gmail(conta, frag="inbox"):
     return "https://mail.google.com/mail/" + (f"?authuser={urllib.parse.quote(conta, safe='@')}" if conta else "") + "#" + frag
 
 
+def conta_gmail(tok):
+    """O email da conta do Google do jfy, buscado uma vez só (o jfy --login limpa: pode ter trocado de conta)."""
+    cfg = load()
+    if not cfg["google"].get("conta"):
+        cfg["google"]["conta"] = http_json(GMAIL.rsplit("/", 1)[0] + "/profile", token=tok)["emailAddress"]
+        save(cfg)
+    return cfg["google"]["conta"]
+
+
 def link_gmail(tok, thread):
     """Link do email no Gmail na conta do jfy. u/0 abre a primeira conta logada no navegador, que pode ser outra."""
-    cfg = load()
-    conta = cfg["google"].get("conta")
-    if not conta:  # uma vez só; o jfy --login limpa (pode ter trocado de conta)
-        conta = cfg["google"]["conta"] = http_json(GMAIL.rsplit("/", 1)[0] + "/profile", token=tok)["emailAddress"]
-        save(cfg)
-    return url_gmail(conta, "inbox/" + thread)
+    return url_gmail(conta_gmail(tok), "inbox/" + thread)
 
 
 def ler_email(tok, mid):
@@ -1915,6 +1919,73 @@ def github_login():
     ask(dim("\nEnter fecha esta aba. Atualize a aba GitHub do app."))
 
 
+# ---------- emails e portas (abas do app) ----------
+def caixa_google():
+    """Token do Google, ou a mensagem de como conectar (o app mostra)."""
+    if not load().get("google"):
+        sys.exit("Agenda e Gmail não conectados: rode jfy --login no terminal.")
+    return google_token()
+
+
+def guardar_ids(ids):
+    """Atualiza os não lidos que a barra do tmux e o app contam, sem esperar a próxima olhada no Gmail."""
+    st = json.load(open(EMAIL)) if os.path.exists(EMAIL) else {}
+    json.dump(dict(st, ids=ids, chegou=0 if not ids else st.get("chegou", 0)), open(EMAIL, "w"))
+
+
+def emails_json():
+    """Aba Emails: os não lidos da Principal (os 50 mais novos, com remetente e assunto) e o total (até 100)."""
+    from concurrent.futures import ThreadPoolExecutor
+    tok = caixa_google()
+    ids = gmail_nao_lidos(tok)
+    with ThreadPoolExecutor(8) as ex:
+        metas = list(ex.map(lambda i: gmail_meta(tok, i), ids[:50]))
+    guardar_ids(ids)
+    return {"conta": conta_gmail(tok), "url": url_gmail(conta_gmail(tok)), "total": len(ids), "mais": len(ids) >= 100,
+            "emails": [{"id": i, "ts": ts, "de": nome, "assunto": assunto} for i, (ts, nome, assunto) in zip(ids, metas)]}
+
+
+def email_json(mid):
+    """Um email inteiro (o texto; o html vira texto). Só lê: continua não lido no Gmail."""
+    tok = caixa_google()
+    m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    texto, anexos = corpo_email(m["payload"])
+    return {"id": mid, "de": h.get("from", ""), "para": h.get("to", ""), "data": h.get("date", ""),
+            "assunto": h.get("subject") or "(sem assunto)", "texto": texto, "anexos": anexos,
+            "link": link_gmail(tok, m["threadId"]), "lido": "UNREAD" not in m.get("labelIds", [])}
+
+
+def email_acao(mid, acao):
+    """Marca um email como lido ou nao_lido no Gmail."""
+    tok = caixa_google()
+    campo = {"lido": "removeLabelIds", "nao_lido": "addLabelIds"}.get(acao)
+    if not campo:
+        sys.exit("Use lido ou nao_lido.")
+    http_json(f"{GMAIL}/batchModify", token=tok, corpo={"ids": [mid], campo: ["UNREAD"]})
+    st = json.load(open(EMAIL)) if os.path.exists(EMAIL) else {}
+    guardar_ids([i for i in st.get("ids", []) if i != mid] + ([mid] if acao == "nao_lido" else []))
+
+
+def emails_lidos():
+    """Marca como lidos todos os não lidos da Principal (o t do leitor de emails)."""
+    n = marcar_lidos(caixa_google())
+    guardar_ids([])
+    return {"marcados": n}
+
+
+def portas_json():
+    """Aba Portas: o que está rodando (as portas de desenvolvimento do o), com o ícone e a cor de cada tecnologia."""
+    hexa = lambda n: "#%02x%02x%02x" % rgb256(n)
+    return [dict(x, cor=hexa(x["cor"]), icone=icone_png(x["icone"], x["cor"]) if x["icone"] in PIXEL else None) for x in portas()]
+
+
+def porta_encerrar(alvo):
+    """Encerra o que está numa porta (pid ou docker:<container>): pede para sair e, se em 3 s não saiu, força."""
+    if not encerrar(alvo):
+        sys.exit("Não consegui encerrar (sem permissão, ou ele voltou sozinho: banco do brew services volta).")
+
+
 def app(f, *a):
     """Roda um comando do app: o resultado em JSON no stdout; erro do Journify vira a mensagem, sem traceback."""
     try:
@@ -2776,7 +2847,9 @@ def main():
                 "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--reunioes-json": reunioes_json,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
-                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login}
+                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login,
+                "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
+                "--portas-json": portas_json, "--porta-encerrar": porta_encerrar}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
     if a[:1] == ["--horas-json"]:  # aba Horas do app: jfy --horas-json [AAAA-MM-DD]
