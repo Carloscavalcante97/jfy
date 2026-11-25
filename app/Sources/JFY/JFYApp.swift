@@ -59,6 +59,19 @@ extension JFY {
     }
 }
 
+/// "AAAA-MM-DD" do dia local, e de volta. O .iso8601 do Swift usa UTC: no Brasil, "25/11" virava 24/11 às 21h
+/// (o prazo aparecia um dia antes e podia ser salvo um dia depois).
+func diaLocal(_ d: Date) -> String {
+    let c = Calendar.current.dateComponents([.year, .month, .day], from: d)
+    return String(format: "%04d-%02d-%02d", c.year!, c.month!, c.day!)
+}
+
+func dataLocal(_ s: String) -> Date? {
+    let p = s.prefix(10).split(separator: "-").compactMap { Int($0) }
+    guard p.count == 3 else { return nil }
+    return Calendar.current.date(from: DateComponents(year: p[0], month: p[1], day: p[2], hour: 12))  // meio-dia: longe da virada
+}
+
 extension Color {
     /// "#rrggbb" do jfy (a cor do projeto nas abas do tmux, a do tema); sem cor, o cinza secundário.
     init(hex: String?) {

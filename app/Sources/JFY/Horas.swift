@@ -39,12 +39,16 @@ struct HorasTela: View {
     @State private var rascunho: [String: String] = [:]  // o que está sendo digitado, por "linha|campo"
     @FocusState private var focado: String?
     @State private var salvando: Set<String> = []  // "linha|campo" gravando agora
+    @State private var movendo: String?  // a linha (kid) com o seletor de dia aberto
+    @State private var novoDia = Date()
+    @State private var levou: (texto: String, dia: Date)?
     @State private var outro: PedidoOutro?
     @State private var textoOutro = ""
     @State private var confirmar = false
 
     private var hoje: Date { Calendar.current.startOfDay(for: Date()) }
-    private var iso: String { dia.formatted(.iso8601.year().month().day()) }
+    /// O dia local (AAAA-MM-DD). O .iso8601 do Swift formata em UTC: num fuso adiantado sairia o dia anterior.
+    private var iso: String { diaLocal(dia) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -53,6 +57,7 @@ struct HorasTela: View {
         }
         .padding(24)
         .task(id: "\(ativa)|\(iso)") { if ativa { await carregar() } }
+        .onChange(of: iso) { levou = nil }
         .onChange(of: focado) { antigo, _ in if let antigo { salvar(antigo) } }  // saiu do campo: salva o que ficou
         .alert(outro?.campo == "p" ? "Projeto no Journify" : "Categoria", isPresented: Binding(
             get: { outro != nil }, set: { if !$0 { outro = nil } })) {
@@ -114,6 +119,12 @@ struct HorasTela: View {
                   systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         }
         if let aviso { Label(aviso, systemImage: "info.circle").foregroundStyle(.secondary).textSelection(.enabled) }
+        if let levou {
+            HStack {
+                Label(levou.texto, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Button("Ver \(levou.dia.formatted(.dateTime.day().month(.twoDigits)))") { dia = levou.dia; self.levou = nil }.buttonStyle(.link)
+            }
+        }
         if h.itens.isEmpty {
             Text("Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.")
                 .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -127,7 +138,7 @@ struct HorasTela: View {
                         Text("Trabalhado").frame(width: 140, alignment: .leading)
                         Text("Lança").frame(width: 70, alignment: .leading)
                         Text("Descrição").frame(maxWidth: .infinity, alignment: .leading)
-                        Color.clear.frame(width: 22, height: 1)
+                        Color.clear.frame(width: 52, height: 1)
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     .padding(.horizontal, 12).padding(.vertical, 8)
@@ -148,6 +159,11 @@ struct HorasTela: View {
                             Text(hm(it.lanc)).monospacedDigit().fontWeight(.semibold).frame(width: 70, alignment: .leading)
                                 .help("O que vai para o Journify: o trabalhado com a regra (fator, múltiplos de 5)")
                             campo(it, "desc", atual: it.desc, dica: "descrição").frame(maxWidth: .infinity, alignment: .leading)
+                            Button { novoDia = dia; movendo = it.kid } label: { Image(systemName: "calendar") }
+                                .buttonStyle(.borderless).frame(width: 22)
+                                .disabled(it.reuniao)
+                                .help(it.reuniao ? "Reunião fica no dia em que aconteceu, pela agenda" : "Levar esta linha para outro dia")
+                                .popover(isPresented: Binding(get: { movendo == it.kid }, set: { if !$0 { movendo = nil } })) { mudarDia(it) }
                             Button { ajustar(it, "fora", "1") } label: { Image(systemName: "trash") }
                                 .buttonStyle(.borderless).help("Remover desse dia").frame(width: 22)
                         }
@@ -194,6 +210,43 @@ struct HorasTela: View {
             Button("Outra…") { textoOutro = ""; outro = PedidoOutro(item: it, campo: "cat") }
         } label: { Text(it.cat) }
         .menuStyle(.borderlessButton)
+    }
+
+    /// O seletor de dia de uma linha: o trabalhado vai junto e, se o outro dia já tem a mesma linha, soma. O jfy
+    /// confere a soma dos dois dias depois de mexer e, se não fechar, volta tudo como estava.
+    private func mudarDia(_ it: Horas.Item) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Levar para outro dia").font(.headline)
+            Text(it.desc).foregroundStyle(.secondary).lineLimit(2)
+            DatePicker("Dia", selection: $novoDia, in: ...hoje, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
+            Text("O trabalhado (\(hm(it.trabalhado))) vai junto. Se lá já existe esta mesma linha, os dois somam.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancelar") { movendo = nil }
+                Button("Levar para \(novoDia.formatted(.dateTime.day().month(.twoDigits)))") { mover(it, para: novoDia) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(Calendar.current.isDate(novoDia, inSameDayAs: dia))
+            }
+        }
+        .padding(16).frame(width: 300)
+    }
+
+    private func mover(_ it: Horas.Item, para d: Date) {
+        movendo = nil
+        let destino = diaLocal(d)
+        Task {
+            struct Feito: Decodable { let trabalhado: Int; let juntou: Bool }
+            let (r, msg): (Feito?, String?) = await JFY.ler(["--horas-mover", iso, it.kid, destino])
+            await carregar()
+            if let r {
+                aviso = nil
+                levou = ("Levei \(hm(r.trabalhado)) para \(d.formatted(.dateTime.day().month(.twoDigits)))" + (r.juntou ? ", somando com a mesma linha de lá." : "."),
+                         Calendar.current.startOfDay(for: d))
+            } else {
+                aviso = msg
+            }
+        }
     }
 
     /// Campo editável da tabela. Salva com Enter, ao sair do campo ou no ✓ que aparece enquanto há algo não salvo; Esc

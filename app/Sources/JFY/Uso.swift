@@ -208,7 +208,7 @@ private struct Conteudo: View {
                     .cornerRadius(2)
             }
             if let d = diaEmFoco {
-                let chave = d.formatted(.iso8601.year().month().day())
+                let chave = diaLocal(d)
                 let itens = (porDia[chave] ?? []).sorted { $0.custo > $1.custo }
                 RuleMark(x: .value("Dia", d, unit: .day))
                     .foregroundStyle(Color.secondary.opacity(0.15))

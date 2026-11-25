@@ -1050,14 +1050,14 @@ def inflar(linhas, regra):
             for k, m in linhas.items()}
 
 
-def horas_do_dia(dia):
-    """Linhas medidas do dia: o log do jfy (tasks, terminal livre, preparação de reunião) + reuniões da agenda.
-    Devolve (linhas, reunioes): reunioes = {linha: (início, título, palpite?)} para poder definir projeto e contexto."""
-    cfg, linhas, tasks = load(), {}, {}
+def entradas_do_log(dia):
+    """[(registro, chave da linha)] do log de horas do dia: a mesma chave (projeto, categoria, descrição) que agrupa
+    as linhas da tabela, para o mover_horas achar os registros de uma linha."""
     try:
         log = [json.loads(l) for l in open(os.path.join(HORAS_DIR, dia.isoformat() + ".jsonl"))]
     except OSError:
         log = []
+    tasks, out = {}, []
     for e in log:
         tid = e.get("tid")
         if tid and tid not in tasks:
@@ -1066,7 +1066,15 @@ def horas_do_dia(dia):
             except Exception:  # task apagada ou Journify fora: fica o id
                 tasks[tid] = {"title": tid}
         t = tasks.get(tid, {})
-        k = (e.get("pid") or t.get("projectId"), CATEGORIA.get(e["modo"], "Desenvolvimento"), e.get("titulo") or t.get("title"))
+        out.append((e, (e.get("pid") or t.get("projectId"), CATEGORIA.get(e["modo"], "Desenvolvimento"), e.get("titulo") or t.get("title"))))
+    return out
+
+
+def horas_do_dia(dia):
+    """Linhas medidas do dia: o log do jfy (tasks, terminal livre, preparação de reunião) + reuniões da agenda.
+    Devolve (linhas, reunioes): reunioes = {linha: (início, título, palpite?)} para poder definir projeto e contexto."""
+    cfg, linhas = load(), {}
+    for e, k in entradas_do_log(dia):
         linhas[k] = linhas.get(k, 0) + e["min"]
     try:
         evs = reunioes_do_dia(dia) if cfg.get("google") else []
@@ -1208,6 +1216,68 @@ def horas_json(dia):
             "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor(k)} for k, pr in cfg["projetos"].items()),
                                key=lambda x: x["nome"].lower()),
             "categorias": list(dict.fromkeys(CATEGORIA.values()))}
+
+
+def mover_horas(dia, kid, novo):
+    """Leva uma linha das horas (task, terminal livre, preparação de reunião) para outro dia, com os ajustes dela. O
+    trabalhado não muda: se o outro dia já tem a mesma linha, os dois somam. Reunião fica no dia da agenda. Guarda os
+    quatro arquivos antes e confere a soma do trabalhado dos dois dias depois: se não fechar, volta tudo como estava."""
+    cfg, d1, d2 = load(), date.fromisoformat(dia), date.fromisoformat(novo)
+    if d2 == d1:
+        return
+    if d2 > date.today():
+        sys.exit("Só dá para levar para hoje ou para um dia que já passou.")
+    trabalhado = lambda it: it["med"] if it["fixo"] is None else it["fixo"]
+    total = lambda d: sum(trabalhado(x) for x in itens_horas(cfg, d)[0] if not x["fora"])
+    with contextlib.redirect_stdout(sys.stderr):  # aviso de agenda fora não suja o JSON do app
+        it = next((x for x in itens_horas(cfg, d1)[0] if x["kid"] == kid and not x["fora"]), None)
+        if not it:
+            sys.exit("Essa linha não existe mais nesse dia.")
+        if it["reuniao"]:
+            sys.exit("Reunião fica no dia em que aconteceu, pela agenda. Para tirar dela daqui, remova a linha.")
+        alvo = next((x for x in itens_horas(cfg, d2)[0] if x["kid"] == kid), None)
+        if alvo and alvo["fora"]:
+            sys.exit(f"Em {d2.strftime('%d/%m')} essa mesma linha está removida: restaure ela lá antes de juntar.")
+        antes = total(d1) + total(d2)
+    log1, log2 = (os.path.join(HORAS_DIR, d.isoformat() + ".jsonl") for d in (d1, d2))
+    aj1, aj2 = ajustes_arq(d1), ajustes_arq(d2)
+    copia = {a: open(a).read() if os.path.exists(a) else None for a in (log1, log2, aj1, aj2)}
+    try:
+        entradas = entradas_do_log(d1)
+        da_linha = lambda k: "|".join(str(x) for x in k) == kid
+        desloca = (d2 - d1).days * 86400  # o registro passa a ter o horário no dia novo
+        vai = [dict(e, ini=e["ini"] + desloca, fim=e["fim"] + desloca) for e, k in entradas if da_linha(k)]
+        fica = [e for e, k in entradas if not da_linha(k)]
+        with open(log2, "a") as f:  # primeiro grava no dia novo: se algo quebrar no meio, sobra, não some
+            f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in vai)
+        with open(log1, "w") as f:
+            f.writelines(json.dumps(e, ensure_ascii=False) + "\n" for e in fica)
+        ler = lambda a: json.load(open(a)) if os.path.exists(a) else {}
+        a1, a2 = ler(aj1), ler(aj2)
+        meu = a1.pop(kid, {})
+        if alvo:  # o dia novo já tinha a linha: valem projeto, categoria e descrição de lá, e o trabalhado soma
+            junta = {k: v for k, v in a2.get(kid, {}).items() if k != "min"}
+            if alvo["fixo"] is not None or it["fixo"] is not None:
+                junta["min"] = trabalhado(alvo) + trabalhado(it)
+            if junta:
+                a2[kid] = junta
+        elif meu:
+            a2[kid] = meu
+        json.dump(a1, open(aj1, "w"), indent=1, ensure_ascii=False)
+        json.dump(a2, open(aj2, "w"), indent=1, ensure_ascii=False)
+        with contextlib.redirect_stdout(sys.stderr):
+            depois = total(d1) + total(d2)
+        if depois != antes:
+            raise RuntimeError(f"a soma do trabalhado mudou ({antes} → {depois} min)")
+    except Exception as erro:
+        for a, txt in copia.items():  # volta tudo como estava
+            if txt is None:
+                if os.path.exists(a):
+                    os.remove(a)
+            else:
+                open(a, "w").write(txt)
+        sys.exit(f"Não mudei o dia: {erro}. Nada mudou.")
+    return {"para": d2.isoformat(), "trabalhado": trabalhado(it), "juntou": bool(alvo)}
 
 
 def lancar_horas(cfg, dia):
@@ -3318,6 +3388,8 @@ def main():
         cfg, dia = load(), date.fromisoformat(a[1])
         it = next((it for it in itens_horas(cfg, dia)[0] if it["kid"] == a[2]), None)
         return aplicar_ajuste(cfg, dia, it, a[3], a[4] if a[4:] else "") if it else sys.exit("Essa linha não existe mais nesse dia.")
+    if a[:1] == ["--horas-mover"]:  # aba Horas do app: jfy --horas-mover <AAAA-MM-DD> <linha> <AAAA-MM-DD novo>
+        return app(mover_horas, *a[1:4])
     if a[:1] == ["--horas-lancar"]:  # aba Horas do app: abre uma aba do jfy e, dentro dela, o Claude lança pelo Chrome
         if os.environ.get("TMUX"):
             return lancar_horas(load(), date.fromisoformat(a[1]))
@@ -3592,6 +3664,47 @@ def selftest():
     aplicar_ajuste(cfg_h, hoje, entrega, "desc", "entrega do lote 3")
     aplicar_ajuste(cfg_h, hoje, itens_horas(cfg_h, hoje)[0][0], "p", "a")
     assert reuniao_info(agora - 7200, "Entrega Alpha Plast") == {"pid": "a", "contexto": "entrega do lote 3"}
+    # mudar o dia: o trabalhado vai junto (com a correção à mão) e soma com a mesma linha de lá
+    d1, d2 = hoje - timedelta(days=2), hoje - timedelta(days=1)
+    def reg(d, m, t):
+        ini = datetime.combine(d, datetime.min.time()).timestamp() + 36000
+        with open(os.path.join(HORAS_DIR, d.isoformat() + ".jsonl"), "a") as f:
+            f.write(json.dumps({"ini": ini, "fim": ini + m * 60, "min": m, "modo": "livre", "titulo": t}) + "\n")
+    reg(d1, 40, "Estudo X")
+    reg(d1, 30, "Estudo Y")
+    reg(d2, 20, "Estudo Y")
+    kx, ky = "None|Análise e estudo|Estudo X", "None|Análise e estudo|Estudo Y"
+    gravar_ajuste(d1, kx, min=60)  # o X de lá foi corrigido para 1 h
+    gravar_ajuste(d2, ky, min=25)  # o Y daqui, para 25 min
+    so = lambda d: {x["desc"]: (x["med"], x["fixo"]) for x in itens_horas(cfg_h, d)[0] if not x["reuniao"]}
+    assert mover_horas(d1.isoformat(), kx, d2.isoformat()) == {"para": d2.isoformat(), "trabalhado": 60, "juntou": False}
+    assert mover_horas(d1.isoformat(), ky, d2.isoformat())["juntou"]
+    assert so(d2) == {"Estudo X": (40, 60), "Estudo Y": (50, 55)} and so(d1) == {} and json.load(open(ajustes_arq(d1))) == {}, so(d2)
+    reuniao = next(x["kid"] for x in itens_horas(cfg_h, d2)[0] if x["reuniao"])
+    for args in ((d2.isoformat(), kx, (hoje + timedelta(days=1)).isoformat()), (d2.isoformat(), reuniao, d1.isoformat())):
+        try:
+            mover_horas(*args)  # para o futuro e reunião: recusa
+            assert False, args
+        except SystemExit:
+            pass
+    # se a soma do trabalhado não fechar depois de mexer, os arquivos voltam exatamente como eram
+    arquivos = [os.path.join(HORAS_DIR, d.isoformat() + x) for d in (d1, d2) for x in (".jsonl", ".ajustes.json")]
+    antes = {a: open(a).read() if os.path.exists(a) else None for a in arquivos}
+    real, chamadas_it = itens_horas, []
+    def quebra(cfg, d):  # da 5ª chamada em diante (já é o "depois") aparece uma linha a mais, de 5 min
+        chamadas_it.append(d)
+        r = real(cfg, d)
+        if len(chamadas_it) >= 5:
+            r[0].append({"kid": "x", "med": 5, "fixo": None, "fora": False})
+        return r
+    globals()["itens_horas"] = quebra
+    try:
+        mover_horas(d2.isoformat(), kx, d1.isoformat())
+        assert False, "mudou mesmo com a conta errada"
+    except SystemExit as e:
+        assert "Nada mudou" in str(e), e
+    globals()["itens_horas"] = real
+    assert {a: open(a).read() if os.path.exists(a) else None for a in arquivos} == antes
     h = horas_json(hoje)
     assert h["total"] == 40 and [(x["projeto"], x["desc"], x["reuniao"]) for x in h["itens"]] == [
         ("alpha", "entrega do lote 3", True), ("Souv", "protótipos Decal", True)], h["itens"]

@@ -332,8 +332,8 @@ struct TaskDetalhe: View {
             } label: { Label(rotuloPrioridade(d.prioridade ?? "sem prioridade"), systemImage: "flag") }
             .menuStyle(.borderlessButton).fixedSize()
             DatePicker("Prazo", selection: Binding(
-                get: { d.prazo.flatMap { try? Date($0, strategy: .iso8601.year().month().day()) } ?? Date() },
-                set: { mudar("prazo", $0.formatted(.iso8601.year().month().day())) }), displayedComponents: .date)
+                get: { d.prazo.flatMap(dataLocal) ?? Date() },
+                set: { mudar("prazo", diaLocal($0)) }), displayedComponents: .date)
                 .fixedSize()
             if d.prazo == nil { Text("sem prazo").font(.caption).foregroundStyle(.secondary) }
             if let pts = d.pontos {
