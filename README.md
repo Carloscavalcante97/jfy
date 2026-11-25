@@ -86,7 +86,7 @@ Cada task abre numa aba nova, com a cor do projeto. Abrir de novo algo que já t
 | O quê | Como funciona |
 |---|---|
 | 📅 reunião | contagem regressiva quando falta 1h ou menos para a próxima reunião do Google Agenda; vermelho a 5 min. **Clique** para entrar na chamada |
-| ✉ 3 | emails não lidos (no Gmail, só a aba Principal). Quando chega um novo, a barra destaca remetente e assunto por 5 min e o macOS notifica. **Clique no ✉** para ler num popup: abre direto o que acabou de chegar, ou a lista com hora, remetente e assunto (número lê, `o` + número abre no Gmail, `q` volta da leitura, `0` fecha) |
+| ✉ 3 | emails não lidos (no Gmail, só a aba Principal). Quando chega um novo, a barra destaca remetente e assunto por 5 min e o macOS notifica. **Clique no ✉** para ler num popup: abre direto o que acabou de chegar, ou a lista com hora, remetente e assunto (número lê, `o` + número abre no Gmail, `t` marca todos como lidos, `q` volta da leitura, `0` fecha) |
 | IA ▰▰▱▱ 23% | quanto você já usou do limite de 5h do Claude (e até que horas), e da semana; laranja a 50%, vermelho a 80% |
 | ⏱ 3h 12min / 8h | cronômetro da jornada: liga sozinho na primeira vez que você usa o jfy no dia, fica verde e notifica ao chegar a 8h |
 | 14:32 | relógio |
@@ -121,9 +121,9 @@ Os ícones em pixel art só aparecem com a fonte **JFY Mono** no terminal (o `in
 
 Rode `jfy --login`. Na primeira vez ele abre no navegador o [JSON do app jfy da Souv](https://drive.google.com/file/d/12zl0qgv3LfCi5dNgVzhNtyvpgUzZOS8a/view?usp=sharing), no Drive da empresa: baixe e arraste o arquivo para o terminal. O JSON só identifica o app; cada pessoa autoriza a própria conta e o acesso fica no Chaves do Mac dela. Depois abre o login do Google no navegador. Você entra com a conta da empresa e autoriza:
 - **agenda**: só leitura de eventos. Reuniões recusadas, eventos de dia inteiro e ausências ficam de fora;
-- **Gmail**: só leitura (`gmail.readonly`): o jfy lê os emails para o popup do ✉, mas não marca como lido, não apaga e não envia. Quem fez login antes dessa mudança precisa rodar `jfy --login` uma vez.
+- **Gmail**: `gmail.modify`: o jfy lê os emails para o popup do ✉ e marca como lidos quando você aperta `t` (todos os não lidos da Principal); não apaga e não envia. Quem fez login antes dessa mudança precisa rodar `jfy --login` uma vez para o `t` funcionar (ler continua funcionando sem isso).
 
-O acesso fica no Chaves do macOS. O jfy olha a agenda a cada 2 min e o Gmail a cada 30 s (um email novo aparece na barra em até ~45 s). Se a barra mostrar `✉ erro`, rode `jfy --login` de novo.
+O acesso fica no Chaves do macOS. O jfy olha a agenda a cada 30 s (e o ícone da barra de cima, toda vez que você abre o menu) e o Gmail a cada 30 s (um email novo aparece na barra em até ~45 s). Se a barra mostrar `✉ erro`, rode `jfy --login` de novo.
 
 ### Portas abertas (`o`)
 
@@ -131,7 +131,7 @@ No menu principal, `o` lista as portas abertas por programas de desenvolvimento,
 
 ### Ícone na barra de cima do Mac
 
-Com o extra do SwiftBar, o jfy ganha um ícone (a chama, só ela: em Mac com notch, ícone largo some atrás dele) ao lado do relógio do Mac. O menu tem: abrir o jfy (traz o terminal dele, ou abre um com o jfy), abrir o Journify, pausar/retomar a jornada, as próximas reuniões (clique entra na chamada), as tasks no foco (clique abre no Journify), as portas abertas com "Encerrar" em cada uma e os emails não lidos. Atualiza a cada minuto e quando você abre o menu.
+Com o extra do SwiftBar, o jfy ganha um ícone (a chama) ao lado do relógio do Mac, que abre junto com o Mac. A até 1h de uma reunião, a chama vira o ícone de reunião do tema, que esquenta (laranja a 15 min, vermelho a 5): o nome e a contagem ficam na primeira linha do menu, com "Entrar na chamada". A 5 min chega a notificação, mesmo com o jfy fechado; clicar nela entra na chamada. O ícone nunca leva texto: em Mac com notch, o que fica largo some atrás dele. O menu tem: abrir o jfy (traz o terminal dele, ou abre um com o jfy), abrir o Journify, pausar/retomar a jornada, as próximas reuniões (clique entra na chamada), as tasks no foco (clique abre no Journify), as portas abertas com "Encerrar" em cada uma e os emails não lidos. Atualiza a cada minuto e quando você abre o menu.
 
 ### Notificação das 7h
 
@@ -196,7 +196,7 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 | projeto e contexto de cada reunião (base das horas) | `~/.jfy/reunioes.json` |
 | ajustes que você fez na tabela de horas de um dia | `~/.jfy/horas/AAAA-MM-DD.ajustes.json` |
 | notificação das 7h | `~/Library/LaunchAgents/jfy.dia.plist` |
-| plugin do ícone na barra de cima | `~/.jfy/swiftbar/jfy.1m.sh` (ou a pasta de plugins do seu SwiftBar) |
+| ícone na barra de cima | plugin em `~/.jfy/swiftbar/jfy.1m.sh` (ou na pasta de plugins do seu SwiftBar); abre com o Mac por `~/Library/LaunchAgents/jfy.swiftbar.plist` |
 | acesso ao Google | Chaves do macOS, item `jfy-google` |
 
 **Duas tasks no mesmo repositório ao mesmo tempo**: a segunda roda num `git worktree` separado, com branch própria, para os pipelines não mexerem nos mesmos arquivos. O worktree recebe uma cópia dos `.env`, mas não as dependências (`node_modules`, venv); o Claude instala se precisar.
@@ -216,7 +216,7 @@ Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git
 - **O `/pipeline` diz que a task não é de código**: use a opção `2` (conversar com o Claude).
 - **Um projeto não aparece no menu**: o menu mostra os projetos configurados e os que têm tasks abertas atribuídas a você. Um projeto novo, sem task sua, só aparece depois de configurado (ou quando chegar uma task).
 - **Ícones do tema não aparecem (espaço vazio ou quadradinho)**: o terminal não está com a fonte JFY Mono, ou não foi reiniciado depois de instalá-la. Escolha "JFY Mono" e feche o terminal com ⌘Q. Depois de um `git pull` que trouxe ícones novos, rode o `./install.sh` (ele copia a fonte nova) e reinicie o terminal.
-- **O ícone da barra de cima não aparece**: abra o SwiftBar (`open /Applications/SwiftBar.app`). Em Mac com notch, o macOS esconde atrás do notch os ícones que não cabem (o mais novo é o primeiro a sumir): segure ⌘ e arraste a chama para perto do relógio, ou tire da barra um ícone que você não usa.
+- **O ícone da barra de cima não aparece**: abra o jfy (ele reabre o SwiftBar) ou rode `open /Applications/SwiftBar.app`. Em Mac com notch, o macOS esconde atrás do notch os ícones que não cabem (o mais novo é o primeiro a sumir): segure ⌘ e arraste a chama para perto do relógio, ou tire da barra um ícone que você não usa.
 
 ## Desinstalar
 
@@ -224,6 +224,7 @@ Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git
 rm "$(command -v jfy)"
 find ~/.claude/commands ~/.claude/agents ~/.claude/hooks -type l -lname "*pipeline-Claude/*" -delete
 launchctl bootout gui/$(id -u)/jfy.dia; rm ~/Library/LaunchAgents/jfy.dia.plist
+launchctl bootout gui/$(id -u)/jfy.swiftbar; rm ~/Library/LaunchAgents/jfy.swiftbar.plist
 brew uninstall --cask swiftbar  # se você só usava ele para o jfy
 security delete-generic-password -s jfy-google
 rm -rf ~/.jfy ~/jfy

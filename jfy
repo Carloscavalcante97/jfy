@@ -536,7 +536,7 @@ def barra_ia():
 
 
 ESCOPOS = ["https://www.googleapis.com/auth/calendar.events.readonly",  # só lê eventos
-           "https://www.googleapis.com/auth/gmail.readonly"]  # lê o email no popup do ✉; não marca, não apaga, não envia
+           "https://www.googleapis.com/auth/gmail.modify"]  # lê o email no popup do ✉ e marca como lido; não apaga nem envia
 # gmail.metadata não entra junto: com ele no token o Gmail recusa format=full mesmo tendo o readonly
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 # JSON do client OAuth do app "jfy" da Souv: fica no Drive, fora do repo (o GitHub barra segredo em commit)
@@ -555,12 +555,17 @@ def chaves(servico, valor=None):
                    text=True, check=True, capture_output=True)
 
 
-def http_json(url, dados=None, token=None):
-    """GET (ou POST de formulário) no Google; erro HTTP vira mensagem com o motivo (API desligada, escopo negado...)."""
-    req = urllib.request.Request(url, dados and urllib.parse.urlencode(dados).encode(),
-                                 {"Authorization": "Bearer " + token} if token else {})
+def http_json(url, dados=None, token=None, corpo=None):
+    """GET, POST de formulário (dados) ou de JSON (corpo) no Google; erro HTTP vira mensagem com o motivo (API
+    desligada, escopo negado...). Resposta vazia (204) vira {}."""
+    cab = {"Authorization": "Bearer " + token} if token else {}
+    if corpo is not None:
+        cab["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, json.dumps(corpo).encode() if corpo is not None
+                                 else dados and urllib.parse.urlencode(dados).encode(), cab)
     try:
-        return json.load(urllib.request.urlopen(req, timeout=20))
+        r = urllib.request.urlopen(req, timeout=20).read()
+        return json.loads(r) if r else {}
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Google {e.code}: {e.read().decode(errors='replace')[:300]}") from None
 
@@ -668,6 +673,21 @@ def gmail_nao_lidos(token):
     """Ids dos não lidos da aba Principal da caixa de entrada, do mais novo para o mais antigo (até 100)."""
     q = urllib.parse.urlencode([("labelIds", x) for x in ("INBOX", "UNREAD", "CATEGORY_PERSONAL")] + [("maxResults", 100)])
     return [m["id"] for m in http_json(f"{GMAIL}?{q}", token=token).get("messages", [])]
+
+
+def marcar_lidos(token):
+    """Marca como lidos todos os não lidos da Principal (não só os 100 da barra). Devolve quantos."""
+    ids, pagina = [], None
+    while True:
+        q = [("labelIds", x) for x in ("INBOX", "UNREAD", "CATEGORY_PERSONAL")] + [("maxResults", 500)]
+        r = http_json(f"{GMAIL}?{urllib.parse.urlencode(q + ([('pageToken', pagina)] if pagina else []))}", token=token)
+        ids += [m["id"] for m in r.get("messages", [])]
+        pagina = r.get("nextPageToken")
+        if not pagina:
+            break
+    for k in range(0, len(ids), 1000):  # o batchModify aceita até 1000 por vez
+        http_json(f"{GMAIL}/batchModify", token=token, corpo={"ids": ids[k:k + 1000], "removeLabelIds": ["UNREAD"]})
+    return len(ids)
 
 
 def gmail_meta(token, mid):
@@ -792,7 +812,20 @@ def ler_emails():
         itens = [f"{dim(quando(ts))}  {c(corta(nome, 22).ljust(22), 255, True)}  {corta(assunto, larg - 40)}"
                  for ts, nome, assunto in metas]
         op = menu(f"Emails não lidos ({len(ids)}) · Principal", itens or [(dim("caixa zerada"),)],
-                  [("número", "lê"), ("o + número", "abre no Gmail")], zero="fecha", prefixos={"o": len(ids)})
+                  [("número", "lê"), ("o + número", "abre no Gmail")] + ([("t", "marca todos como lidos")] if ids else []),
+                  zero="fecha", teclas="t" if ids else "", prefixos={"o": len(ids)})
+        if op == "t":
+            if escolha("\n Marcar todos os não lidos da Principal como lidos no Gmail? (s/n) [n] ", "sn") == "s":
+                try:
+                    n = marcar_lidos(tok)
+                    st = json.load(open(EMAIL)) if os.path.exists(EMAIL) else {}
+                    json.dump(dict(st, ids=[], chegou=0), open(EMAIL, "w"))  # a barra zera já, sem esperar a próxima olhada
+                    ids, metas = [], []
+                    ask(c(f" {n} email(s) marcados como lidos. Enter volta.", 78))
+                except Exception as e:
+                    ask(c(f" Gmail: {e}\n" + (" Rode jfy --login de novo: o jfy agora pede licença para marcar como lido.\n"
+                                                if "403" in str(e) else "") + " Enter volta.", 203))
+            continue
         n = op.lstrip("o")
         if not (n.isdigit() and 1 <= int(n) <= len(ids)):
             return
@@ -807,7 +840,8 @@ def ler_emails():
 
 
 def eventos_hoje(forcar=False):
-    """Reuniões de hoje, com cache: busca no máximo a cada 2min (reunião marcada agora aparece logo); sem rede, fica com o que tinha."""
+    """Reuniões de hoje, com cache: busca no máximo a cada 30s (reunião marcada ou apagada agora aparece logo); sem rede,
+    fica com o que tinha. O Google só avisa mudança em tempo real para um servidor na internet, então é olhar de novo."""
     hoje = date.today().isoformat()
     if not load().get("google"):
         return []
@@ -815,7 +849,7 @@ def eventos_hoje(forcar=False):
         cache = json.load(open(AGENDA))
     except (OSError, ValueError):
         cache = {}
-    if forcar or cache.get("data") != hoje or time.time() - cache.get("baixado", 0) > 120:
+    if forcar or cache.get("data") != hoje or time.time() - cache.get("baixado", 0) > 30:
         try:
             cache = {"data": hoje, "baixado": time.time(), "eventos": agenda_google()}
             json.dump(cache, open(AGENDA, "w"))
@@ -824,10 +858,12 @@ def eventos_hoje(forcar=False):
     return cache.get("eventos", []) if cache.get("data") == hoje else []
 
 
-def proxima_reuniao():
-    """Contagem regressiva: reunião que começa em até 1h, ou que está rolando. Notifica uma vez a 5 min."""
+def reuniao_perto():
+    """Reunião que começa em até 1h, ou que está rolando: (evento, minutos até ela), ou (None, 0). Notifica uma vez
+    a 5 min. Chamada pela barra do tmux e pelo ícone da barra de cima: a marca evita aviso duplo."""
     agora = time.time()
-    for i, f, t, *r in eventos_hoje():
+    for ev in eventos_hoje():
+        i, f, t, *r = ev
         if f > agora and i - agora <= 3600:
             m = int((i - agora + 59) // 60)
             marca = os.path.join(RUN_DIR, "reuniao-avisada")
@@ -835,11 +871,23 @@ def proxima_reuniao():
                 open(marca, "w").write(f"{i}")
                 notificar(f"Reunião em {fmt_min(m)}", t + (" · clique para entrar na chamada" if r and r[0] else ""),
                           abrir=r[0] if r and r[0] else None)
-            cor = 203 if m <= 5 else 214 if m <= 15 else 39
-            # range=user|reuniao: clicar entra na chamada (jfy --entrar, ver o tmux.conf)
-            return (f"#[range=user|reuniao fg=colour{cor},bold]{ic('reuniao')} {t[:24].replace('#', '##')} "
-                    f"{'agora' if i <= agora else 'em ' + fmt_min(m)}#[default norange]  ")
-    return ""
+            return ev, m
+    return None, 0
+
+
+def quando_reuniao(ev, m):
+    return "agora" if ev[0] <= time.time() else "em " + fmt_min(m)
+
+
+def proxima_reuniao():
+    """Contagem regressiva na barra do tmux."""
+    ev, m = reuniao_perto()
+    if not ev:
+        return ""
+    cor = 203 if m <= 5 else 214 if m <= 15 else 39
+    # range=user|reuniao: clicar entra na chamada (jfy --entrar, ver o tmux.conf)
+    return (f"#[range=user|reuniao fg=colour{cor},bold]{ic('reuniao')} {ev[2][:24].replace('#', '##')} "
+            f"{quando_reuniao(ev, m)}#[default norange]  ")
 
 
 def relogio():
@@ -1384,9 +1432,20 @@ def barra_mac():
     acao = lambda *a, atualiza=False: (f" | bash={SELF} " + " ".join(f"param{i}={x}" for i, x in enumerate(a, 1))
                                        + " terminal=false" + (" refresh=true" if atualiza else ""))
     m, rodando = cronometro()
-    evs = [e for e in eventos_hoje() if e[1] > agora]
-    # só o ícone: em Mac com notch, o que não cabe entre o notch e os outros ícones some (texto alargava demais)
-    L = [f" | image={icone_png('chama', TEMA.get(39, 202))}", "---",
+    evs = [e for e in eventos_hoje(forcar=True) if e[1] > agora]  # o menu abre com a agenda de agora (o reuniao_perto usa a mesma)
+    # só um ícone, sem texto: em Mac com notch, o que não cabe entre ele e os outros ícones some (texto alargava).
+    # A até 1h de uma reunião, a chama vira o ícone de reunião do tema, que esquenta (laranja a 15 min, vermelho a 5)
+    ev, mr = reuniao_perto()
+    if ev:
+        nome = TEMA.get("icones", {}).get("reuniao", "alvo")
+        cor = 203 if mr <= 5 else 214 if mr <= 15 else 39
+        link = ev[3] if len(ev) > 3 and ev[3] else None
+        L = [f" | image={icone_png(nome if nome in PIXEL else 'alvo', TEMA.get(cor, cor))}", "---",
+             limpo(f"{ev[2]} {quando_reuniao(ev, mr)}") + (f" | href={link}" if link else "")]
+        L += ([f"Entrar na chamada | href={link}"] if link else []) + ["---"]
+    else:
+        L = [f" | image={icone_png('chama', TEMA.get(39, 202))}", "---"]
+    L += [
          "Abrir o jfy" + acao("--abrir"),
          f"Abrir o Journify | href={cfg.get('journify', JOURNIFY)}",
          ("Pausar" if rodando else "Retomar") + f" a jornada ({fmt_min(m)} hoje)" + acao("--pausar", atualiza=True)]
@@ -2021,6 +2080,9 @@ def principal():
     if os.environ.get("__CFBundleIdentifier", cfg.get("terminal")) != cfg.get("terminal"):  # "Abrir o jfy" da barra de cima
         cfg["terminal"] = os.environ["__CFBundleIdentifier"]
         save(cfg)
+    if os.path.exists(os.path.expanduser("~/Library/LaunchAgents/jfy.swiftbar.plist")) and \
+            subprocess.run(["pgrep", "-x", "SwiftBar"], capture_output=True).returncode:
+        subprocess.run(["open", "-g", "/Applications/SwiftBar.app"])  # ícone da barra de cima fechado: volta
     if not cfg.get("comecou"):  # primeiro acesso: guia o que falta antes do menu
         primeiros_passos()
     tasks, buscado = [], 0

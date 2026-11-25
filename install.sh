@@ -125,7 +125,20 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 exec "$DIR/jfy" --mac
 EOF
     chmod +x "$PLUG/jfy.1m.sh"
-    open /Applications/SwiftBar.app && ok "ícone do jfy na barra de cima (SwiftBar, plugins em ${PLUG/#$HOME/~})"
+    # abre o SwiftBar quando o Mac liga (e o jfy reabre se ele for fechado)
+    SB="$HOME/Library/LaunchAgents/jfy.swiftbar.plist"
+    mkdir -p "$(dirname "$SB")"
+    cat > "$SB" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>jfy.swiftbar</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/open</string><string>-g</string><string>/Applications/SwiftBar.app</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
+    launchctl bootout "gui/$(id -u)/jfy.swiftbar" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$SB" && ok "ícone do jfy na barra de cima, abre junto com o Mac (SwiftBar, plugins em ${PLUG/#$HOME/~})"
   fi
 fi
 PLIST="$HOME/Library/LaunchAgents/jfy.dia.plist"
