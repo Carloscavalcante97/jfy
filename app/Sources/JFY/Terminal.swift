@@ -118,6 +118,45 @@ final class AbasTmux: ObservableObject {
         }
     }
 
+    /// Renomeia a aba. O jfy acha as abas pela marca @jfy, não pelo nome; só o "menu" é pelo nome (por isso ele não
+    /// muda, e nenhuma outra vira "menu").
+    func renomear(_ a: Aba, _ nome: String) {
+        let n = nome.trimmingCharacters(in: .whitespaces)
+        guard a.nome != "menu", !n.isEmpty, n != "menu" else { return }
+        mexer([["rename-window", "-t", a.id, n]])
+    }
+
+    /// Fecha a aba e o que roda nela (o Claude daquela task, por exemplo). O menu não fecha.
+    func fechar(_ a: Aba) {
+        guard a.nome != "menu" else { return }
+        mexer([["kill-window", "-t", a.id]])
+    }
+
+    /// Arrastar na barra lateral: troca as janelas de lugar no tmux até a ordem ficar a da lista (o menu fica em
+    /// primeiro: o jfy recria ele no índice 0 se sumir).
+    func mover(_ origem: IndexSet, _ destino: Int) {
+        var nova = itens
+        nova.move(fromOffsets: origem, toOffset: destino)
+        if let m = nova.firstIndex(where: { $0.nome == "menu" }) { nova.insert(nova.remove(at: m), at: 0) }
+        var atual = itens.map(\.id), trocas: [[String]] = []
+        for (i, a) in nova.enumerated() where atual[i] != a.id {
+            let j = atual.firstIndex(of: a.id)!
+            trocas.append(["swap-window", "-d", "-s", a.id, "-t", atual[i]])
+            atual.swapAt(i, j)
+        }
+        // as trocas em cadeia mudam a aba ativa (com ou sem -d): no fim, volta para a que estava
+        if let ativa = itens.first(where: \.ativa), !trocas.isEmpty { trocas.append(["select-window", "-t", ativa.id]) }
+        itens = nova  // já mostra na ordem nova; a leitura confirma
+        mexer(trocas)
+    }
+
+    private func mexer(_ comandos: [[String]]) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            for c in comandos { _ = Self.tmux(c) }
+            DispatchQueue.main.async { self.ler() }
+        }
+    }
+
     private static func tmux(_ args: [String]) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")

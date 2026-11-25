@@ -14,7 +14,12 @@ struct HorasTela: View {
             let med, lanc, trabalhado: Int
             let fixo: Int?
             let fora, reuniao, palpite: Bool
+            let estado: String?  // depois do lançamento: "lancada", "mudou" ou "nova"
             var id: String { kid }
+        }
+        struct Lancado: Decodable {
+            let em: Double?  // nil: lançado antes de o jfy guardar a foto (não se sabe o quê, só que o dia tem horas lá)
+            let removidas: Int
         }
         struct Projeto: Decodable, Identifiable {
             let id, nome: String
@@ -25,6 +30,7 @@ struct HorasTela: View {
         let itens: [Item]
         let projetos: [Projeto]
         let categorias: [String]
+        let lancado: Lancado?
     }
 
     /// Projeto ou categoria fora da lista: o nome é digitado num alerta.
@@ -68,11 +74,16 @@ struct HorasTela: View {
             }
             Button("Cancelar", role: .cancel) { outro = nil }
         }
-        .confirmationDialog("Lançar \(fmt(horas?.total ?? 0)) de \(dia.formatted(.dateTime.day().month(.twoDigits))) no Journify?",
-                            isPresented: $confirmar) {
-            Button("Lançar") { lancar() }
+        .confirmationDialog(horas?.lancado == nil
+                            ? "Lançar \(fmt(horas?.total ?? 0)) de \(dia.formatted(.dateTime.day().month(.twoDigits))) no Journify?"
+                            : "Este dia já foi lançado. Lançar de novo?", isPresented: $confirmar) {
+            Button(horas?.lancado == nil ? "Lançar" : "Editar as horas já registradas") { lancar() }
         } message: {
-            Text("O Claude abre numa aba do jfy e preenche o minhas-horas pelo Chrome, um lançamento por linha. Esse passo usa tokens.")
+            if let l = horas?.lancado {
+                Text("Foi lançado\(quando(l.em)). Essa ação vai editar as horas já registradas no Journify para ficarem iguais à tabela (e criar só as linhas novas), sem duplicar. Esse passo usa tokens.")
+            } else {
+                Text("O Claude abre numa aba do jfy e preenche o minhas-horas pelo Chrome, um lançamento por linha. Esse passo usa tokens.")
+            }
         }
     }
 
@@ -110,9 +121,10 @@ struct HorasTela: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Lançar no Journify…") { confirmar = true }
+            Button(h.lancado == nil ? "Lançar no Journify…" : "Lançar de novo…") { confirmar = true }
                 .buttonStyle(.borderedProminent).disabled(vivos.isEmpty)
         }
+        if let l = h.lancado { avisoLancado(l, vivos) }
         let semProjeto = vivos.filter { $0.pid == nil }.count
         if semProjeto > 0 {
             Label("\(semProjeto) linha(s) sem projeto: escolha na coluna Projeto, ou o Claude pergunta ao lançar.",
@@ -136,7 +148,7 @@ struct HorasTela: View {
                         Text("Projeto").frame(width: 190, alignment: .leading)
                         Text("Categoria").frame(width: 150, alignment: .leading)
                         Text("Trabalhado").frame(width: 140, alignment: .leading)
-                        Text("Lança").frame(width: 70, alignment: .leading)
+                        Text("Lança").frame(width: 84, alignment: .leading)
                         Text("Descrição").frame(maxWidth: .infinity, alignment: .leading)
                         Color.clear.frame(width: 52, height: 1)
                     }
@@ -156,8 +168,12 @@ struct HorasTela: View {
                             }
                             .frame(width: 140, alignment: .leading)
                             .help("O tempo trabalhado (medido: \(hm(it.med))). Corrija se o medido estiver errado: o fator vale em cima. Enter, clicar fora ou o ✓ salva; vazio volta ao medido; Esc desfaz.")
-                            Text(hm(it.lanc)).monospacedDigit().fontWeight(.semibold).frame(width: 70, alignment: .leading)
-                                .help("O que vai para o Journify: o trabalhado com a regra (fator, múltiplos de 5)")
+                            HStack(spacing: 4) {
+                                Text(hm(it.lanc)).monospacedDigit().fontWeight(.semibold)
+                                    .help("O que vai para o Journify: o trabalhado com a regra (fator, múltiplos de 5)")
+                                marcaLancada(it.estado)
+                            }
+                            .frame(width: 84, alignment: .leading)
                             campo(it, "desc", atual: it.desc, dica: "descrição").frame(maxWidth: .infinity, alignment: .leading)
                             Button { novoDia = dia; movendo = it.kid } label: { Image(systemName: "calendar") }
                                 .buttonStyle(.borderless).frame(width: 22)
@@ -317,6 +333,40 @@ struct HorasTela: View {
             let r = await JFY.rodar(["--horas-lancar", iso])
             if r.status == 0 { irParaJFY() } else { aviso = r.erro.trimmingCharacters(in: .whitespacesAndNewlines) }
         }
+    }
+
+    // ---------- já lançado ----------
+    /// O dia já foi para o Journify: avisa antes de alguém lançar de novo e diz o que mudou desde então.
+    private func avisoLancado(_ l: Horas.Lancado, _ vivos: [Horas.Item]) -> some View {
+        let mudou = vivos.filter { $0.estado == "mudou" }.count, novas = vivos.filter { $0.estado == "nova" }.count
+        let mudancas = [mudou > 0 ? "\(mudou) alterada\(mudou == 1 ? "" : "s")" : nil,
+                        novas > 0 ? "\(novas) nova\(novas == 1 ? "" : "s")" : nil,
+                        l.removidas > 0 ? (l.removidas == 1 ? "1 saiu da tabela" : "\(l.removidas) saíram da tabela") : nil].compactMap { $0 }
+        return Label {
+            Text(l.em == nil
+                 ? "Este dia já tem horas no Journify (lançadas antes de o jfy guardar o que foi lançado). Lançar de novo edita as horas já registradas, sem duplicar."
+                 : "Já lançado no Journify\(quando(l.em)). " + (mudancas.isEmpty
+                ? "A tabela está igual ao que foi lançado; lançar de novo vai editar as horas já registradas."
+                : "Desde então: " + mudancas.joined(separator: ", ") + ". Lançar de novo edita as horas já registradas, sem duplicar."))
+        } icon: { Image(systemName: "checkmark.seal.fill").foregroundStyle(Souv.destaque) }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Souv.primaria.opacity(0.12)))
+    }
+
+    @ViewBuilder private func marcaLancada(_ estado: String?) -> some View {
+        switch estado {
+        case "lancada": Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).help("Já está no Journify assim")
+        case "mudou": Image(systemName: "pencil.circle.fill").foregroundStyle(.orange)
+            .help("Mudou desde o lançamento: lançar de novo edita o que está no Journify")
+        case "nova": Image(systemName: "plus.circle.fill").foregroundStyle(Souv.primaria).help("Nova: ainda não está no Journify")
+        default: EmptyView()
+        }
+    }
+
+    private func quando(_ ts: Double?) -> String {
+        guard let ts else { return "" }
+        return " em " + Date(timeIntervalSince1970: ts).formatted(.dateTime.day().month(.twoDigits).hour().minute().locale(Locale(identifier: "pt_BR")))
     }
 
     // ---------- formatos ----------

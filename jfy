@@ -1355,14 +1355,15 @@ def horas_json(dia):
     with contextlib.redirect_stdout(sys.stderr):  # aviso de agenda fora vai para o stderr, o JSON fica limpo
         itens, medido, pela_regra = itens_horas(cfg, dia)
     cor = lambda p: "#%02x%02x%02x" % rgb256(cor_projeto(p)) if p else None
-    return {"dia": dia.isoformat(), "medido": medido, "pela_regra": pela_regra, "fator": cfg.get("horas", {}).get("fator", 1),
+    lancado, estado = estado_lancado(dia, itens)
+    return {"dia": dia.isoformat(), "lancado": lancado, "medido": medido, "pela_regra": pela_regra, "fator": cfg.get("horas", {}).get("fator", 1),
             "total": sum(it["lanc"] for it in itens if not it["fora"]),
             "corrigidas": sum(1 for it in itens if it["fixo"] is not None and not it["fora"]),
             "itens": [{"kid": it["kid"], "pid": it["p"], "projeto": nome_journify(cfg, it["p"]) if it["p"] else None,
                        "cor": cor(it["p"]), "cat": it["cat"], "desc": it["desc"], "med": it["med"], "lanc": it["lanc"],
                        "trabalhado": it["med"] if it["fixo"] is None else it["fixo"],
                        "fixo": it["fixo"], "fora": it["fora"], "reuniao": bool(it["reuniao"]),
-                       "palpite": bool(it["reuniao"] and it["reuniao"][2] and it["p"])} for it in itens],
+                       "palpite": bool(it["reuniao"] and it["reuniao"][2] and it["p"]), "estado": estado.get(it["kid"])} for it in itens],
             "projetos": menu_projetos(cfg),
             "categorias": list(dict.fromkeys(projetos_journify()["categorias"] + list(CATEGORIA.values())))}
 
@@ -1429,6 +1430,39 @@ def mover_horas(dia, kid, novo):
     return {"para": d2.isoformat(), "trabalhado": trabalhado(it), "juntou": bool(alvo)}
 
 
+def arq_lancado(dia):
+    return os.path.join(HORAS_DIR, f"{dia.isoformat()}.lancado.json")
+
+
+def foto_horas(it):
+    """O que conta para dizer se uma linha mudou desde o lançamento: o que vai para o Journify."""
+    return {"p": it["p"], "cat": it["cat"], "desc": it["desc"], "lanc": it["lanc"]}
+
+
+def horas_lancado(dia):
+    """jfy --horas-lancado <dia>: o Claude roda no fim do lançamento, depois de conferir o dia no Journify. Guarda a foto
+    das linhas: a aba Horas avisa que o dia já foi lançado e mostra o que mudou desde então."""
+    dia = date.fromisoformat(dia) if isinstance(dia, str) else dia
+    vivos = [it for it in itens_horas(load(), dia)[0] if not it["fora"]]
+    os.makedirs(HORAS_DIR, exist_ok=True)
+    json.dump({"em": time.time(), "itens": {it["kid"]: foto_horas(it) for it in vivos}}, open(arq_lancado(dia), "w"), ensure_ascii=False)
+    print(f"{dia.strftime('%d/%m')} marcado como lançado ({len(vivos)} linha(s)).")
+
+
+def estado_lancado(dia, itens):
+    """(resumo do lançamento ou None, {kid: "lancada" | "mudou" | "nova"}) para a aba Horas."""
+    try:
+        foto = json.load(open(arq_lancado(dia)))
+    except (OSError, ValueError):
+        return None, {}
+    if foto.get("itens") is None:  # lançado antes de o jfy guardar a foto: só se sabe que o dia já tem horas lá
+        return {"em": None, "removidas": 0}, {}
+    vivos = [it for it in itens if not it["fora"]]
+    estado = {it["kid"]: "nova" if it["kid"] not in foto["itens"]
+              else "lancada" if foto["itens"][it["kid"]] == foto_horas(it) else "mudou" for it in vivos}
+    return {"em": foto["em"], "removidas": len(set(foto["itens"]) - set(estado))}, estado
+
+
 def lancar_horas(cfg, dia):
     """Abre o Claude para lançar as horas do dia no minhas-horas pelo Chrome ("Lançar no Journify" da aba Horas)."""
     nome = lambda p: nome_journify(cfg, p)
@@ -1444,7 +1478,7 @@ def lancar_horas(cfg, dia):
 - Categoria: a opção do select mais próxima da sugerida.
 - O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
 - Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
-- No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}."""
+- No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}. Conferido, rode `{SELF} --horas-lancado {dia.isoformat()}` (o app passa a avisar que o dia já foi lançado)."""
     subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
     notificar("Lançamento de horas terminou", f"{dia.strftime('%d/%m')}: confira o dia no Journify", app="horas")
 
@@ -3751,7 +3785,7 @@ def main():
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--github-sair": github_sair,
                 "--contas-json": contas_json, "--google-sair": google_sair, "--journify-token": journify_token,
-                "--journify-sair": journify_sair, "--projetos-journify": guardar_projetos_journify, "--pr-revisar": pr_revisar,
+                "--journify-sair": journify_sair, "--projetos-journify": guardar_projetos_journify, "--horas-lancado": horas_lancado, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
                 "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-ia": email_ia, "--contatos-json": contatos_json,
@@ -3814,7 +3848,7 @@ def main():
 
 
 def selftest():
-    import base64, glob, io
+    import base64, contextlib, glob, io
     salvo = {k: globals()[k] for k in ("load", "save", "chaves", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
     cfg_f, apagados = {"google": {"client_id": "i", "client_secret": "s", "conta": "a@b"}}, []
     tmp = os.path.join(RUN_DIR, "teste-sair")
@@ -4102,6 +4136,18 @@ def selftest():
         assert "Nada mudou" in str(e), e
     globals()["itens_horas"] = real
     assert {a: open(a).read() if os.path.exists(a) else None for a in arquivos} == antes
+    with contextlib.redirect_stdout(io.StringIO()):
+        horas_lancado(hoje.isoformat())
+    h = horas_json(hoje)
+    assert h["lancado"]["removidas"] == 0 and [x["estado"] for x in h["itens"]] == ["lancada", "lancada"], h["itens"]
+    foto = json.load(open(arq_lancado(hoje)))
+    k0, k1 = list(foto["itens"])
+    foto["itens"][k0]["lanc"] += 5
+    foto["itens"]["sumiu"] = foto["itens"].pop(k1)
+    json.dump(foto, open(arq_lancado(hoje), "w"))
+    h = horas_json(hoje)
+    assert h["lancado"]["removidas"] == 1 and [x["estado"] for x in h["itens"]] == ["mudou", "nova"], h["itens"]
+    os.remove(arq_lancado(hoje))
     pj_real = PROJ_JOURNIFY
     globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")  # sem a lista: os apelidos do jfy
     h = horas_json(hoje)

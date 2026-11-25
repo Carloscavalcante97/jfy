@@ -222,6 +222,9 @@ struct Principal: View {
     @State private var telaCheia = false
     @AppStorage("barra.abasRecolhidas") private var abasRecolhidas = false
     @AppStorage("barra.favoritosRecolhidos") private var favoritosRecolhidos = false
+    @State private var renomeando: AbasTmux.Aba?
+    @State private var novoNome = ""
+    @State private var fechando: AbasTmux.Aba?
 
     var body: some View {
         NavigationSplitView {
@@ -298,6 +301,15 @@ struct Principal: View {
             nav.abrirAba = nil
         }
         .background { atalhos }
+        .alert("Renomear aba", isPresented: Binding(get: { renomeando != nil }, set: { if !$0 { renomeando = nil } })) {
+            TextField("Nome", text: $novoNome)
+            Button("Renomear") { if let a = renomeando { abas.renomear(a, novoNome) } }
+            Button("Cancelar", role: .cancel) {}
+        } message: { Text("\"menu\" é o nome da aba principal do jfy e não pode ser usado.") }
+        .confirmationDialog("Fechar a aba \(fechando?.nome ?? "")?", isPresented: Binding(get: { fechando != nil }, set: { if !$0 { fechando = nil } }),
+                            presenting: fechando) { a in
+            Button("Fechar aba", role: .destructive) { abas.fechar(a) }
+        } message: { _ in Text("O que roda nela (o Claude daquela task, um servidor…) é encerrado junto.") }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in telaCheia = true }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in telaCheia = false }
         .onChange(of: tela) { _, nova in
@@ -369,7 +381,15 @@ struct Principal: View {
             .buttonStyle(.plain)
             .padding(.leading, 20)
             .help(a.nome)
+            .contextMenu {
+                if a.nome != "menu" {
+                    Button("Renomear…") { novoNome = a.nome; renomeando = a }
+                    Button("Fechar aba…", role: .destructive) { fechando = a }
+                }
+            }
+            .moveDisabled(a.nome == "menu")
         }
+        .onMove { abas.mover($0, $1) }  // arrastar reordena as abas no tmux
     }
 
     private func mostrar(_ t: Tela, @ViewBuilder _ conteudo: () -> some View) -> some View {
