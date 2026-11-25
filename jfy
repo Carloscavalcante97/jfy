@@ -1988,6 +1988,38 @@ def task_mudar(tid, campo, valor, extra=""):
     mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
 
 
+def tasks_pontos(*tids):
+    """Os pontos das tasks (a tabela do app carrega depois da lista: a lista do MCP não traz a estimativa, só a task
+    inteira). Guarda por 15 min e só busca o que falta, 4 por vez; a que falhar tenta de novo, uma por vez (muitas
+    chamadas seguidas e o Journify recusa todas). O MCP não grava pontos: mudar é no Journify."""
+    from concurrent.futures import ThreadPoolExecutor
+    arq, agora = os.path.join(RUN_DIR, "pontos.json"), time.time()
+    try:
+        cache = {k: v for k, v in json.load(open(arq)).items() if agora - v[1] < 15 * 60}
+    except (OSError, ValueError):
+        cache = {}
+    erros = []
+
+    def uma(tid):
+        try:
+            t = mcp("obter_task", taskId=tid)["task"]
+        except Exception as e:
+            erros.append(str(e))
+            return tid, False
+        return tid, (t.get("estimate") or {}).get("value") or (t.get("estimateV2") or {}).get("points")
+    faltam = [t for t in tids[:120] if t not in cache]
+    with ThreadPoolExecutor(4) as ex:
+        achados = dict(ex.map(uma, faltam))
+    for tid in [t for t, v in achados.items() if v is False]:  # devagar, uma por vez
+        time.sleep(0.5)
+        achados[tid] = uma(tid)[1]
+    cache.update({t: [v, agora] for t, v in achados.items() if v is not False})
+    json.dump(cache, open(arq, "w"))
+    if any(v is False for v in achados.values()):
+        print(f"pontos: o Journify recusou {sum(v is False for v in achados.values())} task(s): {erros[-1][:120]}", file=sys.stderr)
+    return {t: cache[t][0] for t in tids if t in cache and cache[t][0] is not None}
+
+
 def tasks_mudar(campo, valor, *tids):
     """Mudança em lote (a seleção da lista de tasks do app): status ou prazo de várias tasks, 4 por vez. Uma que falha
     não para as outras: volta na lista de erros. Status que pede o vídeo do teste não vai em lote (cada task tem o seu)."""
@@ -3862,7 +3894,7 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
+                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
                 "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,

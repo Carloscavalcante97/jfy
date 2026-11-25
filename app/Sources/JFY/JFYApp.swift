@@ -292,6 +292,7 @@ struct Principal: View {
             ToolbarItem(placement: .principal) { BarraUsoIA(limites: limites) }  // em qualquer aba
         }
         .toolbar(removing: .title)
+        .frame(minWidth: 1040, minHeight: 640)  // abaixo disso as telas de três colunas ficariam espremidas
         .font(Souv.corpo())  // Roboto no texto; os títulos usam Souv.titulo (Lexend)
         .tint(Souv.primaria)
         .onOpenURL { nav.abrir($0) }  // o clique nas notificações (jfy://…)

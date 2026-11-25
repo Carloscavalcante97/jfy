@@ -38,14 +38,16 @@ struct ChatTela: View {
             if let fora {
                 desconectado(fora)
             } else {
+                GeometryReader { g in
                 HStack(spacing: 0) {
-                    lista.frame(width: 270)
+                    lista.frame(width: min(270, max(210, g.size.width * 0.28)))
                     Divider()
                     if let c = conversas.first(where: { $0.id == selecionada }) {
                         conversa(c)
                     } else {
                         Text("Escolha uma conversa").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                }
                 }
             }
         }

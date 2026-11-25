@@ -74,8 +74,8 @@ struct EmailsTela: View {
             HStack(spacing: 12) {
                 Text("Emails").font(Souv.titulo(24))
                 if let l = lista {
-                    Text("\(l.total)\(l.mais ? "+" : "") não lido(s) na Principal").foregroundStyle(.secondary)
-                    if let c = l.conta { Text("· \(c)").foregroundStyle(.secondary) }
+                    Text("\(l.total)\(l.mais ? "+" : "") não lido(s) na Principal").foregroundStyle(.secondary).lineLimit(1)
+                    if let c = l.conta { Text("· \(c)").foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).layoutPriority(-1) }
                 }
                 Spacer()
                 Button { escrevendoNovo = true } label: { Label("Escrever", systemImage: "square.and.pencil") }
@@ -88,6 +88,7 @@ struct EmailsTela: View {
             Divider()
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).padding(10).textSelection(.enabled) }
             if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green).padding(10) }
+            GeometryReader { g in
             HStack(spacing: 0) {
                 List {
                     if let l = lista, l.emails.isEmpty { Text("Caixa zerada: nenhum não lido na Principal.").foregroundStyle(.secondary) }
@@ -105,9 +106,10 @@ struct EmailsTela: View {
                     }
                 }
                 .listaSouv()
-                .frame(width: 360)
+                .frame(width: min(360, max(260, g.size.width * 0.34)))
                 Divider()
                 detalhe.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             }
         }
         .task(id: ativa) { if ativa { await carregar() } }

@@ -54,15 +54,19 @@ struct ProjetosTela: View {
     @State private var escolhendoPrazo = false
     @State private var resultadoLote: String?
     @AppStorage("projetos.tabela") private var modoTabela = false  // a tabela agrupada, como no ClickUp
+    @State private var pontos: [String: Double] = [:]  // carregam depois da lista (o MCP só dá na task inteira)
 
     var body: some View {
+        GeometryReader { g in
+        // as colunas encolhem com a janela (e o detalhe nunca fica espremido)
+        let largProjetos = min(210, max(160, g.size.width * 0.17)), largTasks = min(340, max(250, g.size.width * 0.29))
         HStack(spacing: 0) {
-            listaProjetos.frame(width: 210)
+            listaProjetos.frame(width: largProjetos)
             Divider()
             if modoTabela {
                 areaTabela
             } else {
-                listaTasks.frame(width: 340)
+                listaTasks.frame(width: largTasks)
                 Divider()
                 if let task {
                     detalhe(task)
@@ -71,6 +75,7 @@ struct ProjetosTela: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+        }
         }
         // na tabela, a task abre ao lado, num painel que fecha
         .inspector(isPresented: Binding(get: { modoTabela && task != nil }, set: { if !$0 { task = nil } })) {
@@ -153,7 +158,16 @@ struct ProjetosTela: View {
     // ---------- tasks ----------
     private func detalhe(_ tid: String) -> some View {
         TaskDetalhe(tid: tid, irParaJFY: irParaJFY, mudou: { Task { await carregarTasks() } },
-                    abrirPR: { nav.abrirPR = $0; nav.tela = .github }).id(tid)
+                    abrirPR: { nav.abrirPR = $0; nav.tela = .github }, fechar: { task = nil }).id(tid)
+    }
+
+    /// Mudança feita na tabela (status, prioridade, vencimento): vai para o Journify e a lista relê.
+    private func mudarTask(_ tid: String, _ campo: String, _ valor: String, _ extra: String) {
+        Task {
+            carregando = true
+            if let e = await JFY.fazer(["--task-mudar", tid, campo, valor] + (extra.isEmpty ? [] : [extra])) { resultadoLote = e }
+            await carregarTasks()
+        }
     }
 
     /// O topo das tasks (nas duas formas): o projeto, Minhas/Todas, Lista/Tabela e a barra de lote.
@@ -192,7 +206,7 @@ struct ProjetosTela: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 TabelaTasks(tasks: tasks, statusOrdem: (dados?.statusLote ?? []) + ["finalizado_validacao", "fechado"],
-                            comProjeto: projeto == Self.foco, marcadas: $marcadas, aberta: $task)
+                            comProjeto: projeto == Self.foco, pontos: pontos, marcadas: $marcadas, aberta: $task, mudar: mudarTask)
                     .opacity(carregando ? 0.5 : 1)
             }
         }
@@ -243,7 +257,7 @@ struct ProjetosTela: View {
                 if projeto == Self.foco { Circle().fill(Color(hex: t.cor)).frame(width: 6, height: 6); Text(t.projeto ?? "") }
                 StatusChip(status: t.status, dias: t.dias)
                 if let p = t.prazoTxt, !p.isEmpty { Text(p).foregroundStyle((t.dias ?? 99) <= 0 ? .red : .secondary) }
-                if let pts = t.pontos { Text("\(pts.formatted()) pts") }
+                if let pts = pontos[t.id] ?? t.pontos { Text("\(pts.formatted()) pts") }
             }
             .font(.caption).foregroundStyle(.secondary)
             }
@@ -359,6 +373,13 @@ struct ProjetosTela: View {
             tasks = d ?? []
             aviso = msg
         }
+        let faltam = tasks.map(\.id).filter { pontos[$0] == nil }
+        if !faltam.isEmpty {  // depois da lista, sem segurar a tela (o jfy guarda por 15 min)
+            Task {
+                let (p, _): ([String: Double]?, String?) = await JFY.ler(["--tasks-pontos"] + faltam)
+                if let p { pontos.merge(p) { $1 } }
+            }
+        }
     }
 }
 
@@ -368,6 +389,7 @@ struct TaskDetalhe: View {
     let irParaJFY: () -> Void
     let mudou: () -> Void
     let abrirPR: (String) -> Void
+    var fechar: (() -> Void)?  // o × do painel (Esc também fecha)
 
     struct Detalhe: Decodable {
         struct Anexo: Decodable, Identifiable {
@@ -427,7 +449,12 @@ struct TaskDetalhe: View {
                     if let e = d.epico { Text("· \(e)").foregroundStyle(.secondary) }
                     Spacer()
                     Link(destination: URL(string: d.url)!) { Label("Abrir no Journify", systemImage: "arrow.up.right.square") }
+                    if let fechar {
+                        Button(action: fechar) { Image(systemName: "xmark").font(.body.weight(.semibold)) }
+                            .buttonStyle(.borderless).keyboardShortcut(.cancelAction).help("Fechar os detalhes (Esc)")
+                    }
                 }
+                .lineLimit(1)
                 .font(.callout)
                 Text(d.titulo).font(.title2.weight(.semibold)).textSelection(.enabled)
                 controles(d)
@@ -465,26 +492,41 @@ struct TaskDetalhe: View {
         .opacity(ocupado ? 0.6 : 1)
     }
 
+    /// Status, prioridade, prazo e pontos: numa linha quando cabe; no painel estreito, em duas.
     private func controles(_ d: Detalhe) -> some View {
-        HStack(spacing: 14) {
-            SouvSelect(opcoes: d.statusApp.map { .init(valor: $0, rotulo: rotulo($0), cor: CORES_STATUS[$0] ?? .gray) }, selecionado: d.status) { s in
-                if d.pedeVideo.contains(s) { video = ""; fechandoEm = s } else { mudar("status", s) }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 14) {
+                statusEPrioridade(d)
+                prazoEPontos(d)
             }
-            .frame(width: 190)
-            .help((d.dias ?? 0) < 0 && !["fechado", "finalizado_validacao"].contains(d.status) ? "Atrasada: o prazo já passou" : "Status")
-            SouvSelect(opcoes: [("baixa", Color.gray), ("media", Souv.primaria), ("alta", Color.orange), ("critica", Color.red)]
-                        .map { .init(valor: $0.0, rotulo: rotuloPrioridade($0.0), cor: $0.1) },
-                       selecionado: d.prioridade, vazio: "sem prioridade") { mudar("prioridade", $0) }
-                .frame(width: 140)
-            DatePicker("Prazo", selection: Binding(
-                get: { d.prazo.flatMap(dataLocal) ?? Date() },
-                set: { mudar("prazo", diaLocal($0)) }), displayedComponents: .date)
-                .fixedSize()
-            if d.prazo == nil { Text("sem prazo").font(.caption).foregroundStyle(.secondary) }
-            if let pts = d.pontos {
-                Text("\(pts.formatted()) pts").foregroundStyle(pts > 8 ? .red : .secondary)
-                    .help(pts > 8 ? "Acima de 8 pontos: não cabe num PR, divida a task" : "")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) { statusEPrioridade(d) }
+                HStack(spacing: 10) { prazoEPontos(d) }
             }
+        }
+    }
+
+    @ViewBuilder private func statusEPrioridade(_ d: Detalhe) -> some View {
+        SouvSelect(opcoes: d.statusApp.map { .init(valor: $0, rotulo: rotulo($0), cor: CORES_STATUS[$0] ?? .gray) }, selecionado: d.status) { s in
+            if d.pedeVideo.contains(s) { video = ""; fechandoEm = s } else { mudar("status", s) }
+        }
+        .frame(width: 190)
+        .help((d.dias ?? 0) < 0 && !["fechado", "finalizado_validacao"].contains(d.status) ? "Atrasada: o prazo já passou" : "Status")
+        SouvSelect(opcoes: [("baixa", Color.gray), ("media", Souv.primaria), ("alta", Color.orange), ("critica", Color.red)]
+                    .map { .init(valor: $0.0, rotulo: rotuloPrioridade($0.0), cor: $0.1) },
+                   selecionado: d.prioridade, vazio: "sem prioridade") { mudar("prioridade", $0) }
+            .frame(width: 140)
+    }
+
+    @ViewBuilder private func prazoEPontos(_ d: Detalhe) -> some View {
+        DatePicker("Prazo", selection: Binding(
+            get: { d.prazo.flatMap(dataLocal) ?? Date() },
+            set: { mudar("prazo", diaLocal($0)) }), displayedComponents: .date)
+            .fixedSize()
+        if d.prazo == nil { Text("sem prazo").font(.caption).foregroundStyle(.secondary) }
+        if let pts = d.pontos {
+            Text("\(pts.formatted()) pts").foregroundStyle(pts > 8 ? .red : .secondary)
+                .help(pts > 8 ? "Acima de 8 pontos: não cabe num PR, divida a task" : "")
         }
     }
 

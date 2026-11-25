@@ -65,7 +65,7 @@ struct ReunioesTela: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Text("Agenda").font(Souv.titulo(24))
-                Text(titulo).font(.title3).foregroundStyle(.secondary)
+                Text(titulo).font(.title3).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail).layoutPriority(-1)
                 Spacer()
                 if carregando { ProgressView().controlSize(.small) }
                 HStack(spacing: 4) {

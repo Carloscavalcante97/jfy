@@ -49,8 +49,9 @@ struct GithubTela: View {
             if dados != nil && dados?.conta == nil {
                 semConta
             } else {
+                GeometryReader { g in  // as colunas encolhem com a janela
                 HStack(spacing: 0) {
-                    colunaRepos.frame(width: 250)
+                    colunaRepos.frame(width: min(250, max(190, g.size.width * 0.22)))
                     Divider()
                     switch lado {
                     case let .repo(pasta):
@@ -60,11 +61,13 @@ struct GithubTela: View {
                         }
                     default:
                         HStack(spacing: 0) {
-                            listaPRs(lado == .revisar ? dados?.revisar ?? [] : dados?.meus ?? []).frame(width: 380)
+                            listaPRs(lado == .revisar ? dados?.revisar ?? [] : dados?.meus ?? [])
+                                .frame(width: min(380, max(260, g.size.width * 0.32)))
                             Divider()
                             detalhePR
                         }
                     }
+                }
                 }
             }
         }
@@ -81,7 +84,7 @@ struct GithubTela: View {
     // ---------- topo: conta ----------
     private var cabecalho: some View {
         HStack(spacing: 14) {
-            Text("GitHub").font(Souv.titulo(24))
+            Text("GitHub").font(Souv.titulo(24)).lineLimit(1)
             if let d = dados, let conta = d.conta {
                 SouvSelect(opcoes: d.contas.map { .init(valor: $0, rotulo: $0) }, selecionado: conta,
                            extra: ("Conectar outra conta…", { conectar() })) { trocarConta($0) }
@@ -297,7 +300,7 @@ struct RepoPainel: View {
                         ForEach(prs, id: \.ref) { p in LinhaPR(p: p, comRepo: false).linhaSouv(pr == p.ref) { pr = p.ref } }
                     }
                     .listaSouv()
-                    .frame(width: 340)
+                    .frame(minWidth: 240, maxWidth: 340)  // divide com o PR ao lado; encolhe em janela menor
                     Divider()
                     if let pr, let i = pr.lastIndex(of: "#"), let n = Int(pr[pr.index(after: i)...]) {
                         PRDetalhe(repo: String(pr[..<i]), n: n, nav: nav, irParaJFY: irParaJFY, mudou: mudou).id(pr)
@@ -379,7 +382,7 @@ struct HistoricoPainel: View {
                 }
             }
             .listaSouv()
-            .frame(width: 340)
+            .frame(minWidth: 240, maxWidth: 340)
             Divider()
             if let d = detalhe {
                 VStack(alignment: .leading, spacing: 0) {
@@ -849,7 +852,7 @@ struct CommitPainel: View {
                 Divider()
                 caixaCommit
             }
-            .frame(width: 330)
+            .frame(minWidth: 260, maxWidth: 330)
             Divider()
             painelDiff
         }

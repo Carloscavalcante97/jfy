@@ -15,8 +15,9 @@ struct CreditosTela: View {
                 polaroide
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Créditos").font(Souv.titulo(34)).foregroundStyle(Souv.texto)
-                    Text("O jfy nasceu no terminal, criado por **José Carlos Paiva** para ligar o Journify ao Claude Code: abrir a task, deixar o Claude trabalhar e registrar o tempo, sem sair do fluxo.")
-                    Text("**Antonio Cavalcante** trouxe a versão app e as melhorias: o jfy ganhou janela, a cara da Souv, e passou a juntar projetos, GitHub, horas, agenda, emails e notificações num lugar só.")
+                    Text("O jfy nasceu no pensamento de facilitar a vida centralizando as ferramentas de trabalhos.")
+                    Text("**José (Pagode) Paiva** criou e idealizou o jfy. Levou essa ideia para o terminal: abrir a task do Journify, deixar o Claude trabalhar nela e registrar o tempo, tudo sem sair dali.")
+                    Text("**Antonio Cavalcante** levou a mesma ideia para fora do terminal. Trouxe a versão app, com a cara da Souv, e foi juntando o que ainda ficava espalhado: projetos e tasks, GitHub, horas, agenda, emails e notificações.")
                     Text("Tudo para deixar o dia a dia de trabalho na Souv mais leve: menos abas, menos copiar e colar, mais tempo para o que importa.")
                 }
                 .font(Souv.corpo(15))
