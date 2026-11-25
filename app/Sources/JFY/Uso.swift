@@ -74,11 +74,25 @@ struct UsoTela: View {
     @State private var uso: Uso?
     @State private var erro: String?
     @State private var carregando = false
+    @State private var avaliacao: Avaliacao?
+    @State private var avaliando = false
+    @State private var erroAvaliacao: String?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 cabecalho
+                if avaliando {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("O Claude está lendo os seus pedidos e os sinais de atrito do período. Leva uns 2 minutos.")
+                            .foregroundStyle(Souv.texto2)
+                    }
+                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Souv.superficie))
+                }
+                if let erroAvaliacao { Label(erroAvaliacao, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
+                if let a = avaliacao, a.resumo != nil, !avaliando { CartaoAvaliacao(a: a) }
                 if let erro {
                     Label(erro, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary).textSelection(.enabled)
                 }
@@ -90,7 +104,24 @@ struct UsoTela: View {
             }
             .padding(24)
         }
-        .task(id: dias) { await carregar() }
+        .task(id: dias) {
+            avaliacao = nil
+            erroAvaliacao = nil
+            let (a, _): (Avaliacao?, String?) = await JFY.ler(["--uso-avaliar", String(dias), "ver"])  // a última, sem gastar
+            avaliacao = a
+            await carregar()
+        }
+    }
+
+    /// O Claude avalia o período: o que já funciona, onde está o atrito e como melhorar (com exemplos seus).
+    private func avaliar() {
+        Task {
+            avaliando = true
+            erroAvaliacao = nil
+            let (a, msg): (Avaliacao?, String?) = await JFY.ler(["--uso-avaliar", String(dias)])
+            avaliando = false
+            if let a { avaliacao = a } else { erroAvaliacao = msg }
+        }
     }
 
     private var cabecalho: some View {
@@ -108,6 +139,11 @@ struct UsoTela: View {
                 Text("Tudo").tag(0)
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
+            Button(action: avaliar) {
+                Label(avaliacao?.resumo == nil ? "Avaliar este período" : "Avaliar de novo", systemImage: "sparkles")
+            }
+            .buttonStyle(.borderedProminent).disabled(avaliando)
+            .help("O Claude lê os seus pedidos e os sinais de atrito do período e diz como usar melhor (usa tokens)")
             Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Atualizar").disabled(carregando)
         }
@@ -483,5 +519,134 @@ struct BarraUsoIA: View {
             Text("\(j.pct)%").font(.caption.monospacedDigit().weight(.semibold))
             if let renova { Text(renova).font(.caption).foregroundStyle(.secondary) }
         }
+    }
+}
+
+// ---------- a avaliação do Claude ----------
+struct Avaliacao: Decodable {
+    struct Problema: Decodable, Hashable { let titulo, detalhe: String; let exemplo: String? }
+    struct Recomendacao: Decodable, Hashable { let titulo, como: String; let antes, depois: String? }
+    let resumo: String?
+    let nota: Double?
+    let acertos: [String]?
+    let problemas: [Problema]?
+    let recomendacoes: [Recomendacao]?
+    let economia: [String]?
+    let gerado: Double?
+    let pedidos: Int?
+}
+
+/// O resultado da avaliação: nota e diagnóstico, o que já funciona, onde está o atrito (com um pedido seu de exemplo),
+/// como melhorar (com o antes e o depois) e onde dá para gastar menos. Recolhe pela setinha.
+struct CartaoAvaliacao: View {
+    let a: Avaliacao
+    @State private var aberto = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Button { withAnimation(.snappy(duration: 0.2)) { aberto.toggle() } } label: {
+                HStack(alignment: .center, spacing: 14) {
+                    nota
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Avaliação do Claude").font(Souv.titulo(20)).foregroundStyle(Souv.texto)
+                        Text(rodape).font(.caption).foregroundStyle(Souv.texto2)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.down").foregroundStyle(Souv.texto2).rotationEffect(.degrees(aberto ? 0 : -90))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if let r = a.resumo { Text(r).font(Souv.corpo(14)).foregroundStyle(Souv.texto).fixedSize(horizontal: false, vertical: true) }
+            if aberto {
+                if let xs = a.acertos, !xs.isEmpty {
+                    secao("O que já funciona", "checkmark.seal.fill", .green) {
+                        ForEach(xs, id: \.self) { item($0) }
+                    }
+                }
+                if let ps = a.problemas, !ps.isEmpty {
+                    secao("Onde está o atrito", "exclamationmark.triangle.fill", .orange) {
+                        ForEach(ps, id: \.self) { p in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(p.titulo).fontWeight(.semibold).foregroundStyle(Souv.texto)
+                                Text(p.detalhe).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+                                if let e = p.exemplo, !e.isEmpty { citacao(e, cor: .orange) }
+                            }
+                        }
+                    }
+                }
+                if let rs = a.recomendacoes, !rs.isEmpty {
+                    secao("Como melhorar", "lightbulb.fill", Souv.destaque) {
+                        ForEach(rs, id: \.self) { r in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(r.titulo).fontWeight(.semibold).foregroundStyle(Souv.texto)
+                                Text(r.como).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+                                if let antes = r.antes, !antes.isEmpty { citacao(antes, cor: .red, rotulo: "Antes") }
+                                if let depois = r.depois, !depois.isEmpty { citacao(depois, cor: .green, rotulo: "Depois") }
+                            }
+                        }
+                    }
+                }
+                if let es = a.economia, !es.isEmpty {
+                    secao("Para gastar menos", "dollarsign.circle.fill", Souv.primaria) {
+                        ForEach(es, id: \.self) { item($0) }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Souv.superficie))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Souv.primaria.opacity(0.45)))
+        .textSelection(.enabled)
+    }
+
+    private var nota: some View {
+        let n = a.nota ?? 0, cor: Color = n >= 8 ? .green : n >= 5 ? .orange : .red
+        return ZStack {
+            Circle().stroke(cor.opacity(0.2), lineWidth: 5)
+            Circle().trim(from: 0, to: n / 10).stroke(cor, style: StrokeStyle(lineWidth: 5, lineCap: .round)).rotationEffect(.degrees(-90))
+            Text(n.formatted(.number.precision(.fractionLength(0...1)))).font(Souv.titulo(20)).foregroundStyle(Souv.texto)
+        }
+        .frame(width: 52, height: 52)
+        .help("Nota de 0 a 10 para a eficiência do uso no período")
+    }
+
+    private var rodape: String {
+        var partes: [String] = []
+        if let g = a.gerado {
+            partes.append("avaliado em " + Date(timeIntervalSince1970: g).formatted(.dateTime.day().month(.twoDigits).hour().minute()))
+        }
+        if let p = a.pedidos { partes.append("\(p) pedidos lidos") }
+        partes.append("usa tokens")
+        return partes.joined(separator: " · ")
+    }
+
+    private func secao(_ titulo: String, _ icone: String, _ cor: Color, @ViewBuilder _ conteudo: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(titulo.uppercased(), systemImage: icone).font(.caption.weight(.semibold)).tracking(0.6).foregroundStyle(cor)
+            conteudo()
+        }
+    }
+
+    private func item(_ t: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(Souv.texto2).frame(width: 4, height: 4).offset(y: -3)
+            Text(t).foregroundStyle(Souv.texto).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Um pedido seu (o exemplo, o antes ou o depois), com a barrinha da cor.
+    private func citacao(_ t: String, cor: Color, rotulo: String? = nil) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Rectangle().fill(cor).frame(width: 3)
+            VStack(alignment: .leading, spacing: 2) {
+                if let rotulo { Text(rotulo.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(cor) }
+                Text(t).font(.system(size: 12, design: .monospaced)).foregroundStyle(Souv.texto).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 6).padding(.trailing, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 6).fill(cor.opacity(0.07)))
     }
 }
