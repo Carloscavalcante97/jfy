@@ -20,7 +20,7 @@ struct TemasTela: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Temas").font(.largeTitle.bold())
+                    Text("Temas").font(Souv.titulo(30))
                     Text("Cores e ícones do jfy no terminal e na barra de baixo. A troca vale na hora, inclusive nas abas abertas.")
                         .foregroundStyle(.secondary)
                 }
@@ -61,7 +61,7 @@ struct TemasTela: View {
                 .frame(height: 24)
             }
             .padding(14)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Souv.superficie))
             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(t.atual ? Color.accentColor : Color.secondary.opacity(0.15),
                                                                      lineWidth: t.atual ? 2 : 1))
             .contentShape(Rectangle())

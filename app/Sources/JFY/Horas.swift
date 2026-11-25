@@ -80,7 +80,7 @@ struct HorasTela: View {
     private var cabecalho: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Horas").font(.largeTitle.bold())
+                Text("Horas").font(Souv.titulo(30))
                 Text(dia.formatted(.dateTime.weekday(.wide).day().month(.wide).year().locale(Locale(identifier: "pt_BR"))))
                     .foregroundStyle(.secondary)
             }
@@ -171,8 +171,8 @@ struct HorasTela: View {
                         .background(i % 2 == 1 ? Color.secondary.opacity(0.05) : Color.clear)
                     }
                 }
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.15)))
+                .background(RoundedRectangle(cornerRadius: 10).fill(Souv.superficie))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Souv.borda))
             }
             if !fora.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -189,27 +189,17 @@ struct HorasTela: View {
     }
 
     private func projeto(_ h: Horas, _ it: Horas.Item) -> some View {
-        Menu {
-            ForEach(h.projetos) { p in Button(p.nome) { ajustar(it, "p", p.id) } }
-            Divider()
-            Button("Outro nome no Journify…") { textoOutro = ""; outro = PedidoOutro(item: it, campo: "p") }
-        } label: {
-            HStack(spacing: 6) {
-                Circle().fill(Color(hex: it.cor)).frame(width: 8, height: 8)
-                Text(it.projeto ?? "sem projeto").foregroundStyle(it.pid == nil ? Color.orange : .primary)
-                if it.palpite { Text("pelo título").font(.caption).foregroundStyle(.secondary) }
-            }
+        HStack(spacing: 6) {
+            SouvSelect(opcoes: h.projetos.map { .init(valor: $0.id, rotulo: $0.nome, cor: Color(hex: $0.cor)) },
+                       selecionado: it.pid, vazio: "sem projeto", rotuloLivre: it.projeto, corLivre: Color(hex: it.cor),
+                       extra: ("Outro nome no Journify…", { textoOutro = ""; outro = PedidoOutro(item: it, campo: "p") })) { ajustar(it, "p", $0) }
+            if it.palpite { Text("pelo título").font(.caption).foregroundStyle(.secondary).fixedSize() }
         }
-        .menuStyle(.borderlessButton)
     }
 
     private func categoria(_ h: Horas, _ it: Horas.Item) -> some View {
-        Menu {
-            ForEach(Array(Set(h.categorias + [it.cat])).sorted(), id: \.self) { c in Button(c) { ajustar(it, "cat", c) } }
-            Divider()
-            Button("Outra…") { textoOutro = ""; outro = PedidoOutro(item: it, campo: "cat") }
-        } label: { Text(it.cat) }
-        .menuStyle(.borderlessButton)
+        SouvSelect(opcoes: Array(Set(h.categorias + [it.cat])).sorted().map { .init(valor: $0, rotulo: $0) }, selecionado: it.cat,
+                   extra: ("Outra…", { textoOutro = ""; outro = PedidoOutro(item: it, campo: "cat") })) { ajustar(it, "cat", $0) }
     }
 
     /// O seletor de dia de uma linha: o trabalhado vai junto e, se o outro dia já tem a mesma linha, soma. O jfy

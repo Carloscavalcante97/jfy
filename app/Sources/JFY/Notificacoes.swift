@@ -66,7 +66,7 @@ struct NotificacoesTela: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Notificações").font(.largeTitle.bold())
+                    Text("Notificações").font(Souv.titulo(30))
                     Text("O que o jfy avisou: reuniões, emails, o Claude e a jornada. O clique faz o mesmo que na notificação.")
                         .foregroundStyle(.secondary)
                 }

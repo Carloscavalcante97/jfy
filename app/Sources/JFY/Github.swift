@@ -81,17 +81,12 @@ struct GithubTela: View {
     // ---------- topo: conta ----------
     private var cabecalho: some View {
         HStack(spacing: 14) {
-            Text("GitHub").font(.title2.bold())
+            Text("GitHub").font(Souv.titulo(24))
             if let d = dados, let conta = d.conta {
-                Menu {
-                    ForEach(d.contas, id: \.self) { c in
-                        Button { trocarConta(c) } label: { Text(c == conta ? "✓ \(c)" : c) }
-                    }
-                    Divider()
-                    Button("Conectar outra conta…") { conectar() }
-                } label: { Label(conta, systemImage: "person.crop.circle") }
-                .menuStyle(.borderlessButton).fixedSize()
-                .help("A conta ativa do gh: vale para o gh e o git deste Mac")
+                SouvSelect(opcoes: d.contas.map { .init(valor: $0, rotulo: $0) }, selecionado: conta,
+                           extra: ("Conectar outra conta…", { conectar() })) { trocarConta($0) }
+                    .frame(width: 230)
+                    .help("A conta ativa do gh: vale para o gh e o git deste Mac")
             }
             Spacer()
             if carregando { ProgressView().controlSize(.small) }

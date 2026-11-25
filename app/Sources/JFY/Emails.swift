@@ -39,10 +39,18 @@ struct EmailsTela: View {
     }
 
     struct Email: Decodable {
+        struct Mensagem: Decodable, Identifiable {
+            let id, de, data, texto: String
+            let eu: Bool
+        }
         let id, de, para, data, assunto, texto, link: String
+        let cc: String?
         let anexos: [String]
-        let lido: Bool
+        let lido, temAssinatura: Bool
+        let conversa: [Mensagem]
     }
+
+    enum Modo: String, CaseIterable { case responder = "Responder", todos = "Responder a todos", encaminhar = "Encaminhar" }
 
     @State private var lista: Lista?
     @State private var selecao: String?
@@ -55,11 +63,15 @@ struct EmailsTela: View {
     @State private var escrevendo: String?  // o modo que o Claude está fazendo
     @State private var confirmarEnvio = false
     @State private var feito: String?
+    @State private var modo = Modo.responder
+    @State private var para = ""  // encaminhar
+    @State private var cc = ""
+    @State private var abertas: Set<String> = []  // mensagens antigas da conversa abertas
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("Emails").font(.title2.bold())
+                Text("Emails").font(Souv.titulo(24))
                 if let l = lista {
                     Text("\(l.total)\(l.mais ? "+" : "") não lido(s) na Principal").foregroundStyle(.secondary)
                     if let c = l.conta { Text("· \(c)").foregroundStyle(.secondary) }
@@ -106,15 +118,20 @@ struct EmailsTela: View {
         .confirmationDialog("Marcar todos os não lidos da Principal como lidos no Gmail?", isPresented: $confirmarTodos) {
             Button("Marcar todos") { agir(["--emails-lidos"]) }
         }
-        .confirmationDialog("Enviar a resposta para \(email.map { remetente($0.de) } ?? "")?", isPresented: $confirmarEnvio) {
+        .confirmationDialog(modo == .encaminhar ? "Encaminhar para \(para)?" : "Enviar a resposta para \(email.map { remetente($0.de) } ?? "")" + (modo == .todos ? " e os outros da conversa?" : "?"),
+                            isPresented: $confirmarEnvio) {
             Button("Enviar") { if let e = email { responderGmail(e, enviar: true) } }
         } message: {
-            Text("Sai da sua conta do Gmail, na mesma conversa. Não tem volta pelo app.")
+            Text("Sai da sua conta do Gmail, na mesma conversa" + (email?.temAssinatura == true ? ", com a sua assinatura" : "") + ". Não tem volta pelo app.")
         }
         .onChange(of: selecao) {
             feito = nil
             resposta = ""
             contexto = ""
+            para = ""
+            cc = ""
+            modo = .responder
+            abertas = []
         }
     }
 
@@ -137,7 +154,7 @@ struct EmailsTela: View {
                         Label("Anexos: \(e.anexos.joined(separator: ", "))", systemImage: "paperclip").font(.callout).foregroundStyle(.secondary)
                     }
                     Divider()
-                    Text(e.texto).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    conversa(e)
                     Divider().padding(.top, 8)
                     responder(e)
                 }
@@ -149,10 +166,44 @@ struct EmailsTela: View {
         }
     }
 
+    /// A conversa inteira: a última mensagem aberta, as antigas em uma linha (o clique abre). A sua resposta entra aqui.
+    @ViewBuilder private func conversa(_ e: Email) -> some View {
+        let msgs = e.conversa.isEmpty ? [Email.Mensagem(id: e.id, de: e.de, data: e.data, texto: e.texto, eu: false)] : e.conversa
+        if msgs.count > 1 { Text("CONVERSA (\(msgs.count))").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+        ForEach(Array(msgs.enumerated()), id: \.element.id) { i, m in
+            let aberta = i == msgs.count - 1 || abertas.contains(m.id) || m.id == e.id
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(m.eu ? "Você" : remetente(m.de)).fontWeight(.semibold)
+                    Spacer()
+                    Text(m.data).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Text(aberta ? m.texto : m.texto.split(separator: "\n").first.map(String.init) ?? "")
+                    .foregroundStyle(aberta ? .primary : .secondary).lineLimit(aberta ? nil : 1)
+                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: aberta)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(m.eu ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06)))
+            .contentShape(Rectangle())
+            .onTapGesture { if !aberta { abertas.insert(m.id) } }
+        }
+    }
+
     // ---------- responder ----------
     private func responder(_ e: Email) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("RESPONDER").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Picker("Modo", selection: $modo) { ForEach(Modo.allCases, id: \.self) { Text($0.rawValue) } }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            switch modo {
+            case .encaminhar:
+                CampoEmails(rotulo: "Para", texto: $para)
+                CampoEmails(rotulo: "Cc", texto: $cc)
+                if !e.anexos.isEmpty { Label("Os anexos vão junto: \(e.anexos.joined(separator: ", "))", systemImage: "paperclip").font(.caption).foregroundStyle(.secondary) }
+            case .todos:
+                Text("Para \(remetente(e.de)), com cópia para os outros de Para e Cc (menos você).").font(.caption).foregroundStyle(.secondary)
+            case .responder:
+                Text("Para \(remetente(e.de)).").font(.caption).foregroundStyle(.secondary)
+            }
             TextEditor(text: $resposta)
                 .font(.body).frame(minHeight: 140)
                 .padding(6).background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.3)))
@@ -165,16 +216,20 @@ struct EmailsTela: View {
                 Button("Melhorar") { ia(e, "melhorar") }.disabled(vazia).help("Seu texto como base, mais claro e direto")
                 if let m = escrevendo { ProgressView().controlSize(.small); Text("O Claude está \(m == "gerar" ? "escrevendo" : m == "corrigir" ? "corrigindo" : "melhorando")…").foregroundStyle(.secondary) }
                 Spacer()
-                Button("Salvar rascunho") { responderGmail(e, enviar: false) }.disabled(vazia)
-                Button("Enviar") { confirmarEnvio = true }.buttonStyle(.borderedProminent).disabled(vazia)
+                Button("Salvar rascunho") { responderGmail(e, enviar: false) }.disabled(vazia || semDestino)
+                Button("Enviar") { confirmarEnvio = true }.buttonStyle(.borderedProminent).disabled(vazia || semDestino)
             }
             .disabled(escrevendo != nil)
             Text("O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
                 .font(.caption).foregroundStyle(.secondary)
+            Text(e.temAssinatura ? "Vai com a sua assinatura do Gmail."
+                 : "Sem assinatura: no Gmail, em Configurações › Geral › Padrões de assinatura, escolha a sua para novos emails e respostas, e ela passa a ir daqui também.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var vazia: Bool { resposta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var semDestino: Bool { modo == .encaminhar && !para.contains("@") }
 
     private func remetente(_ de: String) -> String { de.components(separatedBy: " <").first ?? de }
 
@@ -191,11 +246,17 @@ struct EmailsTela: View {
 
     private func responderGmail(_ e: Email, enviar: Bool) {
         Task {
-            struct Feito: Decodable { let para: String }
-            let (r, msg): (Feito?, String?) = await JFY.ler(["--email-resposta", e.id, resposta] + (enviar ? ["1"] : []))
+            struct Feito: Decodable { let para, cc: String }
+            let modoJfy = modo == .encaminhar ? "encaminhar" : modo == .todos ? "todos" : "responder"
+            let d: [String: Any] = ["id": e.id, "modo": modoJfy, "texto": resposta, "enviar": enviar, "para": para, "cc": cc]
+            guard let json = try? JSONSerialization.data(withJSONObject: d), let txt = String(data: json, encoding: .utf8) else { return }
+            let (r, msg): (Feito?, String?) = await JFY.ler(["--email-enviar", txt])
             aviso = r == nil ? msg : nil
-            feito = r.map { enviar ? "Enviado para \($0.para)." : "Rascunho salvo no Gmail (para \($0.para))." }
-            if r != nil, enviar { resposta = "" }
+            feito = r.map { (enviar ? "Enviado para " : "Rascunho salvo no Gmail, para ") + $0.para + ($0.cc.isEmpty ? "" : ", com cópia para \($0.cc)") + "." }
+            if r != nil, enviar {
+                resposta = ""
+                await abrir()  // a resposta aparece na conversa
+            }
         }
     }
 
@@ -226,5 +287,81 @@ struct EmailsTela: View {
         let d = Date(timeIntervalSince1970: ts)
         return Calendar.current.isDateInToday(d) ? d.formatted(.dateTime.hour().minute())
             : d.formatted(.dateTime.day().month(.twoDigits).locale(Locale(identifier: "pt_BR")))
+    }
+}
+
+
+// ---------- campo de emails com sugestão (envio e convites) ----------
+/// Os contatos para a sugestão: quem você escreve, quem te escreve e quem esteve nos seus eventos (jfy --contatos-json,
+/// que guarda e atualiza a cada 6 h). Carrega uma vez por sessão do app.
+final class Contatos: ObservableObject {
+    struct Contato: Decodable, Hashable {
+        let email, nome: String
+    }
+    static let todos = Contatos()
+    @Published private(set) var lista: [Contato] = []
+    private var pedido = false
+
+    func carregar() {
+        guard !pedido else { return }
+        pedido = true
+        Task { @MainActor in
+            let (l, _): ([Contato]?, String?) = await JFY.ler(["--contatos-json"])
+            lista = l ?? []
+        }
+    }
+}
+
+/// Campo de emails separados por vírgula: enquanto você digita, sugere os contatos que batem (nome ou email); o
+/// clique troca o que está sendo digitado pelo email escolhido, como o Gmail.
+struct CampoEmails: View {
+    let rotulo: String
+    @Binding var texto: String
+    @ObservedObject private var contatos = Contatos.todos
+    @FocusState private var focado: Bool
+
+    private var digitando: String {
+        String(texto.split(separator: ",", omittingEmptySubsequences: false).last ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    private var sugestoes: [Contatos.Contato] {
+        guard focado, digitando.count >= 2 else { return [] }
+        let ja = Set(texto.lowercased().split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+        return Array(contatos.lista.filter { !ja.contains($0.email) && ($0.email.contains(digitando) || $0.nome.lowercased().contains(digitando)) }.prefix(6))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(rotulo).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
+                TextField("emails, separados por vírgula", text: $texto, axis: .vertical).lineLimit(1...3)
+                    .textFieldStyle(.roundedBorder).focused($focado)
+            }
+            if !sugestoes.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(sugestoes, id: \.email) { c in
+                        Button { escolher(c) } label: {
+                            HStack {
+                                Text(c.nome.isEmpty ? c.email : c.nome).lineLimit(1)
+                                if !c.nome.isEmpty { Text(c.email).foregroundStyle(.secondary).lineLimit(1) }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .background(RoundedRectangle(cornerRadius: 6).fill(Souv.superficie))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Souv.borda))
+                .padding(.leading, 72)
+            }
+        }
+        .onAppear { contatos.carregar() }
+    }
+
+    private func escolher(_ c: Contatos.Contato) {
+        var partes = texto.split(separator: ",", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+        partes[partes.count - 1] = c.email
+        texto = partes.filter { !$0.isEmpty }.joined(separator: ", ") + ", "
     }
 }

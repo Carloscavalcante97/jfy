@@ -58,15 +58,6 @@ private func quando(_ iso: String?) -> String {
 }
 
 // ---------- cores: paleta categórica de referência, com o passo do modo escuro ----------
-extension Color {
-    init(claro: UInt32, escuro: UInt32) {
-        self.init(nsColor: NSColor(name: nil) { ap in
-            let h = ap.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? escuro : claro
-            return NSColor(srgbRed: CGFloat(h >> 16 & 255) / 255, green: CGFloat(h >> 8 & 255) / 255,
-                           blue: CGFloat(h & 255) / 255, alpha: 1)
-        })
-    }
-}
 
 /// Ordem fixa: a cor segue o projeto pela posição no ranking do período, e os 6 primeiros têm cor própria.
 let SERIES: [Color] = [
@@ -75,7 +66,7 @@ let SERIES: [Color] = [
     Color(claro: 0xEE7FAC, escuro: 0xE24D8B), Color(claro: 0x008A17, escuro: 0x0AAC23),
 ]
 private let OUTROS = Color(claro: 0xB4B4B4, escuro: 0x5A5A5A)
-private let UMA = SERIES[0]  // ranking de uma série só: um tom
+private let UMA = Souv.primaria  // ranking de uma série só: o Vivid Blue da Souv
 
 // ---------- tela ----------
 struct UsoTela: View {
@@ -105,7 +96,7 @@ struct UsoTela: View {
     private var cabecalho: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Uso da IA").font(.largeTitle.bold())
+                Text("Uso da IA").font(Souv.titulo(30))
                 Text("Claude Code neste Mac. Custo em US$ pelo preço da API: na assinatura é o valor equivalente, não a conta.")
                     .foregroundStyle(.secondary)
             }
@@ -333,8 +324,8 @@ private struct Cartao<C: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.secondary.opacity(0.15)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Souv.superficie))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Souv.borda))
     }
 }
 
@@ -361,8 +352,8 @@ private struct Kpi: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 110, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.secondary.opacity(0.15)))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Souv.superficie))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Souv.borda))
     }
 }
 
@@ -419,7 +410,7 @@ private struct Dica: View {
         .padding(10)
         .frame(width: 220)
         .background(RoundedRectangle(cornerRadius: 8).fill(.regularMaterial))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.2)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Souv.borda))
     }
 }
 

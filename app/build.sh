@@ -10,13 +10,14 @@ swift build -c release --product JFY
 rm -rf "$APP" build/AppIcon.iconset
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 cp .build/release/JFY "$APP/Contents/MacOS/JFY"
-cp "$REPO/fonte/JFYMono.ttf" "$APP/Contents/Resources/"  # carregada pelo ATSApplicationFontsPath, sem instalar
+# fontes carregadas pelo ATSApplicationFontsPath, sem instalar: JFY Mono (terminal) e as da Souv (Lexend, Roboto)
+cp "$REPO/fonte/JFYMono.ttf" Marca/Lexend.ttf Marca/Roboto.ttf Marca/souv-simbolo.svg "$APP/Contents/Resources/"
 
-# ícone: a chama do jfy nos tamanhos que o macOS pede
-"$REPO/jfy" --icone build/chama.png
+# ícone: o símbolo da Souv sobre Midnight Blue (Marca/souv-icone.svg), nos tamanhos que o macOS pede
+sips -s format png -Z 1024 Marca/souv-icone.svg --out build/icone.png >/dev/null
 for s in 16 32 128 256 512; do
-  sips -z $s $s build/chama.png --out "build/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) build/chama.png --out "build/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s build/icone.png --out "build/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) build/icone.png --out "build/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns build/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
 

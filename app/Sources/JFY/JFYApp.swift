@@ -222,7 +222,15 @@ struct Principal: View {
                     if t == .projetos { favoritosDaBarra }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
+            .safeAreaInset(edge: .top) {  // a marca no topo da barra lateral
+                HStack(spacing: 8) {
+                    if let s = Souv.simbolo { Image(nsImage: s).resizable().interpolation(.high).foregroundStyle(Souv.destaque).frame(width: 24, height: 24) }
+                    Text("jfy").font(Souv.titulo(22)).foregroundStyle(Souv.texto)
+                    Spacer()
+                }
+                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 6)
+            }
+            .navigationSplitViewColumnWidth(min: 150, ideal: 180, max: 230)
             // em tela cheia não há nada atrás da janela e a barra lateral, que deixa ver o fundo, fica chapada:
             // nela, a barra mostra a imagem da mesa desfocada, como fora da tela cheia
             .scrollContentBackground(telaCheia ? .hidden : .automatic)
@@ -230,6 +238,7 @@ struct Principal: View {
         } detail: {
             // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
+                Souv.fundo.ignoresSafeArea()
                 mostrar(.terminal) { TerminalTela(host: terminal) }
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.github) { GithubTela(ativa: tela == .github, nav: nav, irParaJFY: irParaJFY) }
@@ -246,6 +255,8 @@ struct Principal: View {
             }
         }
         .toolbar { ToolbarItem(placement: .principal) { BarraUsoIA(limites: limites) } }  // em qualquer aba
+        .font(Souv.corpo())  // Roboto no texto; os títulos usam Souv.titulo (Lexend)
+        .tint(Souv.primaria)
         .onOpenURL { nav.abrir($0) }  // o clique nas notificações (jfy://…)
         .onChange(of: nav.abrirAba) {
             guard let alvo = nav.abrirAba else { return }

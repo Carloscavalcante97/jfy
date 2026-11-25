@@ -319,18 +319,15 @@ struct TaskDetalhe: View {
 
     private func controles(_ d: Detalhe) -> some View {
         HStack(spacing: 14) {
-            Menu {
-                ForEach(d.statusApp, id: \.self) { s in
-                    Button(rotulo(s)) {
-                        if d.pedeVideo.contains(s) { video = ""; fechandoEm = s } else { mudar("status", s) }
-                    }
-                }
-            } label: { StatusChip(status: d.status, dias: d.dias) }
-            .menuStyle(.borderlessButton).fixedSize()
-            Menu {
-                ForEach(["baixa", "media", "alta", "critica"], id: \.self) { p in Button(rotuloPrioridade(p)) { mudar("prioridade", p) } }
-            } label: { Label(rotuloPrioridade(d.prioridade ?? "sem prioridade"), systemImage: "flag") }
-            .menuStyle(.borderlessButton).fixedSize()
+            SouvSelect(opcoes: d.statusApp.map { .init(valor: $0, rotulo: rotulo($0), cor: CORES_STATUS[$0] ?? .gray) }, selecionado: d.status) { s in
+                if d.pedeVideo.contains(s) { video = ""; fechandoEm = s } else { mudar("status", s) }
+            }
+            .frame(width: 190)
+            .help((d.dias ?? 0) < 0 && !["fechado", "finalizado_validacao"].contains(d.status) ? "Atrasada: o prazo já passou" : "Status")
+            SouvSelect(opcoes: [("baixa", Color.gray), ("media", Souv.primaria), ("alta", Color.orange), ("critica", Color.red)]
+                        .map { .init(valor: $0.0, rotulo: rotuloPrioridade($0.0), cor: $0.1) },
+                       selecionado: d.prioridade, vazio: "sem prioridade") { mudar("prioridade", $0) }
+                .frame(width: 140)
             DatePicker("Prazo", selection: Binding(
                 get: { d.prazo.flatMap(dataLocal) ?? Date() },
                 set: { mudar("prazo", diaLocal($0)) }), displayedComponents: .date)

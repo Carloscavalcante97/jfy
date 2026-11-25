@@ -790,10 +790,16 @@ def corpo_email(payload):
             achado.setdefault(p["mimeType"], base64.urlsafe_b64decode(p["body"]["data"] + "==").decode(errors="replace"))
     if "text/plain" in achado:
         return achado["text/plain"].strip(), anexos
-    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", "", achado.get("text/html", ""))
+    return html_texto(achado.get("text/html", "")), anexos
+
+
+def html_texto(h):
+    """HTML de email (corpo, assinatura) para texto: sem style/script, quebras nas tags de bloco."""
+    import html
+    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", "", h)
     h = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", h)
     txt = html.unescape(re.sub(r"<[^>]+>", "", h))
-    return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip(), anexos
+    return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip()
 
 
 def url_gmail(conta, frag="inbox"):
@@ -1967,6 +1973,7 @@ def evento_salvar(dados):
         if "403" in str(erro) and "insufficient" in str(erro).lower():
             sys.exit("Falta a permissão de editar a agenda: rode jfy --login no terminal e aceite.")
         raise
+    lembrar_contatos([(None, x.strip()) for x in d.get("convidados", []) if "@" in x])
     return evento_app(e, cfg)
 
 
@@ -2245,9 +2252,15 @@ def email_json(mid):
     m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
     h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
     texto, anexos = corpo_email(m["payload"])
-    return {"id": mid, "de": h.get("from", ""), "para": h.get("to", ""), "data": h.get("date", ""),
+    conversa = []
+    for x in http_json(f"{GMAIL.rsplit('/', 1)[0]}/threads/{m['threadId']}?format=full", token=tok).get("messages", []):
+        hx = {y["name"].lower(): y["value"] for y in x["payload"]["headers"]}
+        conversa.append({"id": x["id"], "de": hx.get("from", ""), "data": hx.get("date", ""), "texto": corpo_email(x["payload"])[0][:6000],
+                         "eu": "SENT" in x.get("labelIds", [])})
+    return {"id": mid, "de": h.get("from", ""), "para": h.get("to", ""), "cc": h.get("cc", ""), "data": h.get("date", ""),
             "assunto": h.get("subject") or "(sem assunto)", "texto": texto, "anexos": anexos,
-            "link": link_gmail(tok, m["threadId"]), "lido": "UNREAD" not in m.get("labelIds", [])}
+            "link": link_gmail(tok, m["threadId"]), "lido": "UNREAD" not in m.get("labelIds", []),
+            "conversa": conversa, "tem_assinatura": bool(assinatura_gmail(tok))}
 
 
 def email_acao(mid, acao):
@@ -2291,28 +2304,167 @@ def portas_encerrar_todas():
         sys.exit("Não consegui encerrar: " + ", ".join(falhas))
 
 
-def email_resposta(mid, texto, enviar=""):
-    """Responde um email na mesma conversa: rascunho no Gmail ou, com enviar="1", envia (o gmail.modify permite)."""
-    import base64
+def assinatura_gmail(tok):
+    """A assinatura padrão do Gmail (HTML), ou "" quando não há assinatura marcada como padrão."""
+    try:
+        r = http_json(GMAIL.rsplit("/", 1)[0] + "/settings/sendAs", token=tok)
+        return next((a.get("signature") or "" for a in r.get("sendAs", []) if a.get("isDefault")), "")
+    except Exception:
+        return ""
+
+
+def enderecos(cabecalho):
+    """[(nome, email)] de um cabeçalho To/Cc/From."""
+    import email.utils
+    return [(n, e) for n, e in email.utils.getaddresses([cabecalho or ""]) if "@" in e]
+
+
+def montar_email(h, eu, modo, texto, para="", cc="", corpo_original="", assinatura=""):
+    """O email de resposta ou encaminhamento, a partir dos cabeçalhos do original (h, em minúsculas). responder: para
+    quem escreveu (o Reply-To, se houver); todos: e com cópia para os outros de Para e Cc, menos você; encaminhar: para
+    quem você disser, com o original citado embaixo. Sempre na mesma conversa (In-Reply-To e References)."""
+    import email.utils, html as h_
     from email.message import EmailMessage
-    tok = caixa_google()
-    q = "&".join(f"metadataHeaders={x}" for x in ("From", "Reply-To", "Subject", "Message-ID", "References"))
-    m = http_json(f"{GMAIL}/{mid}?format=metadata&{q}", token=tok)
-    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
-    msg = EmailMessage()
-    msg["To"] = h.get("reply-to") or h.get("from", "")
-    assunto = h.get("subject") or ""
-    msg["Subject"] = assunto if assunto.lower().startswith("re:") else "Re: " + assunto
+    msg, assunto = EmailMessage(), h.get("subject") or ""
+    if modo == "encaminhar":
+        if not para.strip():
+            sys.exit("Diga para quem encaminhar.")
+        msg["To"], prefixo = para, "Fwd: "
+        if cc.strip():
+            msg["Cc"] = cc
+        texto += ("\n\n---------- Mensagem encaminhada ----------\n" + f"De: {h.get('from', '')}\nData: {h.get('date', '')}\n"
+                  f"Assunto: {assunto}\nPara: {h.get('to', '')}\n\n{corpo_original}")
+    else:
+        destino = h.get("reply-to") or h.get("from", "")
+        msg["To"], prefixo = destino, "Re: "
+        if modo == "todos":
+            fora = {eu.lower()} | {e.lower() for _, e in enderecos(destino)}
+            copia = [email.utils.formataddr((n, e)) for n, e in enderecos(h.get("to", "")) + enderecos(h.get("cc", "")) if e.lower() not in fora]
+            if copia:
+                msg["Cc"] = ", ".join(dict.fromkeys(copia))
+    ja = assunto.lower().startswith(("re:", "fwd:", "fw:", "enc:"))
+    msg["Subject"] = assunto if ja and assunto.lower().startswith(prefixo.lower().strip()) else prefixo + assunto
     if h.get("message-id"):  # para o Gmail (e quem recebe) juntar na mesma conversa
         msg["In-Reply-To"] = h["message-id"]
         msg["References"] = (h.get("references", "") + " " + h["message-id"]).strip()
-    msg.set_content(texto)
-    corpo = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode(), "threadId": m["threadId"]}
-    if enviar:
-        http_json(f"{GMAIL}/send", token=tok, corpo=corpo)
-        return {"enviado": True, "para": msg["To"]}
-    http_json(GMAIL.rsplit("/", 1)[0] + "/drafts", token=tok, corpo={"message": corpo})
-    return {"rascunho": True, "para": msg["To"]}
+    msg.set_content(texto + (f"\n\n-- \n{html_texto(assinatura)}" if assinatura else ""))
+    if assinatura:  # a versão HTML leva a assinatura como ela é no Gmail (com logo, links, cores)
+        msg.add_alternative(f"<div>{h_.escape(texto).replace(chr(10), '<br>')}</div><br><div>{assinatura}</div>", subtype="html")
+    return msg
+
+
+def anexos_do_email(tok, mid, payload):
+    """[(nome, tipo, bytes)] dos anexos de um email, para encaminhar."""
+    import base64
+    out, partes = [], [payload]
+    while partes:
+        p = partes.pop(0)
+        partes += p.get("parts", [])
+        b = p.get("body", {})
+        if p.get("filename") and (b.get("attachmentId") or b.get("data")):
+            dado = b.get("data") or http_json(f"{GMAIL}/{mid}/attachments/{b['attachmentId']}", token=tok)["data"]
+            out.append((p["filename"], p.get("mimeType") or "application/octet-stream", base64.urlsafe_b64decode(dado + "==")))
+    return out
+
+
+def email_enviar(dados):
+    """Responde (modo responder ou todos) ou encaminha (modo encaminhar, com os anexos) um email, na mesma conversa e com
+    a assinatura padrão do Gmail. Salva como rascunho no Gmail ou, com enviar, envia (o gmail.modify permite)."""
+    import base64
+    d = json.loads(dados)
+    tok = caixa_google()
+    m = http_json(f"{GMAIL}/{d['id']}?format=full", token=tok)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    corpo, _ = corpo_email(m["payload"])
+    msg = montar_email(h, conta_gmail(tok), d.get("modo", "responder"), d.get("texto", ""), d.get("para", ""), d.get("cc", ""),
+                       corpo, assinatura_gmail(tok))
+    if d.get("modo") == "encaminhar":
+        for nome, tipo, dado in anexos_do_email(tok, d["id"], m["payload"]):
+            msg.add_attachment(dado, maintype=tipo.split("/")[0], subtype=tipo.split("/")[-1], filename=nome)
+    corpo_api = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode(), "threadId": m["threadId"]}
+    if d.get("enviar"):
+        http_json(f"{GMAIL}/send", token=tok, corpo=corpo_api)
+    else:
+        http_json(GMAIL.rsplit("/", 1)[0] + "/drafts", token=tok, corpo={"message": corpo_api})
+    lembrar_contatos(enderecos(msg["To"]) + enderecos(msg["Cc"] or ""))
+    return {"enviado": bool(d.get("enviar")), "para": msg["To"], "cc": msg["Cc"] or ""}
+
+
+CONTATOS = os.path.join(HOME, "contatos.json")  # a sugestão de emails do app: quem você escreve, quem te escreve, quem convida
+
+
+def lembrar_contatos(lista):
+    """Soma quem você acabou de usar (envio, convite) na lista de sugestões, sem esperar a próxima leitura."""
+    try:
+        st = json.load(open(CONTATOS)) if os.path.exists(CONTATOS) else {}
+    except ValueError:
+        st = {}
+    c = st.setdefault("contatos", {})
+    for nome, e in lista:
+        x = c.setdefault(e.lower(), {"nome": nome or "", "n": 0})
+        x["n"] += 3  # usado pelo app agora: sobe na lista
+        x["nome"] = x["nome"] or nome or ""
+    json.dump(st, open(CONTATOS, "w"), ensure_ascii=False)
+
+
+def contatos_json():
+    """Os contatos para a sugestão de emails (envio e convites), do mais usado para o menos: os destinatários dos
+    seus enviados, quem te escreveu e os convidados dos seus eventos. Lê de novo no máximo a cada 6 h e, nos enviados,
+    só os emails que ainda não leu."""
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        st = json.load(open(CONTATOS)) if os.path.exists(CONTATOS) else {}
+    except ValueError:
+        st = {}
+    c = st.setdefault("contatos", {})
+    if load().get("google") and time.time() - st.get("lido", 0) > 6 * 3600:
+        tok, eu = google_token(), None
+        eu = conta_gmail(tok).lower()
+        vistos = set(st.get("vistos", []))
+        def soma(lista, peso):
+            for nome, e in lista:
+                if e.lower() != eu:
+                    x = c.setdefault(e.lower(), {"nome": nome or "", "n": 0})
+                    x["n"] += peso
+                    x["nome"] = x["nome"] or nome or ""
+        cota = []  # o Google pediu para esperar: para aqui e continua na próxima (a leitura é incremental)
+
+        def meta(i, q):
+            if cota:
+                return i, None
+            try:
+                return i, http_json(f"{GMAIL}/{i}?format=metadata&{q}", token=tok)
+            except RuntimeError as e:
+                if "403" in str(e) or "429" in str(e):
+                    cota.append(e)
+                    return i, None
+                raise
+        try:
+            # ponytail: os 80 enviados e os 40 recebidos mais novos, em lotes de 10 com pausa: a cota do Gmail é por
+            # segundo e por minuto (400 de uma vez estouraram); as próximas leituras só pegam o que é novo
+            for rotulo, campos, peso, n in (("SENT", ("To", "Cc"), 2, 80), ("INBOX", ("From",), 1, 40)):
+                ids = [x["id"] for x in http_json(f"{GMAIL}?labelIds={rotulo}&maxResults={n}", token=tok).get("messages", []) if x["id"] not in vistos]
+                q = "&".join(f"metadataHeaders={x}" for x in campos)
+                for k in range(0, len(ids), 10):
+                    with ThreadPoolExecutor(5) as ex:
+                        for i, m in ex.map(lambda i: meta(i, q), ids[k:k + 10]):
+                            if m:
+                                soma([a for x in m["payload"].get("headers", []) for a in enderecos(x["value"])], peso)
+                                vistos.add(i)
+                    if cota:
+                        break
+                    time.sleep(0.4)
+            if not cota:
+                ini = datetime.now().astimezone() - timedelta(days=120)
+                qa = {"timeMin": ini.isoformat(), "timeMax": (ini + timedelta(days=150)).isoformat(), "singleEvents": "true", "maxResults": 2500}
+                for e in http_json(f"{CAL}?{urllib.parse.urlencode(qa)}", token=tok).get("items", []):
+                    soma([(a.get("displayName"), a.get("email", "")) for a in e.get("attendees", []) if not a.get("resource") and "@" in a.get("email", "")], 1)
+        except Exception as e:  # sem rede, cota: a sugestão segue com o que já tem
+            print(f"contatos: {e}"[:300], file=sys.stderr)
+            cota.append(e)
+        st.update(lido=0 if cota else time.time(), vistos=sorted(vistos)[-5000:])
+        json.dump(st, open(CONTATOS, "w"), ensure_ascii=False)
+    return [{"email": e, "nome": x["nome"]} for e, x in sorted(c.items(), key=lambda kv: -kv[1]["n"])][:500]
 
 
 PEDIDO_EMAIL = {
@@ -3466,7 +3618,7 @@ def main():
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
-                "--portas-encerrar-todas": portas_encerrar_todas, "--email-resposta": email_resposta, "--email-ia": email_ia,
+                "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-ia": email_ia, "--contatos-json": contatos_json,
                 "--repo-mudancas": repo_mudancas, "--repo-diff": repo_diff, "--commit-mensagem": commit_mensagem,
                 "--commit-autor": commit_autor, "--commit-fazer": commit_fazer,
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
@@ -3501,9 +3653,6 @@ def main():
         return print(json.dumps(uso(int(a[1]) if a[1:] else None), ensure_ascii=False))
     if a[:1] == ["--chat"]:  # tela de chat do app: jfy --chat [conversa [texto]]
         return chat(*a[1:3])
-    if a[:1] == ["--icone"]:  # app/build.sh: a chama do jfy num PNG de ~1024 px, base do ícone do JFY.app
-        d = desenho("chama")
-        return png(a[1], d, rgb256(202), escala=1024 // (max(len(d), *map(len, d)) + 2))
     if a[:1] == ["--fim"]:
         arg = lambda k: a[a.index(k) + 1] if k in a[:-1] else None
         novo = arg("--status") or ("em_teste" if "--pronta" in a else None)  # --pronta: sessões abertas antes do --status
@@ -3868,23 +4017,26 @@ def selftest():
     globals()["gh"] = gh_real
     assert feitas == [("pr", "merge", "7", "-R", "o/r", "--squash"), ("pr", "close", "7", "-R", "o/r"),
                       ("pr", "review", "7", "-R", "o/r", "--approve", "-b", "ok"), ("pr", "comment", "7", "-R", "o/r", "-b", "oi")], feitas
-    # email: a resposta vai para o Reply-To (ou o From), com "Re:" uma vez só e na mesma conversa; enviar ou rascunho
-    import base64, email as email_lib, email.policy
-    reais, pedidos = {k: globals()[k] for k in ("caixa_google", "http_json")}, []
-    def gmail_falso(url, dados=None, token=None, corpo=None):
-        pedidos.append((url, corpo))
-        return {"threadId": "TH", "payload": {"headers": [
-            {"name": "From", "value": "Ana <ana@x.com>"}, {"name": "Reply-To", "value": "time@x.com"},
-            {"name": "Subject", "value": "Re: Proposta"}, {"name": "Message-ID", "value": "<m1@x>"}]}} if corpo is None else {}
-    globals().update(caixa_google=lambda: "tok", http_json=gmail_falso)
-    assert email_resposta("M", "Fechado, obrigado!", "1")["para"] == "time@x.com"
-    email_resposta("M", "rascunho")
-    globals().update(reais)
-    (url1, env), (url2, rasc) = pedidos[1], pedidos[3]
-    msg = email_lib.message_from_bytes(base64.urlsafe_b64decode(env["raw"]), policy=email.policy.default)
-    assert url1.endswith("/messages/send") and url2.endswith("/drafts") and env["threadId"] == rasc["message"]["threadId"] == "TH"
-    assert (msg["To"], msg["Subject"], msg["In-Reply-To"]) == ("time@x.com", "Re: Proposta", "<m1@x>"), dict(msg)
-    assert msg.get_content().strip() == "Fechado, obrigado!"
+    # email: responder vai para o Reply-To (ou o From); todos põe em cópia os outros, menos você; encaminhar cita o
+    # original; sempre na mesma conversa; com assinatura, vai também em HTML
+    h = {"from": "Ana <ana@x.com>", "reply-to": "time@x.com", "to": "Eu <eu@x.com>, Bia <bia@x.com>", "cc": "caio@x.com",
+         "subject": "Re: Proposta", "message-id": "<m1@x>", "date": "Tue, 25 Nov 2026 10:00:00 -0300"}
+    r = montar_email(h, "eu@x.com", "responder", "Fechado!")
+    assert (r["To"], r["Cc"], r["Subject"], r["In-Reply-To"]) == ("time@x.com", None, "Re: Proposta", "<m1@x>"), dict(r)
+    r = montar_email(h, "EU@x.com", "todos", "Fechado!")
+    assert r["Cc"] == "Bia <bia@x.com>, caio@x.com", r["Cc"]
+    r = montar_email(h, "eu@x.com", "encaminhar", "Veja abaixo.", para="dani@x.com", corpo_original="texto original")
+    assert r["Subject"] == "Fwd: Re: Proposta" and r["To"] == "dani@x.com" and "Mensagem encaminhada" in r.get_content() \
+        and r.get_content().rstrip().endswith("texto original"), r.get_content()
+    r = montar_email(h, "eu@x.com", "responder", "Oi", assinatura="<b>Antonio</b> · Souv")
+    partes = [p.get_content_type() for p in r.iter_parts()]
+    assert partes == ["text/plain", "text/html"] and "Antonio · Souv" in r.get_body(("plain",)).get_content() \
+        and "<b>Antonio</b>" in r.get_body(("html",)).get_content(), partes
+    try:
+        montar_email(h, "eu@x.com", "encaminhar", "x")  # encaminhar sem destinatário
+        assert False, "encaminhou sem destinatário"
+    except SystemExit:
+        pass
     # commit pelo app: só os arquivos marcados, nunca em main, sem Co-Authored-By, e segredo para antes do git add
     rp = os.path.join(RUN_DIR, "teste-commit")
     os.makedirs(rp)

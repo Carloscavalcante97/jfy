@@ -48,7 +48,7 @@ struct ReunioesTela: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Text("Agenda").font(.title2.bold())
+                Text("Agenda").font(Souv.titulo(24))
                 Text(titulo).font(.title3).foregroundStyle(.secondary)
                 Spacer()
                 if carregando { ProgressView().controlSize(.small) }
@@ -470,18 +470,11 @@ private struct EventoDetalhe: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("PARA AS HORAS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             HStack {
-                Menu {
-                    ForEach(projetos) { p in Button(p.nome) { horas(p: p.id) } }
-                    Divider()
-                    Button("Outro nome no Journify…") { textoOutro = ""; outroNome = true }
-                } label: {
-                    HStack(spacing: 6) {
-                        Circle().fill(Color(hex: evento.cor)).frame(width: 8, height: 8)
-                        Text(evento.projeto ?? "sem projeto").foregroundStyle(evento.p == nil ? Color.orange : .primary)
-                        if evento.palpite { Text("pelo título").font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-                .menuStyle(.borderlessButton).fixedSize()
+                SouvSelect(opcoes: projetos.map { .init(valor: $0.id, rotulo: $0.nome, cor: Color(hex: $0.cor)) }, selecionado: evento.p,
+                           vazio: "sem projeto", rotuloLivre: evento.projeto, corLivre: Color(hex: evento.cor),
+                           extra: ("Outro nome no Journify…", { textoOutro = ""; outroNome = true })) { horas(p: $0) }
+                    .frame(width: 180)
+                if evento.palpite { Text("pelo título").font(.caption).foregroundStyle(.secondary).fixedSize() }
                 TextField("contexto (vira a descrição nas horas)", text: $contexto).textFieldStyle(.roundedBorder)
                     .onSubmit { if let p = evento.p { horas(p: p) } }
                     .disabled(evento.p == nil)
@@ -590,7 +583,7 @@ private struct EventoForm: View {
             }
             .onChange(of: form.inicio) { antes, depois in form.fim = form.fim.addingTimeInterval(depois.timeIntervalSince(antes)) }  // mantém a duração
             TextField("Local", text: $form.local).textFieldStyle(.roundedBorder)
-            TextField("Convidados: emails separados por vírgula", text: $form.convidados, axis: .vertical).lineLimit(1...3).textFieldStyle(.roundedBorder)
+            CampoEmails(rotulo: "Convidados", texto: $form.convidados)
             Text("Descrição").font(.caption).foregroundStyle(.secondary)
             TextEditor(text: $form.descricao).frame(height: 90)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))

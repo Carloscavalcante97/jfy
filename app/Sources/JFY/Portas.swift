@@ -54,7 +54,7 @@ struct PortasTela: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Portas abertas").font(.largeTitle.bold())
+                    Text("Portas abertas").font(Souv.titulo(30))
                     Text("Servidores de desenvolvimento rodando neste Mac: de que projeto são, se o Claude subiu, e encerrar.")
                         .foregroundStyle(.secondary)
                 }
@@ -108,8 +108,8 @@ struct PortasTela: View {
             Button("Encerrar") { encerrando = p }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.15)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Souv.superficie))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Souv.borda))
     }
 
     private func txt(_ p: [Int]) -> String { p.prefix(3).map(String.init).joined(separator: ", ") + (p.count > 3 ? "…" : "") }

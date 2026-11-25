@@ -13,7 +13,7 @@ final class TerminalHost: NSObject, ObservableObject, LocalProcessTerminalViewDe
         view.processDelegate = self
         // JFY Mono vem dentro do app (ATSApplicationFontsPath no Info.plist): os ícones dos temas aparecem sem instalar nada
         view.font = NSFont(name: "JFYMono-Regular", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
-        view.nativeBackgroundColor = NSColor(srgbRed: 0.11, green: 0.11, blue: 0.12, alpha: 1)
+        view.nativeBackgroundColor = NSColor(srgbRed: 10 / 255, green: 14 / 255, blue: 45 / 255, alpha: 1)  // Midnight Blue #0A0E2D
         view.nativeForegroundColor = NSColor(white: 0.9, alpha: 1)
         view.optionAsMetaKey = true
         iniciar()
