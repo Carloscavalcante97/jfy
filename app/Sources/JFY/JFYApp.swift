@@ -134,6 +134,10 @@ struct JFYApp: App {
     var body: some Scene {
         Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas, nav: nav, abas: abas, limites: limites) }
             .defaultSize(width: 1200, height: 780)
+            // abre sempre com a janela: sem isto, o macOS restaurava "nenhuma janela" quando o app saía com ela fechada,
+            // e só o segundo clique no Dock mostrava o app
+            .restorationBehavior(.disabled)
+            .defaultLaunchBehavior(.presented)
     }
 }
 

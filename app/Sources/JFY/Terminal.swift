@@ -92,9 +92,10 @@ final class AbasTmux: ObservableObject {
 
     func ler() {
         DispatchQueue.global(qos: .utility).async {
-            let saida = Self.tmux(["list-windows", "-t", "jfy", "-F", "#{window_id}\t#{window_name}\t#{window_active}\t#{window_bell_flag}"])
+            // separador de texto comum: sem locale UTF-8 o tmux troca o TAB (e os acentos) por "_"
+            let saida = Self.tmux(["list-windows", "-t", "jfy", "-F", "#{window_id}|~|#{window_name}|~|#{window_active}|~|#{window_bell_flag}"])
             let lista = saida.split(separator: "\n").compactMap { l -> Aba? in
-                let c = l.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                let c = l.components(separatedBy: "|~|")
                 return c.count == 4 ? Aba(id: c[0], nome: c[1], ativa: c[2] == "1", sino: c[3] == "1") : nil
             }
             DispatchQueue.main.async { if lista != self.itens { self.itens = lista } }
@@ -115,6 +116,7 @@ final class AbasTmux: ObservableObject {
         p.arguments = ["tmux", "-L", "jfy"] + args
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        env["LC_ALL"] = "en_US.UTF-8"  // aberto pelo Finder, o app não tem LANG: sem ele o tmux estraga os acentos
         p.environment = env
         let out = Pipe()
         p.standardOutput = out

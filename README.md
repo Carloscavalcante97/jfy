@@ -154,7 +154,7 @@ O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Fe
 - **Notificações**: o histórico do que o jfy avisou (reunião, email, o Claude, a jornada, o resumo das 7h), por dia, com o número de novas na barra lateral. O clique faz o mesmo que na notificação: entra na chamada, abre os emails ou vai para a aba do Claude. Fica em `~/.jfy/notificacoes.jsonl`; "Limpar" apaga.
 - **Temas**: as cores e os ícones de cada tema (veja [Temas](#temas)); um clique troca.
 
-Para montar ou atualizar depois de um `git pull`: `./app/build.sh` (o `./install.sh` já faz isso se o app estiver instalado). A assinatura é local, vale para este Mac.
+Precisa do macOS 15 ou mais novo. Para montar ou atualizar depois de um `git pull`: `./app/build.sh` (o `./install.sh` já faz isso se o app estiver instalado). A assinatura é local, vale para este Mac.
 
 ### Notificação das 7h
 

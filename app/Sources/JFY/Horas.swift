@@ -38,6 +38,7 @@ struct HorasTela: View {
     @State private var aviso: String?
     @State private var rascunho: [String: String] = [:]  // o que está sendo digitado, por "linha|campo"
     @FocusState private var focado: String?
+    @State private var salvando: Set<String> = []  // "linha|campo" gravando agora
     @State private var outro: PedidoOutro?
     @State private var textoOutro = ""
     @State private var confirmar = false
@@ -117,26 +118,42 @@ struct HorasTela: View {
             Text("Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.")
                 .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            Table(vivos) {
-                TableColumn("Projeto") { it in projeto(h, it) }.width(min: 140, ideal: 180)
-                TableColumn("Categoria") { it in categoria(h, it) }.width(min: 130, ideal: 160)
-                TableColumn("Horas") { it in
-                    HStack(spacing: 4) {
-                        campo(it, "min", atual: hm(it.lanc), dica: "1:20")
-                        if it.fixo != nil {
-                            Image(systemName: "hand.raised").foregroundStyle(.secondary)
-                                .help("Horas à mão. Apague e salve para voltar à regra.")
-                        }
+            // linhas próprias, não Table: dentro da Table do macOS (uma NSTableView) o Enter dos campos não chega a eles
+            ScrollView {
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Text("Projeto").frame(width: 190, alignment: .leading)
+                        Text("Categoria").frame(width: 150, alignment: .leading)
+                        Text("Horas").frame(width: 140, alignment: .leading)
+                        Text("Descrição").frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(width: 22, height: 1)
                     }
-                    .help("Medido: \(hm(it.med)). Enter, clicar fora ou o ✓ salva; vazio volta para a regra; Esc desfaz.")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    Divider()
+                    ForEach(Array(vivos.enumerated()), id: \.element.id) { i, it in
+                        HStack(spacing: 12) {
+                            projeto(h, it).frame(width: 190, alignment: .leading)
+                            categoria(h, it).frame(width: 150, alignment: .leading)
+                            HStack(spacing: 4) {
+                                campo(it, "min", atual: hm(it.lanc), dica: "1:20").frame(width: 92)
+                                if it.fixo != nil {
+                                    Image(systemName: "hand.raised").foregroundStyle(.secondary)
+                                        .help("Horas à mão. Apague e salve para voltar à regra.")
+                                }
+                            }
+                            .frame(width: 140, alignment: .leading)
+                            .help("Medido: \(hm(it.med)). Enter, clicar fora ou o ✓ salva; vazio volta para a regra; Esc desfaz.")
+                            campo(it, "desc", atual: it.desc, dica: "descrição").frame(maxWidth: .infinity, alignment: .leading)
+                            Button { ajustar(it, "fora", "1") } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless).help("Remover desse dia").frame(width: 22)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(i % 2 == 1 ? Color.secondary.opacity(0.05) : Color.clear)
+                    }
                 }
-                .width(min: 70, ideal: 90, max: 110)
-                TableColumn("Descrição") { it in campo(it, "desc", atual: it.desc, dica: "descrição") }
-                TableColumn("") { it in
-                    Button { ajustar(it, "fora", "1") } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless).help("Remover desse dia")
-                }
-                .width(28)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.15)))
             }
             if !fora.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -183,26 +200,44 @@ struct HorasTela: View {
         let pendente = rascunho[k].map { $0 != atual } ?? false
         return HStack(spacing: 4) {
             TextField(dica, text: Binding(get: { rascunho[k] ?? atual }, set: { rascunho[k] = $0 }))
-                .textFieldStyle(.plain)
+                .textFieldStyle(.roundedBorder)
                 .focused($focado, equals: k)
                 .onSubmit { salvar(k) }
                 .onExitCommand {
                     rascunho[k] = nil
                     focado = nil
                 }
-            if pendente {
+            if salvando.contains(k) {
+                ProgressView().controlSize(.small).help("Salvando…")
+            } else if pendente {
                 Button { salvar(k) } label: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
                     .buttonStyle(.borderless).help("Salvar (Enter). Esc desfaz.")
             }
         }
     }
 
-    /// Grava o que foi digitado num campo ("linha|campo"), se mudou.
+    /// Grava o que foi digitado num campo ("linha|campo"), se mudou. O campo segue mostrando o que você digitou até o
+    /// jfy devolver o dia recarregado (antes voltava ao valor antigo nesse meio-tempo e parecia que não tinha salvo);
+    /// se o jfy recusar, o texto fica para você corrigir, com o aviso.
     private func salvar(_ k: String) {
-        guard let v = rascunho.removeValue(forKey: k), let i = k.lastIndex(of: "|"),
+        guard !salvando.contains(k), let v = rascunho[k], let i = k.lastIndex(of: "|"),
               let it = horas?.itens.first(where: { $0.kid == String(k[..<i]) }) else { return }
         let campo = String(k[k.index(after: i)...])
-        if v != (campo == "min" ? hm(it.lanc) : it.desc) { ajustar(it, campo, v) }
+        guard v != (campo == "min" ? hm(it.lanc) : it.desc) else {
+            rascunho[k] = nil
+            return
+        }
+        salvando.insert(k)
+        Task {
+            let r = await JFY.rodar(["--horas-ajuste", iso, it.kid, campo, v])
+            await carregar()
+            salvando.remove(k)
+            if r.status == 0 {
+                if rascunho[k] == v { rascunho[k] = nil }  // agora o valor vem do jfy
+            } else {
+                aviso = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
     }
 
     // ---------- jfy ----------
