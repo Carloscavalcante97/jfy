@@ -561,7 +561,7 @@ def barra_ia():
     return f"#[fg=colour{cor}]IA {ic('cheio') * cheio}{andador()}{ic('vazio') * (10 - cheio)} {p5}%{ate} #[fg=colour244]· semana {p7}%  "
 
 
-ESCOPOS = ["https://www.googleapis.com/auth/calendar.events.readonly",  # só lê eventos
+ESCOPOS = ["https://www.googleapis.com/auth/calendar.events",  # lê, cria e edita eventos (calendário da aba Reuniões do app)
            "https://www.googleapis.com/auth/gmail.modify"]  # lê, marca como lido e responde (aba Emails do app); não apaga
 # gmail.metadata não entra junto: com ele no token o Gmail recusa format=full mesmo tendo o readonly
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -581,14 +581,14 @@ def chaves(servico, valor=None):
                    text=True, check=True, capture_output=True)
 
 
-def http_json(url, dados=None, token=None, corpo=None):
+def http_json(url, dados=None, token=None, corpo=None, metodo=None):
     """GET, POST de formulário (dados) ou de JSON (corpo) no Google; erro HTTP vira mensagem com o motivo (API
     desligada, escopo negado...). Resposta vazia (204) vira {}."""
     cab = {"Authorization": "Bearer " + token} if token else {}
     if corpo is not None:
         cab["Content-Type"] = "application/json"
     req = urllib.request.Request(url, json.dumps(corpo).encode() if corpo is not None
-                                 else dados and urllib.parse.urlencode(dados).encode(), cab)
+                                 else dados and urllib.parse.urlencode(dados).encode(), cab, method=metodo)  # PATCH, DELETE
     try:
         r = urllib.request.urlopen(req, timeout=20).read()
         return json.loads(r) if r else {}
@@ -1725,19 +1725,99 @@ def task_abrir(tid, modo):
               "pipeline" if modo == "pipeline" else "livre")
 
 
-def reunioes_json():
-    """Aba Reuniões: as de hoje, com o projeto e o contexto que vão para as horas."""
-    cfg, agora = load(), time.time()
+CAL = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+
+
+def evento_app(e, cfg):
+    """Um evento da API do Google Agenda para o calendário do app, com o projeto e o contexto das horas (o registro das
+    reuniões; sem ele, o palpite pelo apelido no título)."""
+    ts = lambda x: (datetime.fromisoformat(x["dateTime"].replace("Z", "+00:00")).timestamp() if "dateTime" in x
+                    else datetime.combine(date.fromisoformat(x["date"]), datetime.min.time()).astimezone().timestamp())
+    video = [p["uri"] for p in (e.get("conferenceData") or {}).get("entryPoints", []) if p.get("entryPointType") == "video"]
+    local = e.get("location") or ""
+    org = e.get("organizer") or {}
+    eu = next((a for a in e.get("attendees", []) if a.get("self")), {})
+    titulo, i = e.get("summary") or "(sem título)", ts(e["start"])
+    info, achado = reuniao_info(i, titulo) or {}, projetos_no_texto(cfg, titulo)
+    p = info.get("pid") or info.get("projeto") or (achado[0] if len(achado) == 1 else None)
+    return {"id": e["id"], "titulo": titulo, "ini": i, "fim": ts(e["end"]), "dia_inteiro": "date" in e["start"],
+            "local": local or None, "descricao": e.get("description") or "", "url": e.get("htmlLink"),
+            "link": e.get("hangoutLink") or (video[0] if video else local if local.startswith("http") else None),
+            "convidados": [{"email": a.get("email", ""), "nome": a.get("displayName"), "resposta": a.get("responseStatus"),
+                            "eu": bool(a.get("self"))} for a in e.get("attendees", []) if not a.get("resource")],
+            "organizador": org.get("displayName") or org.get("email"), "eu_organizo": bool(org.get("self")),
+            "pode_editar": bool(org.get("self") or e.get("guestsCanModify")), "recorrente": bool(e.get("recurringEventId")),
+            "minha_resposta": eu.get("responseStatus"), "p": p, "projeto": nome_projeto(cfg, p) if p else None,
+            "cor": cor_hex(p) if p else None, "contexto": info.get("contexto"), "palpite": bool(p) and not info}
+
+
+def agenda_json(de, ate):
+    """Aba Reuniões (calendário): os eventos da agenda principal de um dia a outro (AAAA-MM-DD, os dois inclusive), as
+    recorrentes já abertas uma a uma, e os projetos para o menu das horas."""
+    cfg = load()
     if not cfg.get("google"):
         sys.exit("Agenda não conectada: rode jfy --login no terminal.")
-    out = []
-    for i, f, t, link, *_ in eventos_hoje(forcar=True):
-        info, achado = reuniao_info(i, t) or {}, projetos_no_texto(cfg, t)
-        p = info.get("pid") or info.get("projeto") or (achado[0] if len(achado) == 1 else None)
-        out.append({"ini": i, "fim": f, "titulo": t, "link": link or None, "p": p, "projeto": nome_projeto(cfg, p) if p else None,
-                    "cor": cor_hex(p) if p else None, "contexto": info.get("contexto"), "palpite": bool(p) and not info,
-                    "estado": "foi" if f < agora else "agora" if i <= agora else "vem"})
-    return {"reunioes": out, "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor_hex(k)} for k, pr in cfg["projetos"].items()), key=lambda x: x["nome"].lower())}
+    ini = datetime.combine(date.fromisoformat(de), datetime.min.time()).astimezone()
+    fim = datetime.combine(date.fromisoformat(ate) + timedelta(days=1), datetime.min.time()).astimezone()
+    itens, pagina = [], None
+    while True:
+        q = {"timeMin": ini.isoformat(), "timeMax": fim.isoformat(), "singleEvents": "true", "orderBy": "startTime",
+             "maxResults": 2500, **({"pageToken": pagina} if pagina else {})}
+        r = http_json(f"{CAL}?{urllib.parse.urlencode(q)}", token=google_token())
+        itens += r.get("items", [])
+        pagina = r.get("nextPageToken")
+        if not pagina:
+            break
+    return {"eventos": [evento_app(e, cfg) for e in itens if e.get("status") != "cancelled"
+                        and e.get("eventType") not in ("workingLocation",)],
+            "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor_hex(k)} for k, pr in cfg["projetos"].items()),
+                               key=lambda x: x["nome"].lower())}
+
+
+def corpo_evento(d, atual=None):
+    """O corpo do evento para a API, do que o app manda: titulo, ini e fim (epoch; no dia inteiro, AAAA-MM-DD, o fim
+    incluído), dia_inteiro, descricao, local, convidados (emails) e meet (cria a chamada se o evento não tem).
+    Editando, quem continua convidado mantém a resposta que já deu."""
+    corpo = {"summary": d.get("titulo") or "(sem título)", "description": d.get("descricao") or "", "location": d.get("local") or ""}
+    if d.get("dia_inteiro"):
+        corpo["start"] = {"date": d["ini"]}
+        corpo["end"] = {"date": (date.fromisoformat(d["fim"]) + timedelta(days=1)).isoformat()}  # o Google quer o dia seguinte
+    else:
+        corpo["start"] = {"dateTime": datetime.fromtimestamp(float(d["ini"])).astimezone().isoformat()}
+        corpo["end"] = {"dateTime": datetime.fromtimestamp(float(d["fim"])).astimezone().isoformat()}
+    if "convidados" in d:
+        antes = {a.get("email", "").lower(): a for a in (atual or {}).get("attendees", [])}
+        corpo["attendees"] = [antes.get(x.strip().lower(), {"email": x.strip()}) for x in d["convidados"] if x.strip()]
+        corpo["attendees"] += [a for a in antes.values() if a.get("self") or a.get("resource")
+                               and a not in corpo["attendees"]]  # você e as salas não somem do evento
+    if d.get("meet") and not (atual or {}).get("hangoutLink") and not (atual or {}).get("conferenceData"):
+        corpo["conferenceData"] = {"createRequest": {"requestId": uuid.uuid4().hex, "conferenceSolutionKey": {"type": "hangoutsMeet"}}}
+    return corpo
+
+
+def evento_salvar(dados):
+    """Cria (sem id) ou edita (com id: em recorrente, só esta ocorrência) um evento da agenda principal. avisar=True
+    manda o convite ou a atualização por email aos convidados."""
+    d, cfg = json.loads(dados), load()
+    if not cfg.get("google"):
+        sys.exit("Agenda não conectada: rode jfy --login no terminal.")
+    tok = google_token()
+    atual = http_json(f"{CAL}/{urllib.parse.quote(d['id'])}", token=tok) if d.get("id") else None
+    q = urllib.parse.urlencode({"conferenceDataVersion": 1, "sendUpdates": "all" if d.get("avisar") else "none"})
+    try:
+        e = (http_json(f"{CAL}/{urllib.parse.quote(d['id'])}?{q}", token=tok, corpo=corpo_evento(d, atual), metodo="PATCH")
+             if atual else http_json(f"{CAL}?{q}", token=tok, corpo=corpo_evento(d)))
+    except RuntimeError as erro:
+        if "403" in str(erro) and "insufficient" in str(erro).lower():
+            sys.exit("Falta a permissão de editar a agenda: rode jfy --login no terminal e aceite.")
+        raise
+    return evento_app(e, cfg)
+
+
+def evento_apagar(eid, avisar=""):
+    """Apaga um evento (em recorrente, só esta ocorrência); avisar manda o cancelamento aos convidados."""
+    q = urllib.parse.urlencode({"sendUpdates": "all" if avisar else "none"})
+    http_json(f"{CAL}/{urllib.parse.quote(eid)}?{q}", token=google_token(), metodo="DELETE")
 
 
 def reuniao_ajuste(ini, titulo, p, contexto=""):
@@ -3218,7 +3298,8 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--reunioes-json": reunioes_json,
+                "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
+                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,
@@ -3653,6 +3734,18 @@ def selftest():
     assert len(worktrees(rp)) == 1 and not os.path.exists(wt)
     globals().update(reais)
     shutil.rmtree(rp)
+    # agenda: dia inteiro vai com o fim no dia seguinte (como o Google quer), quem já respondeu mantém a resposta,
+    # você não some da lista e a chamada do Meet só é pedida quando o evento ainda não tem
+    ce = corpo_evento({"titulo": "Daily", "dia_inteiro": True, "ini": "2026-11-25", "fim": "2026-11-25", "meet": True})
+    assert ce["start"] == {"date": "2026-11-25"} and ce["end"] == {"date": "2026-11-26"} and "createRequest" in ce["conferenceData"]
+    atual = {"hangoutLink": "https://meet/x", "attendees": [{"email": "Ana@x.com", "responseStatus": "accepted"},
+                                                             {"email": "eu@x.com", "self": True, "responseStatus": "accepted"},
+                                                             {"email": "bia@x.com", "responseStatus": "needsAction"}]}
+    ce = corpo_evento({"titulo": "Daily", "ini": 1795600000, "fim": 1795601800, "convidados": ["ana@x.com", "caio@x.com"],
+                      "meet": True}, atual)
+    assert [(a["email"], a.get("responseStatus")) for a in ce["attendees"]] == [
+        ("Ana@x.com", "accepted"), ("caio@x.com", None), ("eu@x.com", "accepted")], ce["attendees"]
+    assert "conferenceData" not in ce and ce["start"]["dateTime"].startswith(datetime.fromtimestamp(1795600000).astimezone().isoformat()[:16])
     # chat: sem argumento lista as conversas, com a conversa lista as mensagens, com o texto envia
     reais = {k: globals()[k] for k in ("chat_conversas", "chat_mensagens", "chat_enviar")}
     globals().update(chat_conversas=lambda: "c", chat_mensagens=lambda cid: "m" + cid, chat_enviar=lambda cid, t: "e" + cid + t)

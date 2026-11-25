@@ -71,7 +71,7 @@ extension Color {
 }
 
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Reuniões", emails = "Emails",
+    case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
          portas = "Portas", uso = "Uso da IA",
          chat = "Chat", notificacoes = "Notificações", temas = "Temas"
     var id: Self { self }
