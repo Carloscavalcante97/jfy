@@ -522,8 +522,10 @@ def cronometro(acao=None):
     return int(sum((f or agora) - i for i, f in b) // 60), bool(b) and b[-1][1] is None
 
 
-def barra_ia():
-    """Uso dos limites do Claude (janela de 5h e semana), do JSON que o statusline do Claude Code grava em USO."""
+def limites_ia():
+    """Uso dos limites do Claude, do JSON que o statusline do Claude Code grava em USO: (% da janela de 5 h, quando
+    ela renova ou None, % da semana, quando ela renova ou None); None se ainda não há leitura. Usado pela barra do
+    tmux e pelo menu do SwiftBar (o app lê o mesmo arquivo, com a mesma regra)."""
     # Claude recém-aberto grava sem rate_limits (só vêm após a 1ª resposta) e o tee trunca antes de escrever:
     # nesses casos usa a última leitura boa, guardada em USO + ".ok"
     for arq in (USO, USO + ".ok"):
@@ -534,16 +536,28 @@ def barra_ia():
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
     else:
-        return ""
+        return None
     ok = USO + ".ok"
     if arq == USO and os.path.getmtime(USO) > (os.path.getmtime(ok) if os.path.exists(ok) else 0):  # só se mudou
         json.dump({"rate_limits": rl}, open(ok, "w"))
     vivo = lambda j: time.time() < j.get("resets_at", 0)  # janela que já resetou desde a última gravação = 0%
-    p5 = round(j5.get("used_percentage", 0)) if vivo(j5) else 0
-    p7 = round(j7.get("used_percentage", 0)) if vivo(j7) else 0
+    return (round(j5.get("used_percentage", 0)) if vivo(j5) else 0, j5["resets_at"] if vivo(j5) else None,
+            round(j7.get("used_percentage", 0)) if vivo(j7) else 0, j7["resets_at"] if vivo(j7) else None)
+
+
+def cor_uso(p):
+    return 203 if p >= 80 else 214 if p >= 50 else 78
+
+
+def barra_ia():
+    """Uso dos limites do Claude (janela de 5h e semana) na barra do tmux."""
+    lim = limites_ia()
+    if not lim:
+        return ""
+    p5, r5, p7, _ = lim
     cheio = min(10, round(p5 / 10))
-    ate = " até " + datetime.fromtimestamp(j5["resets_at"]).strftime("%H:%M") if vivo(j5) else ""
-    cor = 203 if p5 >= 80 else 214 if p5 >= 50 else 78
+    ate = " até " + datetime.fromtimestamp(r5).strftime("%H:%M") if r5 else ""
+    cor = cor_uso(p5)
     return f"#[fg=colour{cor}]IA {ic('cheio') * cheio}{andador()}{ic('vazio') * (10 - cheio)} {p5}%{ate} #[fg=colour244]· semana {p7}%  "
 
 
@@ -1376,6 +1390,15 @@ def barra_mac():
         L += ([f"Entrar na chamada | href={link}"] if link else []) + ["---"]
     else:
         L = [f" | image={icone_png('chama', TEMA.get(39, 202))}", "---"]
+    lim = limites_ia()
+    if lim:  # o mesmo uso da barra do tmux e do topo do app: o ecossistema mostra igual em todo lugar
+        p5, r5, p7, r7 = lim
+        barra = lambda p: "▰" * min(10, round(p / 10)) + "▱" * (10 - min(10, round(p / 10)))
+        dia = lambda r: ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][datetime.fromtimestamp(r).weekday()] + " "
+        renova = lambda r, semana=False: " · renova " + (dia(r) if semana else "") + datetime.fromtimestamp(r).strftime("%H:%M") if r else ""
+        cor = lambda p: " | font=Menlo size=12 color=#%02x%02x%02x" % rgb256(cor_uso(p))
+        L += ["Uso do Claude", f"{'5 h':<8}{barra(p5)}  {p5}%{renova(r5)}{cor(p5)}",
+              f"{'Semana':<8}{barra(p7)}  {p7}%{renova(r7, True)}{cor(p7)}", "---"]
     L += [
          "Abrir o jfy" + acao("--abrir"),
          f"Abrir o Journify | href={cfg.get('journify', JOURNIFY)}",

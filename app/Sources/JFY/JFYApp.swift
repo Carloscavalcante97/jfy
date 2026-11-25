@@ -129,9 +129,10 @@ struct JFYApp: App {
     @StateObject private var portas = PortasAbertas()
     @StateObject private var nav = Navegacao()
     @StateObject private var abas = AbasTmux()
+    @StateObject private var limites = LimitesIA()
 
     var body: some Scene {
-        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas, nav: nav, abas: abas) }
+        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas, nav: nav, abas: abas, limites: limites) }
             .defaultSize(width: 1200, height: 780)
     }
 }
@@ -143,6 +144,7 @@ struct Principal: View {
     @ObservedObject var portas: PortasAbertas
     @ObservedObject var nav: Navegacao
     @ObservedObject var abas: AbasTmux
+    @ObservedObject var limites: LimitesIA
     private var tela: Tela? { nav.tela }
     @State private var telaCheia = false
 
@@ -178,6 +180,7 @@ struct Principal: View {
                 mostrar(.temas) { TemasTela(ativa: tela == .temas) }
             }
         }
+        .toolbar { ToolbarItem(placement: .principal) { BarraUsoIA(limites: limites) } }  // em qualquer aba
         .background { atalhos }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in telaCheia = true }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in telaCheia = false }

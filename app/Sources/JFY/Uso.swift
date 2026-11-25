@@ -422,3 +422,75 @@ private struct Dica: View {
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.2)))
     }
 }
+
+// ---------- o uso dos limites do Claude no topo da janela ----------
+/// O uso dos limites do Claude (janela de 5 h e semana), do mesmo arquivo que o statusline do Claude Code grava e que a
+/// barra do tmux e o SwiftBar leem (~/.jfy/claude-status.json, ou a última leitura boa no .ok). Janela que já renovou
+/// conta 0%, como lá. Olha a cada 15 s.
+final class LimitesIA: ObservableObject {
+    struct Janela: Equatable {
+        let pct: Int
+        let renova: Date?
+    }
+
+    @Published private(set) var cinco: Janela?
+    @Published private(set) var semana: Janela?
+    private var timer: Timer?
+
+    init() {
+        ler()
+        timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in self?.ler() }
+    }
+
+    func ler() {
+        let base = NSHomeDirectory() + "/.jfy/claude-status.json"
+        for arq in [base, base + ".ok"] {
+            guard let d = try? Data(contentsOf: URL(fileURLWithPath: arq)),
+                  let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let rl = j["rate_limits"] as? [String: Any] else { continue }
+            func janela(_ k: String) -> Janela? {
+                guard let x = rl[k] as? [String: Any] else { return nil }
+                let r = (x["resets_at"] as? Double).map { Date(timeIntervalSince1970: $0) }
+                let viva = r.map { $0 > Date() } ?? false
+                return Janela(pct: viva ? Int(((x["used_percentage"] as? Double) ?? 0).rounded()) : 0, renova: viva ? r : nil)
+            }
+            let c = janela("five_hour"), s = janela("seven_day")
+            if c != cinco { cinco = c }
+            if s != semana { semana = s }
+            return
+        }
+    }
+}
+
+struct BarraUsoIA: View {
+    @ObservedObject var limites: LimitesIA
+
+    var body: some View {
+        if let c = limites.cinco {
+            HStack(spacing: 16) {
+                medidor("5 h", c, c.renova.map { "renova " + $0.formatted(.dateTime.hour().minute()) })
+                if let s = limites.semana {
+                    medidor("Semana", s, s.renova.map {
+                        let dia = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][Calendar.current.component(.weekday, from: $0) - 1]
+                        return "renova \(dia) " + $0.formatted(.dateTime.hour().minute())
+                    })
+                }
+            }
+            .help("Uso dos limites do Claude: o mesmo da barra do jfy no terminal e do ícone na barra de cima do Mac")
+        }
+    }
+
+    private func medidor(_ nome: String, _ j: LimitesIA.Janela, _ renova: String?) -> some View {
+        let cor: Color = j.pct >= 80 ? .red : j.pct >= 50 ? .orange : .green
+        return HStack(spacing: 6) {
+            Text(nome).font(.caption).foregroundStyle(.secondary)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.secondary.opacity(0.2))
+                Capsule().fill(cor).frame(width: max(3, 70 * CGFloat(min(j.pct, 100)) / 100))
+            }
+            .frame(width: 70, height: 6)
+            Text("\(j.pct)%").font(.caption.monospacedDigit().weight(.semibold))
+            if let renova { Text(renova).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+}
