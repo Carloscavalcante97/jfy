@@ -394,8 +394,7 @@ struct HistoricoPainel: View {
                         .padding(.horizontal, 12).padding(.bottom, 10)
                     }
                     Divider()
-                    ScrollView([.vertical, .horizontal]) { Diff(texto: d.diff).padding(8) }
-                        .background(Color(nsColor: .textBackgroundColor))
+                    DiffRolavel(texto: d.diff)
                 }
             } else {
                 Text("Escolha um commit").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -570,12 +569,28 @@ struct Diff: View {
                 let cor: Color? = l.hasPrefix("+") && !l.hasPrefix("+++") ? .green : l.hasPrefix("-") && !l.hasPrefix("---") ? .red
                     : l.hasPrefix("@@") ? .blue : nil
                 Text(l.isEmpty ? " " : l).font(.system(size: 11.5, design: .monospaced))
+                    .fixedSize(horizontal: true, vertical: false)  // código não quebra linha: rola para o lado
                     .foregroundStyle(cor ?? .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background((cor ?? .clear).opacity(cor == .blue ? 0 : 0.08))
                     .textSelection(.enabled)
             }
         }
+    }
+}
+
+/// O diff numa área que rola nos dois sentidos, começando no topo à esquerda. Sem o tamanho mínimo, o ScrollView de
+/// dois eixos centralizava o diff menor que a área (ele aparecia estreito, no meio do painel).
+struct DiffRolavel: View {
+    let texto: String
+    var body: some View {
+        GeometryReader { g in
+            ScrollView([.vertical, .horizontal]) {
+                Diff(texto: texto).padding(8)
+                    .frame(minWidth: g.size.width, minHeight: g.size.height, alignment: .topLeading)
+            }
+        }
+        .background(Color(nsColor: .textBackgroundColor))
     }
 }
 
@@ -971,8 +986,7 @@ struct CommitPainel: View {
                 }
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 Divider()
-                ScrollView([.vertical, .horizontal]) { Diff(texto: diff).padding(8) }
-                    .background(Color(nsColor: .textBackgroundColor))
+                DiffRolavel(texto: diff)
             } else {
                 Text(dados?.arquivos.isEmpty == false ? "Escolha um arquivo para ver o diff" : "")
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
