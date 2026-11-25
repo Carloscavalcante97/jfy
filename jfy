@@ -13,6 +13,7 @@ WT_DIR = os.path.join(HOME, "worktrees")
 DIA = os.path.join(HOME, "dia.json")  # cronômetro da jornada de hoje
 USO = os.path.join(HOME, "claude-status.json")  # gravado pelo statusline do Claude Code (install.sh)
 AGENDA = os.path.join(HOME, "agenda.json")  # cache das reuniões de hoje
+NOTIFICACOES = os.path.join(HOME, "notificacoes.jsonl")  # tudo que o notificar() avisou: a aba Notificações do app lê
 REUNIOES = os.path.join(HOME, "reunioes.json")  # projeto e contexto que você deu a cada reunião (r ou h): base das horas
 EMAIL = os.path.join(HOME, "email.json")  # estado da caixa: não lidos, último uid visto, email que acabou de chegar
 SEM_REPO = os.path.join(HOME, "sem-repo")  # <id>/: pasta do projeto sem repositório (estudo, teste), com o handoff.md
@@ -461,7 +462,14 @@ def imagem_tema():
 
 def notificar(titulo, texto, abrir=None, executar=None):
     """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
-    (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, ou sem permissão, a do osascript (o clique abre o Editor de Scripts)."""
+    (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, ou sem permissão, a do osascript (o clique abre o Editor de Scripts).
+    Cada aviso também vai para o histórico (NOTIFICACOES), com o mesmo clique, para a aba Notificações do app."""
+    try:  # ponytail: cresce ~200 bytes por aviso; o app mostra só os 300 últimos e tem o botão Limpar
+        with open(NOTIFICACOES, "a") as f:
+            f.write(json.dumps({"ts": time.time(), "titulo": titulo, "texto": texto, "abrir": abrir, "executar": executar},
+                               ensure_ascii=False) + "\n")
+    except OSError:
+        pass  # sem histórico, o aviso sai do mesmo jeito
     tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
                                                                  "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
     if tn:

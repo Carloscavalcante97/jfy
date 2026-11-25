@@ -72,7 +72,7 @@ extension Color {
 
 enum Tela: String, CaseIterable, Identifiable {
     case terminal = "jfy", projetos = "Projetos", horas = "Horas", reunioes = "Reuniões", uso = "Uso da IA",
-         chat = "Chat", temas = "Temas"
+         chat = "Chat", notificacoes = "Notificações", temas = "Temas"
     var id: Self { self }
     var icone: String {
         switch self {
@@ -82,6 +82,7 @@ enum Tela: String, CaseIterable, Identifiable {
         case .reunioes: "calendar"
         case .uso: "chart.bar.xaxis"
         case .chat: "bubble.left.and.bubble.right"
+        case .notificacoes: "bell"
         case .temas: "paintpalette"
         }
     }
@@ -105,11 +106,13 @@ struct JFYApp: App {
 struct Principal: View {
     @State private var tela: Tela? = .terminal
     @StateObject private var terminal = TerminalHost()
+    @StateObject private var notificacoes = Notificacoes()
 
     var body: some View {
         NavigationSplitView {
             List(Tela.allCases, selection: $tela) { t in
                 Label(t.rawValue, systemImage: t.icone).tag(t)
+                    .badge(t == .notificacoes ? notificacoes.novas : 0)
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
         } detail: {
@@ -121,6 +124,9 @@ struct Principal: View {
                 mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: { tela = .terminal }) }
                 mostrar(.uso) { UsoTela() }
                 mostrar(.chat) { ChatTela(ativa: tela == .chat) }
+                mostrar(.notificacoes) {
+                    NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: { tela = .terminal })
+                }
                 mostrar(.temas) { TemasTela(ativa: tela == .temas) }
             }
         }
@@ -135,7 +141,7 @@ struct Principal: View {
         return conteudo().opacity(ativa ? 1 : 0).allowsHitTesting(ativa).accessibilityHidden(!ativa)
     }
 
-    /// ⌘1 a ⌘7, na ordem da barra lateral
+    /// ⌘1 a ⌘8, na ordem da barra lateral
     private var atalhos: some View {
         ForEach(Array(Tela.allCases.enumerated()), id: \.element) { i, t in
             Button("") { tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
