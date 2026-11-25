@@ -1893,20 +1893,17 @@ def cabecalho_status(linha):
 
 
 def repos_json():
-    """Aba GitHub > Repositórios: o git de cada repositório dos projetos (o que o último fetch sabe): branch, o que
-    falta subir e baixar, os arquivos mexidos e os últimos commits."""
+    """Aba GitHub, coluna dos repositórios: o git de cada repositório dos projetos (o que o último fetch sabe): branch,
+    o que falta subir e baixar, e quantos arquivos mexidos."""
     cfg, out = load(), []
     for pid, pasta in sorted(pastas_projetos(cfg), key=lambda x: (cfg["projetos"][x[0]]["nome"].lower(), x[1])):
         if not os.path.isdir(os.path.join(pasta, ".git")):
             continue
         st = git(pasta, "-c", "core.quotePath=false", "status", "--porcelain=v1", "--branch").stdout.splitlines()
         branch, upstream, frente, atras = cabecalho_status(st[0] if st else "")
-        log = [l.split("\x1f") for l in git(pasta, "log", "-15", "--format=%h%x1f%s%x1f%an%x1f%cI").stdout.splitlines()]
         out.append({"pasta": pasta, "nome": os.path.basename(pasta), "projeto": cfg["projetos"][pid]["nome"], "cor": cor_hex(pid),
                     "remote": slug_github(git(pasta, "remote", "get-url", "origin").stdout.strip()),
-                    "branch": branch, "upstream": upstream, "frente": frente, "atras": atras,
-                    "mexidos": [l[3:] for l in st[1:]][:30], "n_mexidos": len(st) - 1,
-                    "commits": [{"sha": c[0], "msg": c[1], "autor": c[2], "quando": c[3]} for c in log if len(c) == 4]})
+                    "branch": branch, "upstream": upstream, "frente": frente, "atras": atras, "n_mexidos": len(st) - 1})
     return out
 
 
@@ -2178,10 +2175,7 @@ def commit_mensagem(pasta, *arquivos):
 def tasks_commitadas(pasta, branch):
     """Ids do Journify já commitados na branch (a linha 'Journify: <id>' do committer), desde a base gitflow local
     (sem fetch: o commit não espera a rede)."""
-    if not BRANCH_OK.match(branch):
-        return []
-    nomes = ["main", "master"] if branch.startswith(("hotfix/", "release/")) else ["develop", "main", "master"]
-    base_ref = next((r for n in nomes for r in (f"origin/{n}", n) if git(pasta, "rev-parse", "--verify", "--quiet", r).returncode == 0), None)
+    base_ref = base_local(pasta, branch) if BRANCH_OK.match(branch) else None
     if not base_ref:
         return []
     return list(dict.fromkeys(git(pasta, "log", base_ref + "..HEAD", "--format=%(trailers:key=Journify,valueonly)").stdout.split()))
@@ -2218,6 +2212,117 @@ def commit_fazer(pasta, mensagem, *arquivos):
     if r.returncode:
         sys.exit((r.stderr or r.stdout).strip())
     return {"sha": git(pasta, "rev-parse", "--short", "HEAD").stdout.strip(), "assunto": mensagem.splitlines()[0]}
+
+
+# ---------- fluxo de desenvolvimento na aba GitHub: histórico, branches, worktrees e abrir o PR ----------
+def base_local(pasta, branch):
+    """A base gitflow da branch nas refs locais (sem fetch): origin/develop, develop, origin/main… ou None."""
+    nomes = ["main", "master"] if branch.startswith(("hotfix/", "release/")) else ["develop", "developer", "main", "master"]
+    return next((r for n in nomes for r in (f"origin/{n}", n) if git(pasta, "rev-parse", "--verify", "--quiet", r).returncode == 0), None)
+
+
+def repo_historico(pasta):
+    """Os últimos 80 commits da branch atual, com as refs (branch, tag, origin) de cada um."""
+    repo_do_jfy(pasta)
+    linhas = git(pasta, "log", "-80", "--format=%h%x1f%s%x1f%an%x1f%cI%x1f%D").stdout.splitlines()
+    return [dict(zip(("sha", "assunto", "autor", "quando", "refs"), l.split("\x1f"))) for l in linhas if l.count("\x1f") == 4]
+
+
+def repo_commit(pasta, sha):
+    """Um commit: a mensagem inteira, os arquivos (com o que aconteceu com cada um) e o diff, cortado em 4000 linhas."""
+    repo_do_jfy(pasta)
+    if not re.fullmatch(r"[0-9a-f]{4,40}", sha):
+        sys.exit("Commit inválido.")
+    nomes = [l.split("\t") for l in git(pasta, "-c", "core.quotePath=false", "show", "--format=", "--name-status", sha).stdout.splitlines() if l]
+    return {"mensagem": git(pasta, "show", "-s", "--format=%B", sha).stdout.strip(),
+            "arquivos": [{"estado": n[0][:1], "arquivo": n[-1]} for n in nomes],
+            "diff": "\n".join(git(pasta, "-c", "core.quotePath=false", "show", "--format=", sha).stdout.splitlines()[:4000])}
+
+
+def worktrees(pasta):
+    """Os worktrees do repositório (o principal primeiro), com a branch e quantos arquivos mexidos cada um tem."""
+    out, wt = [], {}
+    for l in git(pasta, "worktree", "list", "--porcelain").stdout.splitlines() + [""]:
+        if not l:
+            if wt:
+                caminho = wt["worktree"]
+                out.append({"pasta": caminho, "branch": wt.get("branch", "").removeprefix("refs/heads/") or "(sem branch)",
+                            "principal": not out, "orfao": "prunable" in wt or not os.path.isdir(caminho),
+                            "mexidos": len(git(caminho, "status", "--porcelain").stdout.splitlines()) if os.path.isdir(caminho) else 0})
+            wt = {}
+        else:
+            k, _, v = l.partition(" ")
+            wt[k] = v
+    return out
+
+
+def repo_branches(pasta):
+    """Branches locais (a mais mexida primeiro) com upstream, à frente e atrás, e se já entrou na base; e os worktrees."""
+    repo_do_jfy(pasta)
+    atual = git(pasta, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    base_ref = base_local(pasta, atual)
+    entrou = set(git(pasta, "branch", "--format=%(refname:short)", "--merged", base_ref).stdout.split()) if base_ref else set()
+    branches = []
+    for l in git(pasta, "for-each-ref", "--sort=-committerdate",
+                 "--format=%(refname:short)%1f%(upstream:short)%1f%(upstream:track)%1f%(committerdate:iso-strict)%1f%(subject)",
+                 "refs/heads").stdout.splitlines():
+        nome, up, track, quando, assunto = (l.split("\x1f") + [""] * 5)[:5]
+        conta = lambda k: int((re.search(rf"{k} (\d+)", track) or [0, 0])[1])
+        branches.append({"nome": nome, "atual": nome == atual, "upstream": up or None, "sumiu": "gone" in track,
+                         "frente": conta("ahead"), "atras": conta("behind"), "quando": quando, "assunto": assunto,
+                         "entrou": nome in entrou and nome not in ("main", "master", "develop")})
+    lock = os.path.join(RUN_DIR, re.sub(r"\W", "_", pasta))
+    return {"atual": atual, "base": base_ref, "task_rodando": ocupado(lock), "branches": branches, "worktrees": worktrees(pasta)}
+
+
+def repo_branch(pasta, acao, *args):
+    """trocar <nome>; criar <tipo> <título> (gitflow: feature e bugfix saem da develop atualizada, hotfix e release da
+    main); excluir <nome> (só a que já entrou na base: git branch -d, nunca -D)."""
+    repo_do_jfy(pasta)
+    if acao in ("trocar", "criar") and ocupado(os.path.join(RUN_DIR, re.sub(r"\W", "_", pasta))):
+        sys.exit("Tem uma task do jfy rodando neste repositório: trocar de branch agora mexe nos arquivos dela.")
+    if acao == "trocar" and args:
+        r = git(pasta, "switch", args[0])
+    elif acao == "criar" and len(args) == 2 and args[0] in ("feature", "bugfix", "hotfix", "release") and slug(args[1]):
+        r = git(pasta, "switch", "--no-track", "-c", f"{args[0]}/{slug(args[1])}", base(pasta, args[0]))
+    elif acao == "excluir" and args:
+        r = git(pasta, "branch", "-d", args[0])
+    else:
+        sys.exit("Use: trocar <branch>, criar <feature|bugfix|hotfix|release> <título> ou excluir <branch>.")
+    if r.returncode:
+        sys.exit((r.stderr or r.stdout).strip())
+
+
+def worktree_acao(pasta, acao, wt=""):
+    """abrir <worktree> (terminal livre do jfy nele), remover <worktree> (só sem mudança pendente) ou limpar (os órfãos)."""
+    repo_do_jfy(pasta)
+    lista = [w["pasta"] for w in worktrees(pasta) if not w["principal"]]
+    if acao in ("abrir", "remover") and wt not in lista:
+        sys.exit("Esse worktree não é deste repositório.")
+    if acao == "abrir":
+        return abrir_aba(os.path.basename(wt)[:20] + ": livre", wt, "--livre", wt)
+    r = git(pasta, "worktree", "remove", wt) if acao == "remover" else git(pasta, "worktree", "prune") if acao == "limpar" else None
+    if r is None:
+        sys.exit("Use abrir, remover ou limpar.")
+    if r.returncode:
+        sys.exit((r.stderr or r.stdout).strip())
+
+
+def pr_abrir(pasta):
+    """"Abrir PR" da aba GitHub: numa aba do jfy, o Claude abre o PR da branch pelas regras do agente pr-creator (fora da
+    pipeline: as tasks vêm das linhas Journify dos commits). Ele pede a sua aprovação antes de criar e de comentar."""
+    repo_do_jfy(pasta)
+    branch = git(pasta, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if not BRANCH_OK.match(branch):
+        sys.exit(f"PR sai de uma branch feature/, bugfix/, hotfix/ ou release/; a atual é '{branch}'.")
+    if not os.environ.get("TMUX"):
+        return abrir_aba(f"PR: {os.path.basename(pasta)[:14]}", pasta, "--pr-abrir", pasta)
+    pedido = (f"Abra o pull request da branch {branch} seguindo as regras do agente pr-creator, em ~/.claude/agents/pr-creator.md "
+              "(leia o arquivo). Isto é fora da pipeline: não há .pipeline/, então pule as pré-condições que dependem dela. As tasks "
+              "vêm das linhas 'Journify:' dos commits da branch (git log <base>..HEAD); o resto (template do repo, teto de 8 pontos, "
+              "limite de 2 PRs por pessoa, plano de testes por critério da task, push sem --force) vale como lá. Mostre o título e o "
+              "corpo e espere eu aprovar antes do gh pr create, e de novo antes de comentar o link nas tasks do Journify.")
+    subprocess.call(["claude", pedido], cwd=pasta)
 
 
 def app(f, *a):
@@ -2334,7 +2439,7 @@ def ocupado(lock):
 def base(repo, tipo="feature"):
     """Ponto de partida gitflow, atualizado do remoto: develop; hotfix sai da main. Sem develop, main/master."""
     git(repo, "fetch", "-q", "origin")
-    for n in (["main", "master"] if tipo == "hotfix" else ["develop", "main", "master"]):
+    for n in (["main", "master"] if tipo == "hotfix" else ["develop", "developer", "main", "master"]):  # developer: o do okra
         for ref in (f"origin/{n}", n):
             if git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0:
                 return ref
@@ -3086,7 +3191,9 @@ def main():
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
                 "--portas-encerrar-todas": portas_encerrar_todas, "--email-resposta": email_resposta, "--email-ia": email_ia,
                 "--repo-mudancas": repo_mudancas, "--repo-diff": repo_diff, "--commit-mensagem": commit_mensagem,
-                "--commit-autor": commit_autor, "--commit-fazer": commit_fazer}
+                "--commit-autor": commit_autor, "--commit-fazer": commit_fazer,
+                "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
+                "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
     if a[:1] == ["--horas-json"]:  # aba Horas do app: jfy --horas-json [AAAA-MM-DD]
@@ -3473,6 +3580,31 @@ def selftest():
         assert False, "commitou um segredo"
     except SystemExit as e:
         assert "segredo" in str(e) and not g("diff", "--cached", "--name-only").stdout.strip()
+    # branches e worktrees: criar sai da develop, excluir só a que já entrou, worktree lista e remove só os dele
+    g("switch", "-q", "-c", "develop")
+    repo_branch(rp, "criar", "feature", "Minha Tela Nova")
+    assert g("branch", "--show-current").stdout.strip() == "feature/minha-tela-nova"
+    open(os.path.join(rp, "d.txt"), "w").write("d\n")
+    commit_fazer(rp, "feat: d", "d.txt")
+    repo_branch(rp, "trocar", "develop")
+    try:
+        repo_branch(rp, "excluir", "feature/minha-tela-nova")  # tem commit que não entrou na develop
+        assert False, "excluiu branch que não entrou"
+    except SystemExit:
+        pass
+    repo_branch(rp, "excluir", "feature/x")  # já está toda na develop
+    assert "feature/x" not in g("branch", "--format=%(refname:short)").stdout.split()
+    wt = os.path.join(RUN_DIR, "teste-commit-wt")
+    g("worktree", "add", "-q", wt, "feature/minha-tela-nova")
+    lista = worktrees(rp)
+    assert [(w["principal"], w["branch"]) for w in lista] == [(True, "develop"), (False, "feature/minha-tela-nova")], lista
+    try:
+        worktree_acao(rp, "remover", "/tmp")
+        assert False, "removeu worktree de fora"
+    except SystemExit:
+        pass
+    worktree_acao(rp, "remover", os.path.realpath(wt) if not os.path.isdir(wt) else lista[1]["pasta"])
+    assert len(worktrees(rp)) == 1 and not os.path.exists(wt)
     globals().update(reais)
     shutil.rmtree(rp)
     # chat: sem argumento lista as conversas, com a conversa lista as mensagens, com o texto envia
