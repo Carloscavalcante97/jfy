@@ -90,11 +90,23 @@ struct SouvSelect<Valor: Hashable>: View {
     let escolher: (Valor) -> Void
 
     @State private var aberto = false
+    @State private var busca = ""
 
     private var atual: Opcao? { opcoes.first { $0.valor == selecionado } }
+    /// Lista longa (os 36 projetos do Journify) ganha a busca; sem acento e sem maiúscula.
+    private var comBusca: Bool { opcoes.count > 12 }
+    private var visiveis: [Opcao] {
+        let b = busca.trimmingCharacters(in: .whitespaces)
+        return b.isEmpty ? opcoes : opcoes.filter { $0.rotulo.range(of: b, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+    }
+
+    private func pegar(_ o: Opcao) {
+        aberto = false
+        if o.valor != selecionado { escolher(o.valor) }
+    }
 
     var body: some View {
-        Button { aberto.toggle() } label: {
+        Button { busca = ""; aberto.toggle() } label: {
             HStack(spacing: 6) {
                 if let c = atual?.cor ?? (atual == nil && rotuloLivre != nil ? corLivre : nil) { Circle().fill(c).frame(width: 8, height: 8) }
                 Text(atual?.rotulo ?? rotuloLivre ?? vazio)
@@ -109,25 +121,30 @@ struct SouvSelect<Valor: Hashable>: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $aberto, arrowEdge: .bottom) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(opcoes) { o in
-                        LinhaSelect(cor: o.cor, rotulo: o.rotulo, marcado: o.valor == selecionado) {
-                            aberto = false
-                            if o.valor != selecionado { escolher(o.valor) }
-                        }
-                    }
-                    if let extra {
-                        Divider().padding(.vertical, 3)
-                        LinhaSelect(cor: nil, rotulo: extra.0, marcado: false, apagado: true) {
-                            aberto = false
-                            extra.1()
-                        }
-                    }
+            VStack(spacing: 0) {
+                if comBusca {
+                    TextField("Buscar", text: $busca).textFieldStyle(.roundedBorder)
+                        .onSubmit { if let o = visiveis.first { pegar(o) } }  // Enter escolhe o primeiro
+                        .padding([.horizontal, .top], 8)
                 }
-                .padding(6)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(visiveis) { o in
+                            LinhaSelect(cor: o.cor, rotulo: o.rotulo, marcado: o.valor == selecionado) { pegar(o) }
+                        }
+                        if visiveis.isEmpty { Text("Nada com \"\(busca)\"").foregroundStyle(Souv.texto2).padding(10) }
+                        if let extra {
+                            Divider().padding(.vertical, 3)
+                            LinhaSelect(cor: nil, rotulo: extra.0, marcado: false, apagado: true) {
+                                aberto = false
+                                extra.1()
+                            }
+                        }
+                    }
+                    .padding(6)
+                }
             }
-            .frame(minWidth: 220, maxHeight: 340)
+            .frame(minWidth: 240, maxHeight: 380)
             .background(Souv.superficie)
         }
     }

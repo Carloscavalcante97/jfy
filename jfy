@@ -1220,6 +1220,54 @@ def gravar_reuniao(ini, titulo, reg):
     json.dump(dados, open(REUNIOES, "w"), indent=1, ensure_ascii=False)
 
 
+PROJ_JOURNIFY = os.path.join(HOME, "projetos_journify.json")  # os selects do modal do minhas-horas: projetos e categorias
+
+
+def projetos_journify():
+    """Os projetos (nome do Journify e, quando o jfy conhece, o id dele) e as categorias do select do minhas-horas. O MCP
+    não lista projetos: a lista vem do próprio modal (jfy --projetos-journify), atualizada a cada lançamento."""
+    try:
+        return json.load(open(PROJ_JOURNIFY))
+    except (OSError, ValueError):
+        return {"projetos": [], "categorias": []}
+
+
+def guardar_projetos_journify():
+    """jfy --projetos-journify: grava o que o JS_PROJETOS devolveu no modal (stdin). O id do jfy vem como posição na
+    lista de projetos do config (a ferramenta do Chrome esconde ids na saída)."""
+    # ponytail: posição no config.json; projeto novo entra no fim, então só remover um projeto entre ler e gravar erra
+    d, ids = json.loads(sys.stdin.read()), list(load()["projetos"])
+    if not d.get("projetos"):
+        raise RuntimeError("Lista de projetos vazia: o modal estava aberto?")
+    json.dump({"atualizado": datetime.now().isoformat(timespec="seconds"), "categorias": d.get("categorias") or [],
+               "projetos": [{"nome": x["nome"], "jfy": ids[x["jfy"]] if 0 <= x.get("jfy", -1) < len(ids) else None}
+                            for x in d["projetos"]]}, open(PROJ_JOURNIFY, "w"), ensure_ascii=False, indent=1)
+
+
+def js_projetos_journify(cfg):
+    """O JavaScript que lê os selects de projeto e categoria do modal aberto (vai no pedido do lançamento)."""
+    return ("(() => { const ids = " + json.dumps(list(cfg["projetos"])) + "; const s = [...document.querySelectorAll('select')];"
+            " const p = s.find(x => x.options.length > 5 && [...x.options].some(o => ids.includes(o.value)));"
+            " const c = s.find(x => [...x.options].some(o => o.textContent.trim() === 'Funcionalidade'));"
+            " return JSON.stringify({projetos: [...p.options].map(o => ({nome: o.textContent.trim(), jfy: ids.indexOf(o.value)})),"
+            " categorias: c ? [...c.options].map(o => o.textContent.trim()) : []}); })()")
+
+
+def menu_projetos(cfg):
+    """O menu de projeto das horas (aba Horas e "para as horas" da Agenda), igual ao select do Journify, com os nomes de
+    lá. id = o do jfy quando ele conhece o projeto; senão o próprio nome (vira nome livre). Os do jfy fora da lista ficam."""
+    pj = projetos_journify()["projetos"]
+    ligados = {x["jfy"] for x in pj}
+    return sorted([{"id": x["jfy"] or x["nome"], "nome": x["nome"], "cor": cor_hex(x["jfy"] or x["nome"])} for x in pj]
+                  + [{"id": k, "nome": pr["nome"], "cor": cor_hex(k)} for k, pr in cfg["projetos"].items() if k not in ligados],
+                  key=lambda x: x["nome"].lower())
+
+
+def nome_journify(cfg, p):
+    """O nome do projeto como está no Journify; sem a lista dele, o apelido do jfy (ou o nome livre)."""
+    return next((x["nome"] for x in projetos_journify()["projetos"] if p and x["jfy"] == p), None) or nome_projeto(cfg, p)
+
+
 def nome_projeto(cfg, info_ou_pid):
     """Apelido do jfy, o nome livre que você digitou, ou '?'."""
     p = info_ou_pid if isinstance(info_ou_pid, str) or info_ou_pid is None else info_ou_pid.get("pid") or info_ou_pid.get("projeto")
@@ -1310,14 +1358,13 @@ def horas_json(dia):
     return {"dia": dia.isoformat(), "medido": medido, "pela_regra": pela_regra, "fator": cfg.get("horas", {}).get("fator", 1),
             "total": sum(it["lanc"] for it in itens if not it["fora"]),
             "corrigidas": sum(1 for it in itens if it["fixo"] is not None and not it["fora"]),
-            "itens": [{"kid": it["kid"], "pid": it["p"], "projeto": nome_projeto(cfg, it["p"]) if it["p"] else None,
+            "itens": [{"kid": it["kid"], "pid": it["p"], "projeto": nome_journify(cfg, it["p"]) if it["p"] else None,
                        "cor": cor(it["p"]), "cat": it["cat"], "desc": it["desc"], "med": it["med"], "lanc": it["lanc"],
                        "trabalhado": it["med"] if it["fixo"] is None else it["fixo"],
                        "fixo": it["fixo"], "fora": it["fora"], "reuniao": bool(it["reuniao"]),
                        "palpite": bool(it["reuniao"] and it["reuniao"][2] and it["p"])} for it in itens],
-            "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor(k)} for k, pr in cfg["projetos"].items()),
-                               key=lambda x: x["nome"].lower()),
-            "categorias": list(dict.fromkeys(CATEGORIA.values()))}
+            "projetos": menu_projetos(cfg),
+            "categorias": list(dict.fromkeys(projetos_journify()["categorias"] + list(CATEGORIA.values())))}
 
 
 def mover_horas(dia, kid, novo):
@@ -1384,7 +1431,7 @@ def mover_horas(dia, kid, novo):
 
 def lancar_horas(cfg, dia):
     """Abre o Claude para lançar as horas do dia no minhas-horas pelo Chrome ("Lançar no Journify" da aba Horas)."""
-    nome = lambda p: nome_projeto(cfg, p)
+    nome = lambda p: nome_journify(cfg, p)
     vivos = [it for it in itens_horas(cfg, dia)[0] if not it["fora"]]
     total = sum(it["lanc"] for it in vivos)
     linhas = "\n".join(f"- projeto: {nome(it['p'])} (id Journify {it['p'] if it['p'] in cfg['projetos'] else '?'}) | "
@@ -1392,7 +1439,8 @@ def lancar_horas(cfg, dia):
     pedido = f"""Lance estas horas de {dia.strftime('%d/%m/%Y')} em {cfg.get('journify', JOURNIFY)}/minhas-horas pelo Chrome (já estou logado). Um envio por linha:
 {linhas}
 
-- Projeto: o apelido acima é o do jfy (ou o nome do projeto no Journify, quando não tem id); escolha no select do modal o projeto do Journify que corresponde (o id ajuda). Se a linha tiver projeto "?" ou houver dúvida, me pergunte antes.
+- Projeto: o nome acima é o do select do Journify (ou o apelido do jfy, se a lista estiver velha); escolha no select do modal o projeto que corresponde (o id ajuda). Se a linha tiver projeto "?" ou houver dúvida, me pergunte antes.
+- Na primeira vez que o modal abrir, rode este JavaScript na página e passe o texto que ele devolve pelo stdin para `{SELF} --projetos-journify` (mantém os projetos e categorias da aba Horas do app iguais aos do Journify): {js_projetos_journify(cfg)}
 - Categoria: a opção do select mais próxima da sugerida.
 - O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
 - Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
@@ -1920,7 +1968,7 @@ def evento_app(e, cfg):
                             "eu": bool(a.get("self"))} for a in e.get("attendees", []) if not a.get("resource")],
             "organizador": org.get("displayName") or org.get("email"), "eu_organizo": bool(org.get("self")),
             "pode_editar": bool(org.get("self") or e.get("guestsCanModify")), "recorrente": bool(e.get("recurringEventId")),
-            "minha_resposta": eu.get("responseStatus"), "p": p, "projeto": nome_projeto(cfg, p) if p else None,
+            "minha_resposta": eu.get("responseStatus"), "p": p, "projeto": nome_journify(cfg, p) if p else None,
             "cor": cor_hex(p) if p else None, "contexto": info.get("contexto"), "palpite": bool(p) and not info}
 
 
@@ -1943,8 +1991,7 @@ def agenda_json(de, ate):
             break
     return {"eventos": [evento_app(e, cfg) for e in itens if e.get("status") != "cancelled"
                         and e.get("eventType") not in ("workingLocation",)],
-            "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor_hex(k)} for k, pr in cfg["projetos"].items()),
-                               key=lambda x: x["nome"].lower())}
+            "projetos": menu_projetos(cfg)}
 
 
 def corpo_evento(d, atual=None):
@@ -3704,7 +3751,7 @@ def main():
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--github-sair": github_sair,
                 "--contas-json": contas_json, "--google-sair": google_sair, "--journify-token": journify_token,
-                "--journify-sair": journify_sair, "--pr-revisar": pr_revisar,
+                "--journify-sair": journify_sair, "--projetos-journify": guardar_projetos_journify, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
                 "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-ia": email_ia, "--contatos-json": contatos_json,
@@ -3767,7 +3814,7 @@ def main():
 
 
 def selftest():
-    import base64, glob
+    import base64, glob, io
     salvo = {k: globals()[k] for k in ("load", "save", "chaves", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
     cfg_f, apagados = {"google": {"client_id": "i", "client_secret": "s", "conta": "a@b"}}, []
     tmp = os.path.join(RUN_DIR, "teste-sair")
@@ -4055,10 +4102,23 @@ def selftest():
         assert "Nada mudou" in str(e), e
     globals()["itens_horas"] = real
     assert {a: open(a).read() if os.path.exists(a) else None for a in arquivos} == antes
+    pj_real = PROJ_JOURNIFY
+    globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")  # sem a lista: os apelidos do jfy
     h = horas_json(hoje)
     assert h["total"] == 40 and [(x["projeto"], x["desc"], x["reuniao"]) for x in h["itens"]] == [
         ("alpha", "entrega do lote 3", True), ("Souv", "protótipos Decal", True)], h["itens"]
     assert h["itens"][0]["cor"].startswith("#") and h["itens"][1]["cor"].startswith("#") and h["projetos"][0]["nome"] == "alpha"
+    # com a lista do modal: nomes do Journify, o do jfy pelo id, o só do Journify pelo nome, o que faltou na lista fica
+    sys.stdin = io.StringIO(json.dumps({"projetos": [{"nome": "Alpha [ALPH1-024]", "jfy": 0}, {"nome": "Souv", "jfy": -1}],
+                                        "categorias": ["Bug", "Funcionalidade"]}))
+    guardar_projetos_journify()
+    sys.stdin = sys.__stdin__
+    h = horas_json(hoje)
+    assert [x["projeto"] for x in h["itens"]] == ["Alpha [ALPH1-024]", "Souv"], h["itens"]
+    assert [(x["id"], x["nome"]) for x in h["projetos"]] == [("a", "Alpha [ALPH1-024]"), ("r", "rpa alpha"), ("Souv", "Souv")], h["projetos"]
+    assert h["categorias"][:2] == ["Bug", "Funcionalidade"] and "Reunião" in h["categorias"]
+    os.remove(PROJ_JOURNIFY)
+    globals()["PROJ_JOURNIFY"] = pj_real
     shutil.rmtree(HORAS_DIR)
     os.remove(REUNIOES)
     # uso da IA: resposta repetida (um registro por bloco, e de novo num fork) conta uma vez; subagente soma na sessão-mãe
