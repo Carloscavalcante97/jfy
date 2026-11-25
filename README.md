@@ -48,6 +48,7 @@ Na primeira vez, antes do menu, o jfy te guia por **primeiros passos**, um de ca
 Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou mais opções, o `1` espera um instante pelo segundo dígito), e letras (`l`, `r`, `h`, `t`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
 
 **Menu principal**: três seções. **Foco**: tasks de todos os projetos com prazo vencido ou nos próximos 7 dias e as de prioridade crítica, da mais urgente para a menos; o número abre a task direto. **Projetos**: os que têm tasks suas, com a contagem. **Sem task**: os configurados sem task aberta (manutenção: terminal livre ou sessão quando surgir algo). O repositório de cada projeto aparece no `c` da tela do projeto.
+- `j` abre o Journify no navegador.
 - `jfy --hoje` imprime as reuniões de hoje e o foco, sem abrir o menu.
 - Na primeira vez em cada projeto, o jfy pede a pasta do repositório (navegador de pastas: número entra, `..` sobe, `s` escolhe, ou cole o caminho) e um nome. Projeto com mais de um repositório (front e back, por exemplo): responda `s` em "Mais um repositório" e escolha o próximo. Na hora da task, o jfy pergunta quais ela usa (número = só esse, Enter = todos); o Claude abre no primeiro e enxerga os outros, e a branch da task é criada em cada um. Projeto sem repositório (só estudo ou teste): `n` no navegador de pastas e dê um nome, que aparece no lugar do id; o Claude abre numa pasta só dele, `~/.jfy/sem-repo/<id>`, onde fica o `handoff.md`.
 - `l` abre um **terminal livre**: Claude com `--dangerously-skip-permissions` numa pasta que você escolhe, sem task.
@@ -66,6 +67,7 @@ Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou 
 - `s` **sessão**: um chat só para várias tasks, uma atrás da outra. O Claude lista as tasks, você escolhe, ele faz e no fim pergunta se segue com outra. No `/exit`, o jfy registra o tempo das tasks que ficaram abertas e garante o `handoff.md` de todas as tasks trabalhadas.
 - `l` **terminal livre** direto no repositório do projeto.
 - `c` troca os repositórios do projeto.
+- `w` abre o projeto no Journify.
 
 ### Abas
 
@@ -129,7 +131,7 @@ No menu principal, `o` lista as portas abertas por programas de desenvolvimento,
 
 ### Ícone na barra de cima do Mac
 
-Com o extra do SwiftBar, o jfy ganha um ícone (a chama, só ela: em Mac com notch, ícone largo some atrás dele) ao lado do relógio do Mac. O menu tem: abrir o jfy (traz o terminal dele, ou abre um com o jfy), pausar/retomar a jornada, as próximas reuniões (clique entra na chamada), as tasks no foco (clique abre no Journify), as portas abertas com "Encerrar" em cada uma e os emails não lidos. Atualiza a cada minuto e quando você abre o menu.
+Com o extra do SwiftBar, o jfy ganha um ícone (a chama, só ela: em Mac com notch, ícone largo some atrás dele) ao lado do relógio do Mac. O menu tem: abrir o jfy (traz o terminal dele, ou abre um com o jfy), abrir o Journify, pausar/retomar a jornada, as próximas reuniões (clique entra na chamada), as tasks no foco (clique abre no Journify), as portas abertas com "Encerrar" em cada uma e os emails não lidos. Atualiza a cada minuto e quando você abre o menu.
 
 ### Notificação das 7h
 

@@ -900,9 +900,9 @@ def atalhos():
                                               ("d", "sai deixando as tasks rodando (jfy volta)"), ("c", "esta lista")]),
         ("Menu principal", [("número", "abre a task do foco ou o projeto"), ("l", "terminal livre"),
                             ("r", "reuniões de hoje: projeto e contexto para as horas (p + número prepara com o Claude)"), ("h", "horas de hoje: número edita, - + troca o dia, l lança"),
-                            ("o", "portas abertas: o que é cada uma, de que projeto, e encerrar"), ("t", "tema"), ("0", "sair")]),
+                            ("o", "portas abertas: o que é cada uma, de que projeto, e encerrar"), ("j", "abre o Journify"), ("t", "tema"), ("0", "sair")]),
         ("Projeto", [("número", "abre a task"), ("s", "sessão: várias tasks num chat só"), ("l", "terminal livre no repo"),
-                     ("c", "trocar o repositório")]),
+                     ("c", "trocar os repositórios"), ("w", "abre o projeto no Journify")]),
         ("Task", [("1", "implementar (/pipeline)"), ("2", "conversar com o Claude (estudo, análise, documento)"),
                   ("d", "descrição inteira e comentários"), ("a + número", "abre o anexo no navegador"),
                   ("p", "definir prazo"), ("w", "abre a task no Journify"),
@@ -1388,6 +1388,7 @@ def barra_mac():
     # só o ícone: em Mac com notch, o que não cabe entre o notch e os outros ícones some (texto alargava demais)
     L = [f" | image={icone_png('chama', TEMA.get(39, 202))}", "---",
          "Abrir o jfy" + acao("--abrir"),
+         f"Abrir o Journify | href={cfg.get('journify', JOURNIFY)}",
          ("Pausar" if rodando else "Retomar") + f" a jornada ({fmt_min(m)} hoje)" + acao("--pausar", atualiza=True)]
     if evs:
         L += ["---", "Reuniões"] + [limpo(datetime.fromtimestamp(i).strftime("%H:%M  ") + t + (" (agora)" if i <= agora else "")) + (f" | href={r[0]}" if r and r[0] else "")
@@ -1998,13 +1999,15 @@ def tela_projeto(cfg, pid):
         nome = c(cfg["projetos"][pid]["nome"], cor_projeto(pid), True)
         op = menu(f"{nome} · minhas tasks ({len(tasks)})", itens or [(dim("nenhuma task sua neste projeto"),)],
                   [("s", "sessão (várias tasks num chat)"), ("l", "terminal livre"), ("c", "trocar repos"),
-                   ("enter", "atualiza")], teclas="slc")
+                   ("w", "Journify"), ("enter", "atualiza")], teclas="slcw")
         if op == "0":
             return
         if op == "":
             buscado = 0
         if op == "c":
             configurar(cfg, pid)
+        elif op == "w":
+            subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/projects/{pid}"])
         elif op == "l":
             abrir_aba(cfg["projetos"][pid]["nome"][:20] + ": livre", pid, "--livre", cfg["projetos"][pid]["repo"])
         elif op == "s":
@@ -2049,8 +2052,8 @@ def principal():
             abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
             dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
             op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
-                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("o", "portas"), ("t", "tema"), ("enter", "atualiza")],
-                      "sai", teclas="lrhot")
+                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("o", "portas"), ("j", "Journify"), ("t", "tema"),
+                       ("enter", "atualiza")], "sai", teclas="lrhojt")
             if op == "":  # Enter não sai mais: atualiza as tasks
                 buscado = 0
                 continue
@@ -2063,6 +2066,8 @@ def principal():
                 tela_tema()
             if op == "o":
                 tela_portas()
+            if op == "j":
+                subprocess.run(["open", cfg.get("journify", JOURNIFY)])
             if op == "r":
                 tela_reunioes(cfg)
             if op == "h":
