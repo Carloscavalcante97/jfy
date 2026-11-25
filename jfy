@@ -2746,6 +2746,15 @@ def pr_abrir(pasta):
     subprocess.call(["claude", pedido], cwd=pasta)
 
 
+def creditos_json():
+    """Aba Créditos: desde quando o jfy existe e quantos commits cada um fez, pelo git do próprio repositório (pelo nome
+    de quem commitou: Paiva, Cavalcante)."""
+    sem_acento = lambda t: unicodedata.normalize("NFD", t).encode("ascii", "ignore").decode().lower()
+    linhas = [l.split("\x1f") for l in git(os.path.dirname(SELF), "log", "--format=%an%x1f%aI").stdout.splitlines() if "\x1f" in l]
+    conta = lambda nome: sum(1 for autor, _ in linhas if nome in sem_acento(autor))
+    return {"inicio": min((d for _, d in linhas), default=None), "total": len(linhas), "jose": conta("paiva"), "antonio": conta("cavalcante")}
+
+
 def app(f, *a):
     """Roda um comando do app: o resultado em JSON no stdout; erro do Journify vira a mensagem, sem traceback."""
     try:
@@ -3612,7 +3621,7 @@ def main():
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
                 "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
-                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
+                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar, "--creditos-json": creditos_json,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,

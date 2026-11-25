@@ -86,7 +86,7 @@ extension Color {
 enum Tela: String, CaseIterable, Identifiable {
     case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
          portas = "Portas", uso = "Uso da IA",
-         chat = "Chat", notificacoes = "Notificações", temas = "Temas"
+         chat = "Chat", notificacoes = "Notificações", temas = "Temas", creditos = "Créditos"
     var id: Self { self }
     var icone: String {
         switch self {
@@ -100,6 +100,7 @@ enum Tela: String, CaseIterable, Identifiable {
         case .uso: "chart.bar.xaxis"
         case .chat: "bubble.left.and.bubble.right"
         case .notificacoes: "bell"
+        case .creditos: "heart"
         case .temas: "paintpalette"
         }
     }
@@ -211,24 +212,31 @@ struct Principal: View {
     @ObservedObject var limites: LimitesIA
     private var tela: Tela? { nav.tela }
     @State private var telaCheia = false
+    @AppStorage("barra.abasRecolhidas") private var abasRecolhidas = false
+    @AppStorage("barra.favoritosRecolhidos") private var favoritosRecolhidos = false
 
     var body: some View {
         NavigationSplitView {
             List(selection: $nav.tela) {
                 ForEach(Tela.allCases) { t in
-                    Label(t.rawValue, systemImage: t.icone).tag(t)
-                        .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
-                    if t == .terminal { abasDoJFY }
-                    if t == .projetos { favoritosDaBarra }
+                    HStack(spacing: 4) {
+                        Label(t.rawValue, systemImage: t.icone)
+                        if t == .terminal, !abas.itens.isEmpty {
+                            Spacer(minLength: 0)
+                            // recolhida, a bolinha do sino continua aparecendo na linha do jfy
+                            if abasRecolhidas, abas.itens.contains(where: \.sino) { Circle().fill(.red).frame(width: 7, height: 7) }
+                            setinha($abasRecolhidas, "as abas do jfy")
+                        }
+                        if t == .projetos, !nav.favoritos.isEmpty {
+                            Spacer(minLength: 0)
+                            setinha($favoritosRecolhidos, "os projetos favoritos")
+                        }
+                    }
+                    .tag(t)
+                    .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
+                    if t == .terminal, !abasRecolhidas { abasDoJFY }
+                    if t == .projetos, !favoritosRecolhidos { favoritosDaBarra }
                 }
-            }
-            .safeAreaInset(edge: .top) {  // a marca no topo da barra lateral
-                HStack(spacing: 8) {
-                    if let s = Souv.simbolo { Image(nsImage: s).resizable().interpolation(.high).foregroundStyle(Souv.destaque).frame(width: 24, height: 24) }
-                    Text("jfy").font(Souv.titulo(22)).foregroundStyle(Souv.texto)
-                    Spacer()
-                }
-                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 6)
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 180, max: 230)
             // em tela cheia não há nada atrás da janela e a barra lateral, que deixa ver o fundo, fica chapada:
@@ -252,9 +260,14 @@ struct Principal: View {
                     NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: irParaJFY)
                 }
                 mostrar(.temas) { TemasTela(ativa: tela == .temas) }
+                mostrar(.creditos) { CreditosTela(ativa: tela == .creditos) }
             }
         }
-        .toolbar { ToolbarItem(placement: .principal) { BarraUsoIA(limites: limites) } }  // em qualquer aba
+        .toolbar {
+            ToolbarItem(placement: .navigation) { MarcaJFY() }  // a marca no lugar do título da janela
+            ToolbarItem(placement: .principal) { BarraUsoIA(limites: limites) }  // em qualquer aba
+        }
+        .toolbar(removing: .title)
         .font(Souv.corpo())  // Roboto no texto; os títulos usam Souv.titulo (Lexend)
         .tint(Souv.primaria)
         .onOpenURL { nav.abrir($0) }  // o clique nas notificações (jfy://…)
@@ -272,6 +285,17 @@ struct Principal: View {
     }
 
     private func irParaJFY() { nav.tela = .terminal }
+
+    /// A setinha que recolhe e abre a lista embaixo de uma linha da barra lateral (fica lembrado entre aberturas).
+    private func setinha(_ recolhida: Binding<Bool>, _ oque: String) -> some View {
+        Button { withAnimation(.snappy(duration: 0.2)) { recolhida.wrappedValue.toggle() } } label: {
+            Image(systemName: "chevron.right").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                .rotationEffect(.degrees(recolhida.wrappedValue ? 0 : 90))
+                .frame(width: 18, height: 18).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(recolhida.wrappedValue ? "Mostrar \(oque)" : "Recolher \(oque)")
+    }
 
     /// Os projetos favoritos (até 4, marcados com a estrela na aba Projetos), embaixo de Projetos: o clique abre o projeto.
     @ViewBuilder private var favoritosDaBarra: some View {

@@ -23,11 +23,34 @@ enum Souv {
 
     /// O símbolo da Souv, que vem dentro do app. Vai como molde: pinte com Souv.destaque (ciano no escuro, Vivid Blue no
     /// claro, onde o ciano some no branco).
-    static let simbolo: NSImage? = {
-        let img = Bundle.main.url(forResource: "souv-simbolo", withExtension: "svg").flatMap(NSImage.init(contentsOf:))
+    static let simbolo = molde("souv-simbolo")
+    /// O nome "souv." do logotipo, também como molde (pinte com Souv.texto).
+    static let nome = molde("souv-nome")
+
+    private static func molde(_ nome: String) -> NSImage? {
+        let img = Bundle.main.url(forResource: nome, withExtension: "svg").flatMap(NSImage.init(contentsOf:))
         img?.isTemplate = true
         return img
-    }()
+    }
+}
+
+/// A marca na barra superior: o símbolo e o nome da Souv, e JFY.
+struct MarcaJFY: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            if let s = Souv.simbolo {
+                Image(nsImage: s).resizable().interpolation(.high).foregroundStyle(Souv.destaque).frame(width: 20, height: 20)
+            }
+            if let n = Souv.nome {  // 458 × 124 no desenho
+                Image(nsImage: n).resizable().interpolation(.high).foregroundStyle(Souv.texto).frame(width: 52, height: 14)
+            }
+            Rectangle().fill(Souv.borda).frame(width: 1, height: 16)
+            Text("JFY").font(.custom("Lexend", size: 15).weight(.medium)).tracking(2).foregroundStyle(Souv.texto)
+        }
+        .padding(.horizontal, 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("souv JFY")
+    }
 }
 
 extension Color {
