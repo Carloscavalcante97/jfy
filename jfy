@@ -475,6 +475,14 @@ def imagem_tema():
 APP_MAC = next((x for x in ("/Applications/jfy.app", os.path.expanduser("~/Applications/jfy.app")) if os.path.isdir(x)), None)
 
 
+def app_notifica():
+    """O jfy.app aberto e com permissão de notificar deixa um sinal de vida a cada 10 s (~/.jfy/rodando/app-notifica)."""
+    try:
+        return time.time() - os.path.getmtime(os.path.join(RUN_DIR, "app-notifica")) < 30
+    except OSError:
+        return False
+
+
 def notificar(titulo, texto, abrir=None, executar=None, app=None):
     """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
     (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, ou sem permissão, a do osascript (o clique abre o Editor de Scripts).
@@ -489,6 +497,8 @@ def notificar(titulo, texto, abrir=None, executar=None, app=None):
                                ensure_ascii=False) + "\n")
     except OSError:
         pass  # sem histórico, o aviso sai do mesmo jeito
+    if app_notifica():
+        return  # o jfy.app está aberto e pode notificar: ele põe o aviso na tela, com o ícone dele e o clique certo
     tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
                                                                  "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
     if tn:
@@ -3479,7 +3489,9 @@ def abrir_aba(nome, pid_proj, *args):
     wid = aba(chave)
     if wid:
         return subprocess.run(TMUX + ["select-window", "-t", wid])
-    wid = subprocess.run(TMUX + ["new-window", "-P", "-F", "#{window_id}", "-n", nome, SELF, *args],
+    # o tmux expande formatos no nome da janela: "#" vira "##" para o título (de task, reunião, PR) aparecer como é,
+    # sem virar formato (e um "#(...)" num título nunca ser lido como comando, em versão nenhuma do tmux)
+    wid = subprocess.run(TMUX + ["new-window", "-P", "-F", "#{window_id}", "-n", nome.replace("#", "##"), SELF, *args],
                          capture_output=True, text=True).stdout.strip()
     subprocess.run(TMUX + ["set-window-option", "-t", wid, "window-status-style", f"fg=colour{cor_projeto(pid_proj)}"])
     subprocess.run(TMUX + ["set-window-option", "-t", wid, "@jfy", chave])

@@ -123,7 +123,7 @@ final class AbasTmux: ObservableObject {
     func renomear(_ a: Aba, _ nome: String) {
         let n = nome.trimmingCharacters(in: .whitespaces)
         guard a.nome != "menu", !n.isEmpty, n != "menu" else { return }
-        mexer([["rename-window", "-t", a.id, n]])
+        mexer([["rename-window", "-t", a.id, n.replacingOccurrences(of: "#", with: "##")]])  // o tmux expande formatos no nome
     }
 
     /// Fecha a aba e o que roda nela (o Claude daquela task, por exemplo). O menu não fecha.

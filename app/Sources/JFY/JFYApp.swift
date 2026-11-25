@@ -118,6 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // fechar a janela não fecha o app: o jfy segue rodando em segundo plano (o terminal e as notificações são do app,
     // não da janela) e volta igual pelo ícone do Dock ou por Janela > jfy. ⌘Q sai de verdade; as tasks ficam no tmux
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+    // ⌘Q: o jfy volta a mostrar os avisos pelo terminal-notifier na hora (sem esperar o sinal de vida vencer)
+    func applicationWillTerminate(_ notification: Notification) { try? FileManager.default.removeItem(at: Notificacoes.sinal) }
 }
 
 /// A imagem da mesa desfocada, atrás da barra lateral em tela cheia. Imagem que não carrega (fundo em vídeo, por

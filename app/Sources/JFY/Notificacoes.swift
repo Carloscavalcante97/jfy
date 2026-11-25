@@ -1,9 +1,14 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 /// O histórico do que o jfy avisou (reunião, email, o Claude, a jornada, o resumo das 7h). O notificar() do jfy grava
-/// cada aviso em ~/.jfy/notificacoes.jsonl; o app lê o arquivo direto, sem rodar o jfy, e olha de novo a cada 10 s.
-final class Notificacoes: ObservableObject {
+/// cada aviso em ~/.jfy/notificacoes.jsonl; o app lê o arquivo direto, sem rodar o jfy, e olha de novo a cada 2 s.
+///
+/// Com o app aberto, é ele que põe o aviso na tela do macOS, com o ícone do app (o símbolo da Souv), e o clique abre a
+/// aba certa. Enquanto pode notificar, ele deixa um sinal de vida em ~/.jfy/rodando/app-notifica: com o sinal recente,
+/// o jfy não chama o terminal-notifier (o aviso não sai em dobro); com o app fechado, volta a ser o terminal-notifier.
+final class Notificacoes: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     struct Item: Decodable, Identifiable {
         let ts: Double
         let titulo, texto: String
@@ -26,15 +31,81 @@ final class Notificacoes: ObservableObject {
     }
     private var lidoEm: Date?
     private var timer: Timer?
+    /// Até onde o app já pôs na tela do macOS (o que veio antes de ele abrir não aparece de novo).
+    private var mostradoAte = UserDefaults.standard.double(forKey: "notificacoesMostradoAte")
+    private var podeNotificar = false
+    private var sinalEm = Date.distantPast
+    static let sinal = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/rodando/app-notifica")
 
     var novas: Int { itens.prefix { $0.ts > vistoAte }.count }
 
-    init() {
+    override init() {
+        super.init()
+        let central = UNUserNotificationCenter.current()
+        central.delegate = self
+        central.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }  // a 1ª vez o macOS pergunta
         ler()
-        timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in self?.ler() }
+        if mostradoAte == 0 { mostradoAte = itens.first?.ts ?? Date().timeIntervalSince1970 }  // 1ª vez: nada antigo
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.ler() }
+    }
+
+    deinit { try? FileManager.default.removeItem(at: Self.sinal) }
+
+    /// O sinal de vida (a cada 10 s), só enquanto o macOS deixa o app notificar: sem permissão, o jfy segue no
+    /// terminal-notifier e o aviso não some.
+    private func sinalDeVida() {
+        guard Date().timeIntervalSince(sinalEm) > 10 else { return }
+        sinalEm = Date()
+        UNUserNotificationCenter.current().getNotificationSettings { cfg in
+            let pode = cfg.authorizationStatus == .authorized || cfg.authorizationStatus == .provisional
+            DispatchQueue.main.async {
+                self.podeNotificar = pode
+                if pode {
+                    try? FileManager.default.createDirectory(at: Self.sinal.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? Data("\(Date().timeIntervalSince1970)".utf8).write(to: Self.sinal)
+                } else {
+                    try? FileManager.default.removeItem(at: Self.sinal)
+                }
+            }
+        }
+    }
+
+    /// Põe na tela o que chegou desde a última olhada (até 5 de uma vez), com o clique do aviso.
+    private func mostrarNovas() {
+        let novos = itens.filter { $0.ts > mostradoAte }.reversed()  // do mais antigo ao mais novo
+        guard let ultimo = novos.last?.ts else { return }
+        mostradoAte = ultimo
+        UserDefaults.standard.set(mostradoAte, forKey: "notificacoesMostradoAte")
+        guard podeNotificar else { return }
+        for n in novos.suffix(5) {
+            let c = UNMutableNotificationContent()
+            c.title = n.titulo
+            c.body = n.texto
+            c.sound = .default
+            c.userInfo = ["abrir": n.abrir ?? n.app.map { "jfy://" + ($0.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? $0) } ?? ""]
+            UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "\(n.ts)", content: c, trigger: nil))
+        }
+    }
+
+    /// O clique no aviso: abre a aba certa (jfy://…, que traz o app para a frente) ou o link (a chamada da reunião).
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let s = response.notification.request.content.userInfo["abrir"] as? String, let u = URL(string: s), !s.isEmpty {
+            NSWorkspace.shared.open(u)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        completionHandler()
+    }
+
+    /// Com o app na frente, o aviso aparece do mesmo jeito.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound, .list])
     }
 
     func ler() {
+        sinalDeVida()
         let mudou = (try? FileManager.default.attributesOfItem(atPath: Self.arquivo.path))?[.modificationDate] as? Date
         guard mudou != lidoEm else { return }  // arquivo igual: nada a fazer
         lidoEm = mudou
@@ -42,6 +113,7 @@ final class Notificacoes: ObservableObject {
         let d = JSONDecoder()
         // ponytail: lê o arquivo todo quando ele muda; só as 300 últimas aparecem
         itens = txt.split(separator: "\n").suffix(300).compactMap { try? d.decode(Item.self, from: Data($0.utf8)) }.reversed()
+        if mostradoAte > 0 { mostrarNovas() }
     }
 
     /// O número de novas no ícone do Dock: com a janela fechada, é por ele que você vê que chegou algo.
