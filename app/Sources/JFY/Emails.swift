@@ -31,12 +31,19 @@ struct EmailsTela: View {
         struct Item: Decodable, Identifiable, Hashable {
             let id, de, assunto: String
             let ts: Double
+            let email: String?
+            let lido, importante: Bool?
         }
         let conta, url: String?
         let total: Int
         let mais: Bool
+        let naoLidos: Int?
         let emails: [Item]
     }
+
+    /// As caixas da lista: os não lidos da Principal ou os importantes (como a pasta Importantes do Gmail).
+    enum Caixa: String, CaseIterable { case naoLidos = "nao_lidos", importantes }
+    enum Grupo: String, CaseIterable { case data = "Data", remetente = "Remetente", nenhum = "Sem grupo" }
 
     struct Email: Decodable {
         struct Mensagem: Decodable, Identifiable {
@@ -68,41 +75,50 @@ struct EmailsTela: View {
     @State private var cc = ""
     @State private var abertas: Set<String> = []  // mensagens antigas da conversa abertas
     @State private var escrevendoNovo = false  // o email do zero
+    @AppStorage("emails.caixa") private var caixaLista: Caixa = .naoLidos
+    @AppStorage("emails.grupo") private var grupo: Grupo = .data
+    @State private var busca = ""
+    @State private var filtroLeitura: Set<String> = []  // "nao_lido", "lido"
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Text("Emails").font(Souv.titulo(24))
                 if let l = lista {
-                    Text("\(l.total)\(l.mais ? "+" : "") não lido(s) na Principal").foregroundStyle(.secondary).lineLimit(1)
+                    Text(caixaLista == .naoLidos ? "\(l.total)\(l.mais ? "+" : "") não lido(s) na Principal"
+                         : "\(l.total)\(l.mais ? "+" : "") importantes · \(l.naoLidos ?? 0) não lido(s) na Principal")
+                        .foregroundStyle(.secondary).lineLimit(1)
                     if let c = l.conta { Text("· \(c)").foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).layoutPriority(-1) }
                 }
                 Spacer()
                 Button { escrevendoNovo = true } label: { Label("Escrever", systemImage: "square.and.pencil") }
                     .buttonStyle(.borderedProminent)
                 if let u = lista?.url.flatMap(URL.init(string:)) { Link("Abrir o Gmail", destination: u) }
-                Button("Marcar todos como lidos") { confirmarTodos = true }.disabled((lista?.total ?? 0) == 0)
+                Button("Marcar todos como lidos") { confirmarTodos = true }.disabled((lista?.naoLidos ?? lista?.total ?? 0) == 0)
                 Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar").disabled(carregando)
             }
-            .padding(.horizontal, 20).padding(.vertical, 12)
+            .padding(.horizontal, 20).padding(.top, 12).padding(.bottom, 8)
+            filtros.padding(.horizontal, 20).padding(.bottom, 10)
             Divider()
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).padding(10).textSelection(.enabled) }
             if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green).padding(10) }
             GeometryReader { g in
             HStack(spacing: 0) {
                 List {
-                    if let l = lista, l.emails.isEmpty { Text("Caixa zerada: nenhum não lido na Principal.").foregroundStyle(.secondary) }
-                    ForEach(lista?.emails ?? []) { e in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(e.de).fontWeight(.semibold).lineLimit(1)
-                                Spacer()
-                                Text(quando(e.ts)).font(.caption).foregroundStyle(.secondary)
+                    if let l = lista, l.emails.isEmpty {
+                        Text(caixaLista == .naoLidos ? "Caixa zerada: nenhum não lido na Principal." : "Nenhum email importante.")
+                            .foregroundStyle(.secondary)
+                    } else if lista != nil, grupos.isEmpty {
+                        Text("Nada com esses filtros.").foregroundStyle(.secondary)
+                    }
+                    ForEach(grupos, id: \.0) { titulo, itens in
+                        Section {
+                            ForEach(itens) { linhaEmail($0) }
+                        } header: {
+                            if grupo != .nenhum {
+                                Text("\(titulo.uppercased()) · \(itens.count)").font(.caption.weight(.semibold)).tracking(0.5).lineLimit(1)
                             }
-                            Text(e.assunto).lineLimit(2).foregroundStyle(.secondary)
                         }
-                        .padding(.vertical, 3)
-                        .linhaSouv(selecao == e.id) { selecao = e.id }
                     }
                 }
                 .listaSouv()
@@ -112,7 +128,8 @@ struct EmailsTela: View {
             }
             }
         }
-        .task(id: ativa) { if ativa { await carregar() } }
+        .task(id: "\(ativa)|\(caixaLista.rawValue)") { if ativa { await carregar() } }
+        .onChange(of: caixaLista) { selecao = nil; filtroLeitura = [] }
         .task(id: selecao) { await abrir() }
         .onChange(of: nav.abrirEmail) {  // o clique na notificação de email novo
             guard let id = nav.abrirEmail else { return }
@@ -142,6 +159,85 @@ struct EmailsTela: View {
             modo = .responder
             abertas = []
         }
+    }
+
+    // ---------- filtros e grupos ----------
+    private var filtros: some View {
+        HStack(spacing: 8) {
+            Picker("Caixa", selection: $caixaLista) {
+                Text("Não lidos").tag(Caixa.naoLidos)
+                Text("Importantes").tag(Caixa.importantes)
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Souv.texto2)
+                TextField("Buscar remetente ou assunto", text: $busca).textFieldStyle(.plain)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Souv.superficie2))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Souv.borda))
+            .frame(minWidth: 140, maxWidth: 280)
+            if caixaLista == .importantes {
+                FiltroMulti(titulo: "Leitura", opcoes: [("nao_lido", "Não lidos", Souv.primaria), ("lido", "Lidos", nil)], marcados: $filtroLeitura)
+            }
+            if !busca.isEmpty || !filtroLeitura.isEmpty {
+                Button("Limpar") { busca = ""; filtroLeitura = [] }.buttonStyle(.link)
+            }
+            Spacer(minLength: 4)
+            SouvSelect(opcoes: Grupo.allCases.map { .init(valor: $0, rotulo: $0.rawValue) }, selecionado: grupo) { grupo = $0 }
+                .frame(width: 130).help("Agrupar por")
+        }
+        .lineLimit(1)
+    }
+
+    private var filtrados: [Lista.Item] {
+        (lista?.emails ?? []).filter { e in
+            (busca.isEmpty || "\(e.de) \(e.email ?? "") \(e.assunto)".range(of: busca, options: [.caseInsensitive, .diacriticInsensitive]) != nil)
+                && (filtroLeitura.isEmpty || filtroLeitura.contains(e.lido == false ? "nao_lido" : "lido"))
+        }
+    }
+
+    /// Os emails em grupos: por data (Hoje, Ontem, Esta semana, Este mês, Mais antigos), por remetente (o mais recente
+    /// primeiro) ou num grupo só.
+    private var grupos: [(String, [Lista.Item])] {
+        let es = filtrados
+        switch grupo {
+        case .nenhum: return es.isEmpty ? [] : [("Todos", es)]
+        case .remetente:
+            var ordem: [String] = [], por: [String: [Lista.Item]] = [:]
+            for e in es.sorted(by: { $0.ts > $1.ts }) {
+                let k = e.email ?? e.de
+                if por[k] == nil { ordem.append(k) }
+                por[k, default: []].append(e)
+            }
+            return ordem.map { (por[$0]![0].de, por[$0]!) }
+        case .data:
+            let cal = Calendar.current, hoje = cal.startOfDay(for: Date())
+            let faixa = { (e: Lista.Item) -> String in
+                let d = cal.startOfDay(for: Date(timeIntervalSince1970: e.ts))
+                let dias = cal.dateComponents([.day], from: d, to: hoje).day ?? 0
+                return dias <= 0 ? "Hoje" : dias == 1 ? "Ontem" : dias < 7 ? "Esta semana" : dias < 31 ? "Este mês" : "Mais antigos"
+            }
+            let por = Dictionary(grouping: es, by: faixa)
+            return ["Hoje", "Ontem", "Esta semana", "Este mês", "Mais antigos"].compactMap { k in por[k].map { (k, $0) } }
+        }
+    }
+
+    private func linhaEmail(_ e: Lista.Item) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                if e.lido == false { Circle().fill(Souv.primaria).frame(width: 7, height: 7).help("Não lido") }
+                Text(e.de).fontWeight(e.lido == false ? .semibold : .regular).lineLimit(1)
+                if e.importante == true && caixaLista == .naoLidos {
+                    Image(systemName: "tag.fill").font(.caption2).foregroundStyle(.yellow).help("Importante para o Gmail")
+                }
+                Spacer()
+                Text(quando(e.ts)).font(.caption).foregroundStyle(.secondary)
+            }
+            Text(e.assunto).lineLimit(2).foregroundStyle(e.lido == false ? Souv.texto : .secondary)
+        }
+        .padding(.vertical, 3)
+        .linhaSouv(selecao == e.id) { selecao = e.id }
     }
 
     @ViewBuilder private var detalhe: some View {
@@ -274,7 +370,7 @@ struct EmailsTela: View {
     private func carregar() async {
         carregando = true
         defer { carregando = false }
-        let (l, msg): (Lista?, String?) = await JFY.ler(["--emails-json"])
+        let (l, msg): (Lista?, String?) = await JFY.ler(["--emails-json", caixaLista.rawValue])
         if let l { lista = l }
         aviso = msg
         caixa.ler()  // o jfy acabou de guardar o total: o selo acompanha

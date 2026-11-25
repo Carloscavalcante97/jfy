@@ -2505,16 +2505,37 @@ def guardar_ids(ids):
     json.dump(dict(st, ids=ids, chegou=0 if not ids else st.get("chegou", 0)), open(EMAIL, "w"))
 
 
-def emails_json():
-    """Aba Emails: os não lidos da Principal (os 50 mais novos, com remetente e assunto) e o total (até 100)."""
+def gmail_item(tok, mid):
+    """Um email da lista do app: quando, remetente (nome e endereço), assunto, e se é lido e importante. Só os
+    metadados: não marca como lido."""
+    import email.utils
+    m = http_json(f"{GMAIL}/{mid}?format=metadata&metadataHeaders=From&metadataHeaders=Subject", token=tok)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    nome, end = email.utils.parseaddr(h.get("from", ""))
+    rotulos = m.get("labelIds", [])
+    return {"id": mid, "ts": int(m.get("internalDate", 0)) // 1000, "de": nome or end, "email": end.lower(),
+            "assunto": h.get("subject") or "(sem assunto)", "lido": "UNREAD" not in rotulos, "importante": "IMPORTANT" in rotulos}
+
+
+def emails_json(caixa="nao_lidos"):
+    """Aba Emails: os não lidos da Principal, ou os importantes (como a pasta Importantes do Gmail, sem os que você
+    enviou), os 50 mais novos com remetente e assunto, e o total (até 100). O total de não lidos vai sempre junto:
+    é o selo da barra lateral."""
     from concurrent.futures import ThreadPoolExecutor
+    if caixa not in ("nao_lidos", "importantes"):
+        sys.exit("Use nao_lidos ou importantes.")
     tok = caixa_google()
-    ids = gmail_nao_lidos(tok)
+    nao_lidos = gmail_nao_lidos(tok)
+    guardar_ids(nao_lidos)
+    if caixa == "nao_lidos":
+        ids = nao_lidos
+    else:
+        q = urllib.parse.urlencode({"q": "is:important -in:sent -in:chats", "maxResults": 100})
+        ids = [m["id"] for m in http_json(f"{GMAIL}?{q}", token=tok).get("messages", [])]
     with ThreadPoolExecutor(8) as ex:
-        metas = list(ex.map(lambda i: gmail_meta(tok, i), ids[:50]))
-    guardar_ids(ids)
+        itens = list(ex.map(lambda i: gmail_item(tok, i), ids[:50]))
     return {"conta": conta_gmail(tok), "url": url_gmail(conta_gmail(tok)), "total": len(ids), "mais": len(ids) >= 100,
-            "emails": [{"id": i, "ts": ts, "de": nome, "assunto": assunto} for i, (ts, nome, assunto) in zip(ids, metas)]}
+            "nao_lidos": len(nao_lidos), "emails": itens}
 
 
 def email_json(mid):
