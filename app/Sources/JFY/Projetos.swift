@@ -505,6 +505,27 @@ struct TaskDetalhe: View {
                     }
                 }
                 if !d.anexos.isEmpty { Secao("Anexos (\(d.anexos.count))") { anexos(d.anexos) } }
+                let links = linksCitados(d)
+                if !links.isEmpty {
+                    Secao("Links (\(links.count))") {
+                        ForEach(links, id: \.url) { l in
+                            Button { abrirURL(l.url) } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: l.icone).foregroundStyle(Souv.destaque).frame(width: 20)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(l.nome).lineLimit(1).truncationMode(.middle)
+                                        Text("\(l.tipo) · \(l.origem)").font(.caption).foregroundStyle(Souv.texto2).lineLimit(1)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).help(l.url)
+                            .contextMenu {
+                                Button("Copiar o link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(l.url, forType: .string) }
+                            }
+                        }
+                    }
+                }
                 let prs = prsCitados(d)
                 if !prs.isEmpty {
                     Secao("Pull requests (\(prs.count))") {
@@ -639,6 +660,49 @@ struct TaskDetalhe: View {
             vistos.append("\(m.1)#\(m.2)")
         }
         return vistos
+    }
+
+    struct LinkCitado { let url, nome, tipo, icone, origem: String }
+
+    /// Os links citados na descrição e nos comentários (Figma, Google Docs, Drive…), sem repetir, sem as imagens que a
+    /// descrição já mostra, sem os anexos e sem os PRs (que têm a seção deles).
+    private func linksCitados(_ d: Detalhe) -> [LinkCitado] {
+        let fontes = [("descrição", d.descricao)] + d.comentarios.map { ("comentário de \($0.autor ?? "alguém")", $0.texto) }
+        var vistos = Set(d.anexos.compactMap(\.url)), out: [LinkCitado] = []
+        for (origem, texto) in fontes {
+            let semImagens = texto.replacing(#/!\[[^\]]*\]\([^)]*\)/#, with: "")
+            for m in semImagens.matches(of: #/https?://[^\s<>"'()\[\]]+/#) {
+                var u = String(m.0)
+                while let c = u.last, ".,;:!?".contains(c) { u.removeLast() }
+                guard !vistos.contains(u), u.firstMatch(of: #/github\.com/[\w.-]+/[\w.-]+/pull/\d+/#) == nil else { continue }
+                vistos.insert(u)
+                // o rótulo do link: o texto antes dele na linha ("Regras de Negócio: <link>") ou o de [texto](<link>)
+                let linha = String(semImagens[..<m.range.lowerBound].split(separator: "\n", omittingEmptySubsequences: false).last ?? "")
+                let rotulo = (linha.firstMatch(of: #/\[([^\]]+)\]\($/#).map { String($0.1) } ?? linha)
+                    .replacing("**", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "-*•:([ \t"))
+                out.append(linkCitado(u, origem, rotulo: (2...50).contains(rotulo.count) ? rotulo : nil))
+            }
+        }
+        return out
+    }
+
+    private func linkCitado(_ u: String, _ origem: String, rotulo: String?) -> LinkCitado {
+        let url = URL(string: u), host = (url?.host() ?? "").replacing(#/^www\./#, with: ""), caminho = url?.path(percentEncoded: false) ?? ""
+        let (tipo, icone): (String, String) =
+            host.hasSuffix("figma.com") ? ("Figma", "paintpalette")
+            : host == "docs.google.com" && caminho.hasPrefix("/spreadsheets") ? ("Planilha Google", "tablecells")
+            : host == "docs.google.com" && caminho.hasPrefix("/presentation") ? ("Apresentação Google", "rectangle.on.rectangle")
+            : host == "docs.google.com" ? ("Documento Google", "doc.text")
+            : host == "drive.google.com" ? ("Google Drive", "externaldrive")
+            : host.hasSuffix("github.com") ? ("GitHub", "chevron.left.forwardslash.chevron.right")
+            : host.contains("loom.com") || host.contains("youtu") ? ("Vídeo", "play.rectangle")
+            : (host, "link")
+        // o Figma traz o nome do arquivo no link: figma.com/design/<chave>/<Nome-do-arquivo>
+        let partes = caminho.split(separator: "/")
+        let rotulo = rotulo?.lowercased() == tipo.lowercased() ? nil : rotulo  // "Figma: <link>" não diz mais que o tipo
+        let nome = rotulo ?? (host.hasSuffix("figma.com") && partes.count >= 3 ? partes[2].replacingOccurrences(of: "-", with: " ").split(separator: " ").joined(separator: " ")
+            : String((host + caminho).prefix(80)))
+        return LinkCitado(url: u, nome: nome, tipo: tipo, icone: icone, origem: origem)
     }
 
     private func abrirURL(_ s: String?) {
