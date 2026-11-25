@@ -231,9 +231,11 @@ struct EmailsTela: View {
             .disabled(escrevendo != nil)
             Text("O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text(e.temAssinatura ? "Vai com a sua assinatura do Gmail."
-                 : "Sem assinatura: no Gmail, em Configurações › Geral › Padrões de assinatura, escolha a sua para novos emails e respostas, e ela passa a ir daqui também.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if e.temAssinatura {
+                Text("Vai com a sua assinatura do Gmail.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                AvisoAssinatura(url: lista?.url.map { $0.replacingOccurrences(of: "#inbox", with: "#settings/general") })
+            }
         }
     }
 
@@ -337,6 +339,12 @@ struct NovoEmail: View {
     @State private var enviando = false
     @State private var aviso: String?
     @State private var confirmar = false
+    @State private var assinatura: Assinatura?
+
+    struct Assinatura: Decodable {
+        let tem: Bool
+        let url: String
+    }
 
     private var vazio: Bool { texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var semDestino: Bool { !para.contains("@") }
@@ -372,9 +380,12 @@ struct NovoEmail: View {
             }
             .disabled(escrevendo != nil)
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
-            Text("Vai com a sua assinatura padrão do Gmail, se você tiver uma. O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
+            if let a = assinatura, !a.tem { AvisoAssinatura(url: a.url) }
+            Text((assinatura?.tem == true ? "Vai com a sua assinatura do Gmail. " : "")
+                 + "O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
                 .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
         }
+        .task { let (a, _): (Assinatura?, String?) = await JFY.ler(["--email-assinatura"]); assinatura = a }
         .padding(20)
         .frame(width: 660)
         .background(Souv.fundo)
@@ -408,6 +419,21 @@ struct NovoEmail: View {
                 aviso = msg
             }
         }
+    }
+}
+
+/// Sem assinatura padrão no Gmail, o email sai sem assinatura: diz exatamente onde marcar (a API não vê as outras).
+struct AvisoAssinatura: View {
+    let url: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Vai sem assinatura: o Gmail não tem uma assinatura padrão.", systemImage: "signature").foregroundStyle(.orange)
+            Text("No Gmail, em Configurações › Geral › Assinatura › Padrões de assinatura, escolha a sua (ex.: Souv) em \"Para uso em novos e-mails\" e em \"Para respostas/encaminhamentos\" e salve. O jfy só enxerga a assinatura marcada como padrão.")
+                .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+            if let u = url.flatMap(URL.init(string:)) { Link("Abrir as configurações do Gmail", destination: u).font(.caption) }
+        }
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
     }
 }
 

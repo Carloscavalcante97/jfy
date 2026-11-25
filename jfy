@@ -2584,6 +2584,13 @@ def assinatura_gmail(tok):
         return ""
 
 
+def email_assinatura():
+    """O app confere antes de enviar: tem assinatura padrão no Gmail? A API só enxerga a que está marcada como padrão
+    (Configurações › Geral › Padrões de assinatura); as outras assinaturas com nome ficam invisíveis para ela."""
+    tok = caixa_google()
+    return {"tem": bool(assinatura_gmail(tok)), "url": url_gmail(conta_gmail(tok), "settings/general")}
+
+
 def enderecos(cabecalho):
     """[(nome, email)] de um cabeçalho To/Cc/From."""
     import email.utils
@@ -3903,7 +3910,7 @@ def main():
                 "--journify-sair": journify_sair, "--projetos-journify": guardar_projetos_journify, "--horas-lancado": horas_lancado, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
-                "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-ia": email_ia, "--contatos-json": contatos_json,
+                "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-assinatura": email_assinatura, "--email-ia": email_ia, "--contatos-json": contatos_json,
                 "--repo-mudancas": repo_mudancas, "--repo-diff": repo_diff, "--commit-mensagem": commit_mensagem,
                 "--commit-autor": commit_autor, "--commit-fazer": commit_fazer,
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
