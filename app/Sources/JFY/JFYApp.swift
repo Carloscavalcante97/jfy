@@ -36,11 +36,12 @@ enum JFY {
 }
 
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", uso = "Uso da IA", chat = "Chat"
+    case terminal = "jfy", horas = "Horas", uso = "Uso da IA", chat = "Chat"
     var id: Self { self }
     var icone: String {
         switch self {
         case .terminal: "terminal"
+        case .horas: "clock"
         case .uso: "chart.bar.xaxis"
         case .chat: "bubble.left.and.bubble.right"
         }
@@ -73,9 +74,10 @@ struct Principal: View {
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
         } detail: {
-            // as três ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
+            // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
                 mostrar(.terminal) { TerminalTela(host: terminal) }
+                mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: { tela = .terminal }) }
                 mostrar(.uso) { UsoTela() }
                 mostrar(.chat) { ChatTela(ativa: tela == .chat) }
             }
@@ -91,7 +93,7 @@ struct Principal: View {
         return conteudo().opacity(ativa ? 1 : 0).allowsHitTesting(ativa).accessibilityHidden(!ativa)
     }
 
-    /// ⌘1 jfy, ⌘2 uso da IA, ⌘3 chat
+    /// ⌘1 jfy, ⌘2 horas, ⌘3 uso da IA, ⌘4 chat
     private var atalhos: some View {
         ForEach(Array(Tela.allCases.enumerated()), id: \.element) { i, t in
             Button("") { tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
