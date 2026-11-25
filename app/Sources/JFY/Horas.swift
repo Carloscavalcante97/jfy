@@ -37,6 +37,7 @@ struct HorasTela: View {
     @State private var horas: Horas?
     @State private var aviso: String?
     @State private var rascunho: [String: String] = [:]  // o que está sendo digitado, por "linha|campo"
+    @FocusState private var focado: String?
     @State private var outro: PedidoOutro?
     @State private var textoOutro = ""
     @State private var confirmar = false
@@ -51,6 +52,7 @@ struct HorasTela: View {
         }
         .padding(24)
         .task(id: "\(ativa)|\(iso)") { if ativa { await carregar() } }
+        .onChange(of: focado) { antigo, _ in if let antigo { salvar(antigo) } }  // saiu do campo: salva o que ficou
         .alert(outro?.campo == "p" ? "Projeto no Journify" : "Categoria", isPresented: Binding(
             get: { outro != nil }, set: { if !$0 { outro = nil } })) {
             TextField(outro?.campo == "p" ? "ex.: Souv" : "ex.: Pesquisa", text: $textoOutro)
@@ -123,10 +125,10 @@ struct HorasTela: View {
                         campo(it, "min", atual: hm(it.lanc), dica: "1:20")
                         if it.fixo != nil {
                             Image(systemName: "hand.raised").foregroundStyle(.secondary)
-                                .help("Horas à mão. Apague e dê Enter para voltar à regra.")
+                                .help("Horas à mão. Apague e salve para voltar à regra.")
                         }
                     }
-                    .help("Medido: \(hm(it.med)). Enter salva; vazio volta para a regra.")
+                    .help("Medido: \(hm(it.med)). Enter, clicar fora ou o ✓ salva; vazio volta para a regra; Esc desfaz.")
                 }
                 .width(min: 70, ideal: 90, max: 110)
                 TableColumn("Descrição") { it in campo(it, "desc", atual: it.desc, dica: "descrição") }
@@ -174,14 +176,33 @@ struct HorasTela: View {
         .menuStyle(.borderlessButton)
     }
 
+    /// Campo editável da tabela. Salva com Enter, ao sair do campo ou no ✓ que aparece enquanto há algo não salvo; Esc
+    /// desfaz. Antes só o Enter salvava, e dentro da tabela do macOS ele nem sempre chega ao campo.
     private func campo(_ it: Horas.Item, _ campo: String, atual: String, dica: String) -> some View {
         let k = it.kid + "|" + campo
-        return TextField(dica, text: Binding(get: { rascunho[k] ?? atual }, set: { rascunho[k] = $0 }))
-            .textFieldStyle(.plain)
-            .onSubmit {
-                guard let v = rascunho.removeValue(forKey: k), v != atual else { return }
-                ajustar(it, campo, v)
+        let pendente = rascunho[k].map { $0 != atual } ?? false
+        return HStack(spacing: 4) {
+            TextField(dica, text: Binding(get: { rascunho[k] ?? atual }, set: { rascunho[k] = $0 }))
+                .textFieldStyle(.plain)
+                .focused($focado, equals: k)
+                .onSubmit { salvar(k) }
+                .onExitCommand {
+                    rascunho[k] = nil
+                    focado = nil
+                }
+            if pendente {
+                Button { salvar(k) } label: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                    .buttonStyle(.borderless).help("Salvar (Enter). Esc desfaz.")
             }
+        }
+    }
+
+    /// Grava o que foi digitado num campo ("linha|campo"), se mudou.
+    private func salvar(_ k: String) {
+        guard let v = rascunho.removeValue(forKey: k), let i = k.lastIndex(of: "|"),
+              let it = horas?.itens.first(where: { $0.kid == String(k[..<i]) }) else { return }
+        let campo = String(k[k.index(after: i)...])
+        if v != (campo == "min" ? hm(it.lanc) : it.desc) { ajustar(it, campo, v) }
     }
 
     // ---------- jfy ----------
