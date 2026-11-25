@@ -16,6 +16,7 @@ struct ConfiguracoesTela: View {
         struct Github: Decodable {
             let ativa: String?
             let contas: [String]
+            let instalado, brew: Bool?
         }
         struct Journify: Decodable {
             let conectado: Bool
@@ -29,7 +30,7 @@ struct ConfiguracoesTela: View {
 
     /// O que tira acesso pede confirmação antes.
     enum Pedido: Identifiable {
-        case googleSair, githubSair(String), githubSairTodas, journifySair
+        case googleSair, githubSair(String), githubSairTodas, journifySair, sair
         var id: String { "\(self)" }
         var titulo: String {
             switch self {
@@ -37,6 +38,7 @@ struct ConfiguracoesTela: View {
             case .githubSair(let u): "Tirar \(u) deste Mac?"
             case .githubSairTodas: "Tirar todas as contas do GitHub deste Mac?"
             case .journifySair: "Desconectar o Journify?"
+            case .sair: "Sair do jfy?"
             }
         }
         var mensagem: String {
@@ -45,12 +47,14 @@ struct ConfiguracoesTela: View {
             case .githubSair: "O gh e o git deste Mac deixam de usar essa conta. Se ela estiver em uso, o gh passa para outra que sobrar."
             case .githubSairTodas: "O gh e o git deste Mac ficam sem conta até você adicionar de novo, e a aba GitHub para."
             case .journifySair: "O jfy e o Claude deixam de ver e mexer nas suas tasks até você colar um token de novo."
+            case .sair: "Você volta para a tela de login e o acesso do jfy à sua conta Google é revogado: a Agenda, os Emails e os avisos deles param até você entrar de novo. As tasks e as abas do terminal continuam como estão."
             }
         }
         var botao: String {
             switch self {
             case .githubSair: "Sair"
             case .githubSairTodas: "Sair de todas"
+            case .sair: "Sair"
             default: "Desconectar"
             }
         }
@@ -63,6 +67,7 @@ struct ConfiguracoesTela: View {
     @State private var pedido: Pedido?
     @State private var colandoToken = false
     @State private var modelos: Modelos?
+    @AppStorage("primeirosPassos.estado") private var passos = ""  // "" nunca feito, "feito", "refazer"
     @State private var agentes: Agentes?
 
     struct Agentes: Decodable {
@@ -97,6 +102,7 @@ struct ConfiguracoesTela: View {
                 if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 if let c = contas {
                     VStack(spacing: 14) {
+                        cartaoSessao(c.google)
                         google(c.google)
                         github(c.github)
                         journify(c.journify)
@@ -116,6 +122,18 @@ struct ConfiguracoesTela: View {
                             presenting: pedido) { p in
             Button(p.botao, role: .destructive) { confirmar(p) }
         } message: { p in Text(p.mensagem) }
+    }
+
+    // ---------- sessão ----------
+    private func cartaoSessao(_ g: Contas.Google) -> some View {
+        cartao("Sessão", "person.crop.circle", "A sua entrada no jfy, pela conta Google da Souv") {
+            estado(g.conectado, g.conta.map { "Entrou como \($0)" } ?? "Sem sessão")
+            HStack {
+                Button("Sair do jfy", role: .destructive) { pedido = .sair }
+                Button("Refazer os primeiros passos") { passos = "refazer" }
+                    .help("Abre de novo o assistente que liga Journify, GitHub, projetos e notificações")
+            }
+        }
     }
 
     // ---------- Google ----------
@@ -158,6 +176,7 @@ struct ConfiguracoesTela: View {
             }
             ocupado = nil
             await carregar()
+            NotificationCenter.default.post(name: Sessao.mudou, object: nil)  // a conta nova precisa ser da Souv
             if aviso == nil {
                 if let c = contas?.google.conta, contas?.google.conectado == true { feito = "Google conectado como \(c)." }
                 else { aviso = "O login do Google não terminou. Tente de novo." }
@@ -250,6 +269,7 @@ struct ConfiguracoesTela: View {
         case .githubSair(let u): agir("github", ["--github-sair", u], "\(u) saiu deste Mac.")
         case .githubSairTodas: agir("github", ["--github-sair"], "Todas as contas do GitHub saíram deste Mac.")
         case .journifySair: agir("journify", ["--journify-sair"], "Journify desconectado.")
+        case .sair: agir("google", ["--google-sair"], "Você saiu do jfy.")
         }
     }
 
@@ -259,6 +279,7 @@ struct ConfiguracoesTela: View {
             if let e = await JFY.fazer(args) { aviso = e } else { feito = ok }
             ocupado = nil
             await carregar()
+            if qual == "google" { NotificationCenter.default.post(name: Sessao.mudou, object: nil) }  // sem Google, volta ao login
         }
     }
 

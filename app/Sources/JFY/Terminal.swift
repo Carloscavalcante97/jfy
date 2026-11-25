@@ -174,3 +174,37 @@ final class AbasTmux: ObservableObject {
         return String(decoding: dados, as: UTF8.self)
     }
 }
+
+/// Um comando num terminal de verdade dentro de uma tela (o gh auth login e o brew install gh dos primeiros passos):
+/// a pessoa vê e responde como no terminal; quando o comando termina, `terminou` traz o código de saída.
+final class ComandoTerminal: NSObject, ObservableObject, LocalProcessTerminalViewDelegate {
+    let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 720, height: 360))
+    @Published var terminou: Int32?
+
+    init(_ comando: String) {
+        super.init()
+        view.processDelegate = self
+        view.font = NSFont(name: "JFYMono-Regular", size: 13) ?? .monospacedSystemFont(ofSize: 13, weight: .regular)
+        view.nativeBackgroundColor = NSColor(srgbRed: 10 / 255, green: 14 / 255, blue: 45 / 255, alpha: 1)
+        view.nativeForegroundColor = NSColor(white: 0.9, alpha: 1)
+        var env = ProcessInfo.processInfo.environment
+        env["TERM"] = "xterm-256color"
+        env["LANG"] = env["LANG"] ?? "pt_BR.UTF-8"
+        view.startProcess(executable: "/bin/zsh", args: ["-lic", comando], environment: env.map { "\($0.key)=\($0.value)" })
+        DispatchQueue.main.async { self.view.window?.makeFirstResponder(self.view) }
+    }
+
+    func processTerminated(source: TerminalView, exitCode: Int32?) {
+        DispatchQueue.main.async { self.terminou = exitCode ?? 0 }
+    }
+
+    func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
+    func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+}
+
+struct ComandoTerminalView: NSViewRepresentable {
+    @ObservedObject var comando: ComandoTerminal
+    func makeNSView(context: Context) -> LocalProcessTerminalView { comando.view }
+    func updateNSView(_ view: LocalProcessTerminalView, context: Context) {}
+}

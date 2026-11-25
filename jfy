@@ -638,19 +638,61 @@ def google_token():
     return r["access_token"]
 
 
+DOMINIO = "souv.tech"  # só conta da Souv entra no jfy (o login do app e o jfy --login)
+
+
+def conta_da_souv(email):
+    return (email or "").strip().lower().endswith("@" + DOMINIO)
+
+
+def guardar_cliente(arq):
+    """O JSON do app jfy da Souv (o client OAuth, baixado do Drive da empresa) no config. jfy --login-cliente <arquivo>."""
+    try:
+        j = json.load(open(os.path.expanduser(arq.strip("'\" ").replace("\\ ", " "))))["installed"]
+        cliente = {"client_id": j["client_id"], "client_secret": j["client_secret"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        sys.exit("Esse não é o arquivo do app jfy da Souv: baixe o JSON do Drive da empresa e escolha ele de novo.")
+    cfg = load()
+    cfg.pop("google_cliente", None)
+    cfg["google"] = dict(cfg.get("google") or {}, **cliente)
+    save(cfg)
+
+
+def sessao_json(forcar=None):
+    """O login do app: conectado ao Google com uma conta da Souv? Sem o client do app jfy, o app pede o arquivo dele.
+    Com `forcar` (o app confere de tempos em tempos), renova o token no Google: conta desligada ou suspensa na Souv perde
+    o acesso ali e volta para o login. Sem rede, a sessão segue: só a recusa do Google tira a pessoa."""
+    cfg = load()
+    base = {"conectado": False, "permitido": False, "conta": None, "dominio": DOMINIO, "arquivo_cliente": GOOGLE_JSON,
+            "cliente": bool(cfg.get("google") or cfg.get("google_cliente"))}
+    if not (cfg.get("google") and chaves("jfy-google")):
+        return base
+    if forcar:  # sem o token guardado, o google_token() pede um novo ao Google com o refresh token
+        subprocess.run(["security", "delete-generic-password", "-a", "jfy", "-s", "jfy-google-acesso"], capture_output=True)
+    try:
+        conta = conta_gmail(google_token())
+    except Exception as e:
+        recusado = any(x in str(e) for x in ("invalid_grant", " 400", " 401", " 403"))
+        if not recusado and cfg["google"].get("conta"):  # sem rede: fica com a conta que já entrou
+            conta = cfg["google"]["conta"]
+            return dict(base, conectado=True, conta=conta, permitido=conta_da_souv(conta), erro="sem conexão com o Google")
+        return dict(base, erro=str(e)[:200])  # o Google recusou (acesso revogado, conta desligada): volta ao login
+    return dict(base, conectado=True, conta=conta, permitido=conta_da_souv(conta))
+
+
 def login():
     """Login do Google (app Interno da empresa): abre o navegador, recebe o código em 127.0.0.1 (PKCE + state)
-    e guarda o refresh token no Chaves."""
+    e guarda o refresh token no Chaves. Só entra conta @souv.tech: o Google mostra só as da Souv (hd) e o jfy confere
+    o email antes de guardar qualquer coisa; conta de fora tem o acesso revogado na hora."""
     import base64, hashlib, http.server, secrets
     cfg = load()
     if not cfg.get("google") and cfg.get("google_cliente"):  # desconectado pelo app: o client do jfy ficou guardado
         cfg["google"] = cfg.pop("google_cliente")
     if not cfg.get("google"):
         subprocess.run(["open", GOOGLE_JSON])
-        arq = ask(f"Abri no navegador o JSON do app jfy da Souv ({GOOGLE_JSON}).\n"
-                  "Baixe o arquivo, arraste ele aqui e dê Enter:\n> ")
-        j = json.load(open(os.path.expanduser(arq.strip("'\" ").replace("\\ ", " "))))["installed"]
-        cfg["google"] = {"client_id": j["client_id"], "client_secret": j["client_secret"]}
+        guardar_cliente(ask(f"Abri no navegador o JSON do app jfy da Souv ({GOOGLE_JSON}).\n"
+                            "Baixe o arquivo, arraste ele aqui e dê Enter:\n> "))
+        cfg = load()
     cli, recebido = cfg["google"], {}
     verif, estado = secrets.token_urlsafe(64), secrets.token_urlsafe(16)
     desafio = base64.urlsafe_b64encode(hashlib.sha256(verif.encode()).digest()).rstrip(b"=").decode()
@@ -661,7 +703,7 @@ def login():
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write("<h2>jfy: pode fechar esta aba e voltar para o terminal.</h2>".encode())
+            self.wfile.write("<h2>jfy: pode fechar esta aba e voltar para o jfy.</h2>".encode())
 
         def log_message(self, *a):
             pass
@@ -671,7 +713,8 @@ def login():
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
         "client_id": cli["client_id"], "redirect_uri": volta, "response_type": "code", "scope": " ".join(ESCOPOS),
         "code_challenge": desafio, "code_challenge_method": "S256", "state": estado,
-        "access_type": "offline", "prompt": "select_account consent"})  # escolhe a conta: dá para trocar
+        "access_type": "offline", "prompt": "select_account consent",  # escolhe a conta: dá para trocar
+        "hd": DOMINIO})  # o Google mostra só as contas da Souv (é só uma dica: o email é conferido abaixo)
     subprocess.run(["open", url])
     print(f"Abri o login do Google no navegador. Se não abriu, cole isto nele:\n{url}\n")
     srv.timeout, fim = 5, time.time() + 300  # o app espera por aqui: navegador fechado não deixa o jfy preso
@@ -682,9 +725,17 @@ def login():
         return print(c(f"Login não concluído: {recebido.get('error', 'resposta inválida')}", 203))
     tok = http_json(TOKEN_URL, dict(cli, code=recebido["code"], redirect_uri=volta,
                                     grant_type="authorization_code", code_verifier=verif))
+    conta = http_json(GMAIL.rsplit("/", 1)[0] + "/profile", token=tok["access_token"]).get("emailAddress", "")
+    if not conta_da_souv(conta):  # antes de guardar qualquer coisa: conta de fora não entra e perde o acesso na hora
+        for t in (tok.get("refresh_token"), tok.get("access_token")):
+            try:
+                http_json("https://oauth2.googleapis.com/revoke", {"token": t}) if t else None
+            except RuntimeError:
+                pass
+        sys.exit(f"Só contas @{DOMINIO} entram no jfy, e {conta or 'essa conta'} não é. Entre com a conta da Souv.")
     chaves("jfy-google", tok["refresh_token"])
     chaves("jfy-google-acesso", json.dumps({"token": tok["access_token"], "expira": time.time() + tok.get("expires_in", 3600)}))
-    cfg["google"].pop("conta", None)
+    cfg["google"]["conta"] = conta
     save(cfg)
     try:
         n, m = len(agenda_google()), len(gmail_nao_lidos(tok["access_token"]))
@@ -2788,7 +2839,9 @@ def contas_json():
             journify["tasks"] = len(mcp("minhas_tasks"))
         except Exception as e:
             journify["erro"] = str(e)[:200]
-    return {"google": google, "github": {"ativa": ativa, "contas": contas}, "journify": journify}
+    gh_ok = bool(shutil.which("gh") or any(os.path.exists(x) for x in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")))
+    brew = bool(shutil.which("brew") or any(os.path.exists(x) for x in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")))
+    return {"google": google, "github": {"ativa": ativa, "contas": contas, "instalado": gh_ok, "brew": brew}, "journify": journify}
 
 
 def google_sair():
@@ -4287,6 +4340,7 @@ def main():
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
                 "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher,
+                "--sessao-json": sessao_json, "--login-cliente": guardar_cliente,
                 "--agentes-json": agentes_json, "--agente-modelo": agente_modelo, "--agentes-oficial": agentes_oficial,
                 "--agentes-aplicar": agentes_aplicar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
                 "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
@@ -4733,6 +4787,8 @@ def selftest():
     ag = "---\nname: builder\ndescription: x\nmodel: opus\nomitClaudeMd: true\n---\ncorpo com model: opus no texto\n"
     assert com_modelo_no_agente(ag, "sonnet") == ag.replace("model: opus\nomit", "model: sonnet\nomit", 1), "só a linha do cabeçalho"
     assert modelo_do_agente(com_modelo_no_agente("---\nname: x\n---\ncorpo\n", "haiku")) == "haiku"
+    assert conta_da_souv("Ana@Souv.Tech") and not conta_da_souv("ana@gmail.com") and not conta_da_souv("souv.tech@gmail.com") \
+        and not conta_da_souv("ana@souv.tech.evil.com") and not conta_da_souv("")
     salvo_load = globals()["load"]
     globals()["load"] = lambda: {"projetos": {}, "modelos": {"horas": "haiku", "pipeline": "padrao", "revisao": "opus"}}
     try:
