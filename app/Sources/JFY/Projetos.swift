@@ -6,6 +6,7 @@ import SwiftUI
 /// (--projetos-json, --tasks-json, --task-json, --task-mudar, --task-abrir).
 struct ProjetosTela: View {
     let ativa: Bool
+    @ObservedObject var nav: Navegacao
     let irParaJFY: () -> Void
 
     struct Resumo: Decodable, Identifiable, Hashable {
@@ -33,6 +34,7 @@ struct ProjetosTela: View {
     @State private var todas = false
     @State private var tasks: [Resumo] = []
     @State private var task: String?
+    @State private var deFora = false  // a task veio de outra aba (um PR): trocar de projeto não a fecha
     @State private var carregando = false
     @State private var aviso: String?
 
@@ -43,7 +45,8 @@ struct ProjetosTela: View {
             listaTasks.frame(width: 340)
             Divider()
             if let task {
-                TaskDetalhe(tid: task, irParaJFY: irParaJFY, mudou: { Task { await carregarTasks() } }).id(task)
+                TaskDetalhe(tid: task, irParaJFY: irParaJFY, mudou: { Task { await carregarTasks() } },
+                            abrirPR: { nav.abrirPR = $0; nav.tela = .github }).id(task)
             } else {
                 Text(projeto == nil ? "Escolha um projeto" : "Escolha uma task").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -51,6 +54,17 @@ struct ProjetosTela: View {
         }
         .task(id: ativa) { if ativa, dados == nil { await carregarProjetos() } }
         .task(id: "\(projeto ?? "")|\(todas)") { await carregarTasks() }
+        .onChange(of: projeto) {
+            if !deFora { task = nil }
+            deFora = false
+        }
+        .onChange(of: nav.abrirTask) {
+            guard let ref = nav.abrirTask else { return }
+            deFora = projeto != ref.pid
+            projeto = ref.pid
+            task = ref.tid
+            nav.abrirTask = nil
+        }
     }
 
     // ---------- projetos ----------
@@ -174,7 +188,6 @@ struct ProjetosTela: View {
             tasks = d ?? []
             aviso = msg
         }
-        if let task, !tasks.contains(where: { $0.id == task }) { self.task = nil }
     }
 }
 
@@ -183,6 +196,7 @@ struct TaskDetalhe: View {
     let tid: String
     let irParaJFY: () -> Void
     let mudou: () -> Void
+    let abrirPR: (String) -> Void
 
     struct Detalhe: Decodable {
         struct Anexo: Decodable, Identifiable {
@@ -263,6 +277,15 @@ struct TaskDetalhe: View {
                     }
                 }
                 if !d.anexos.isEmpty { Secao("Anexos (\(d.anexos.count))") { anexos(d.anexos) } }
+                let prs = prsCitados(d)
+                if !prs.isEmpty {
+                    Secao("Pull requests (\(prs.count))") {
+                        ForEach(prs, id: \.self) { pr in
+                            Button { abrirPR(pr) } label: { Label(pr, systemImage: "arrow.triangle.pull") }
+                                .buttonStyle(.link).help("Abrir na aba GitHub")
+                        }
+                    }
+                }
                 Secao("Comentários (\(d.comentarios.count))") { comentarios(d.comentarios) }
             }
             .padding(24)
@@ -366,6 +389,16 @@ struct TaskDetalhe: View {
         Task {
             if let erro = await JFY.fazer(["--task-abrir", tid, modo]) { aviso = erro } else { irParaJFY() }
         }
+    }
+
+    /// Os PRs citados na task (o pr-creator da pipeline comenta o link do PR nela), como "dono/repo#n".
+    private func prsCitados(_ d: Detalhe) -> [String] {
+        let txt = ([d.descricao] + d.comentarios.map(\.texto)).joined(separator: "\n")
+        var vistos: [String] = []
+        for m in txt.matches(of: #/github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)/#) where !vistos.contains("\(m.1)#\(m.2)") {
+            vistos.append("\(m.1)#\(m.2)")
+        }
+        return vistos
     }
 
     private func abrirURL(_ s: String?) {

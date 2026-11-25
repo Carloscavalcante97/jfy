@@ -1773,13 +1773,20 @@ def pastas_projetos(cfg):
 
 
 def repos_github(cfg):
-    """{owner/repo: pid} dos repositórios dos projetos que têm o remote origin no GitHub."""
+    """{owner/repo: (pid, pasta)} dos repositórios dos projetos que têm o remote origin no GitHub."""
     out = {}
     for pid, pasta in pastas_projetos(cfg):
         slug = slug_github(git(pasta, "remote", "get-url", "origin").stdout.strip()) if os.path.isdir(pasta) else None
         if slug:
-            out.setdefault(slug, pid)
+            out.setdefault(slug, (pid, pasta))
     return out
+
+
+def tasks_no_texto(txt):
+    """Ids das tasks do Journify citadas num PR: a linha 'Journify: <id>' que o committer da pipeline põe nos
+    commits e os links de task (…?task=<id>) que o pr-creator põe na descrição."""
+    return list(dict.fromkeys(re.findall(r"(?m)^Journify:\s*([A-Za-z0-9]{15,30})\s*$", txt or "")
+                              + re.findall(r"[?&]task=([A-Za-z0-9]{15,30})", txt or "")))
 
 
 BUSCA_PRS = """fragment p on PullRequest { number title url isDraft updatedAt repository { nameWithOwner } author { login }
@@ -1818,13 +1825,13 @@ def github_json():
 
     def item(p):
         slug = p["repository"]["nameWithOwner"]
-        pid = repos.get(slug)
+        pid = repos.get(slug, (None,))[0]
         return {"repo": slug, "n": p["number"], "titulo": p["title"], "autor": (p.get("author") or {}).get("login"),
                 "rascunho": p["isDraft"], "atualizado": p["updatedAt"], "url": p["url"],
                 "comentarios": (p.get("comments") or {}).get("totalCount", 0),
                 "pid": pid, "projeto": cfg["projetos"][pid]["nome"] if pid else None, "cor": cor_hex(pid) if pid else None}
     return {"conta": ativa, "contas": contas,
-            "repos": [{"repo": k, "projeto": cfg["projetos"][v]["nome"], "cor": cor_hex(v)} for k, v in repos.items()],
+            "repos": [{"repo": k, "projeto": cfg["projetos"][v[0]]["nome"], "cor": cor_hex(v[0])} for k, v in repos.items()],
             "prs": [item(p) for p in d["projetos"]["nodes"] if p], "revisar": [item(p) for p in d["revisar"]["nodes"] if p],
             "meus": [item(p) for p in d["meus"]["nodes"] if p]}
 
@@ -1835,6 +1842,14 @@ def pr_json(repo, n):
            "mergeStateStatus,reviewDecision,statusCheckRollup,commits,additions,deletions,changedFiles,reviews,comments,createdAt")
     aceita = gh("repo", "view", repo, "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed")
     quem = lambda x: (x.get("author") or {}).get("login")
+    cfg, tasks = load(), []
+    for tid in tasks_no_texto("\n".join([p.get("body") or ""] + [c.get("messageBody") or "" for c in p.get("commits") or []]))[:6]:
+        try:
+            t = mcp("obter_task", taskId=tid)["task"]
+            tasks.append({"id": tid, "titulo": t["title"], "status": t["statusId"], "pid": t["projectId"],
+                          "projeto": cfg["projetos"].get(t["projectId"], {}).get("nome"), "cor": cor_hex(t["projectId"])})
+        except Exception:
+            pass  # task apagada ou sem acesso: não aparece
     return {"repo": repo, "n": p["number"], "titulo": p["title"], "corpo": p.get("body") or "", "autor": quem(p), "url": p["url"],
             "rascunho": p["isDraft"], "de": p["headRefName"], "para": p["baseRefName"], "mergeavel": p.get("mergeable"),
             "situacao": p.get("mergeStateStatus"), "revisao": p.get("reviewDecision"), "criado": p.get("createdAt"),
@@ -1848,6 +1863,7 @@ def pr_json(repo, n):
             "revisoes": [{"autor": quem(r), "estado": r.get("state"), "texto": r.get("body") or "", "quando": r.get("submittedAt")}
                          for r in p.get("reviews") or []],
             "comentarios": [{"autor": quem(c), "texto": c.get("body") or "", "quando": c.get("createdAt")} for c in p.get("comments") or []],
+            "tasks": tasks,
             "metodos": [m for m, k in zip(METODOS_MERGE, ("squashMergeAllowed", "mergeCommitAllowed", "rebaseMergeAllowed")) if aceita.get(k)]}
 
 
@@ -1904,6 +1920,18 @@ def repo_acao(pasta, acao):
     r = git(pasta, *args)
     if r.returncode:
         sys.exit((r.stderr or r.stdout).strip())
+
+
+def pr_revisar(repo, n):
+    """"Revisar com o Claude" da aba GitHub: numa aba do jfy, o Claude revisa o PR. Repositório de um projeto: o
+    /code-review do Claude Code na pasta dele. Outro: pelo gh, sem a pasta. Só mostra o que achou; não comenta no PR."""
+    if not os.environ.get("TMUX"):
+        return abrir_aba(f"review: {repo.split('/')[-1][:14]} #{n}", repo, "--pr-revisar", repo, n)
+    pasta = repos_github(load()).get(repo, (None, None))[1]
+    pedido = (f"/code-review {n}" if pasta else
+              f"Revise o PR https://github.com/{repo}/pull/{n} (gh pr view e gh pr diff): bugs, riscos e o que falta. "
+              "Só me mostre o que achou; não comente nem aprove no GitHub sem eu pedir.")
+    subprocess.call(["claude", pedido], cwd=pasta or os.path.expanduser("~"))
 
 
 def github_conta(login):
@@ -2847,7 +2875,7 @@ def main():
                 "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--reunioes-json": reunioes_json,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
-                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login,
+                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar}
     if a[:1] and a[0] in comandos:
@@ -3175,6 +3203,9 @@ def selftest():
     assert cabecalho_status("## main...origin/main [ahead 1, behind 2]") == ("main", "origin/main", 1, 2)
     assert cabecalho_status("## feature/x...origin/feature/x [behind 14]") == ("feature/x", "origin/feature/x", 0, 14)
     assert cabecalho_status("## develop") == ("develop", None, 0, 0)
+    t1, t2 = "Ab3dEf5gHi7jKl9mNo1p", "Qr2sTu4vWx6yZa8bCd0e"
+    assert tasks_no_texto(f"feat: x\n\nJournify: {t1}\n") == [t1]
+    assert tasks_no_texto(f"Task: https://journify.souv.tech/projects/p?task={t2} e Journify: {t1} no meio") == [t2]
     assert contas_gh("github.com:\n    git_protocol: https\n    users:\n        Ana:\n        Bia:\n    user: Bia\n") == ("Bia", ["Ana", "Bia"])
     feitas, gh_real = [], globals()["gh"]
     globals()["gh"] = lambda *a: feitas.append(a)

@@ -98,6 +98,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
+/// Para uma aba abrir algo em outra: o PR abre a task na aba Projetos, a task abre o PR na aba GitHub.
+final class Navegacao: ObservableObject {
+    struct TaskRef: Equatable {
+        let pid, tid: String
+    }
+    @Published var tela: Tela? = .terminal
+    @Published var abrirTask: TaskRef?
+    @Published var abrirPR: String?  // "dono/repo#n"
+}
+
 @main
 struct JFYApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -105,9 +115,10 @@ struct JFYApp: App {
     @StateObject private var notificacoes = Notificacoes()
     @StateObject private var caixa = CaixaEmail()
     @StateObject private var portas = PortasAbertas()
+    @StateObject private var nav = Navegacao()
 
     var body: some Scene {
-        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas) }
+        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas, nav: nav) }
             .defaultSize(width: 1200, height: 780)
     }
 }
@@ -117,11 +128,12 @@ struct Principal: View {
     @ObservedObject var notificacoes: Notificacoes
     @ObservedObject var caixa: CaixaEmail
     @ObservedObject var portas: PortasAbertas
-    @State private var tela: Tela? = .terminal
+    @ObservedObject var nav: Navegacao
+    private var tela: Tela? { nav.tela }
 
     var body: some View {
         NavigationSplitView {
-            List(Tela.allCases, selection: $tela) { t in
+            List(Tela.allCases, selection: $nav.tela) { t in
                 Label(t.rawValue, systemImage: t.icone).tag(t)
                     .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
             }
@@ -130,16 +142,16 @@ struct Principal: View {
             // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
                 mostrar(.terminal) { TerminalTela(host: terminal) }
-                mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, irParaJFY: { tela = .terminal }) }
-                mostrar(.github) { GithubTela(ativa: tela == .github, irParaJFY: { tela = .terminal }) }
-                mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: { tela = .terminal }) }
-                mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: { tela = .terminal }) }
+                mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
+                mostrar(.github) { GithubTela(ativa: tela == .github, nav: nav, irParaJFY: irParaJFY) }
+                mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: irParaJFY) }
+                mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: irParaJFY) }
                 mostrar(.emails) { EmailsTela(caixa: caixa, ativa: tela == .emails) }
                 mostrar(.portas) { PortasTela(portas: portas, ativa: tela == .portas) }
                 mostrar(.uso) { UsoTela() }
                 mostrar(.chat) { ChatTela(ativa: tela == .chat) }
                 mostrar(.notificacoes) {
-                    NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: { tela = .terminal })
+                    NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: irParaJFY)
                 }
                 mostrar(.temas) { TemasTela(ativa: tela == .temas) }
             }
@@ -150,6 +162,8 @@ struct Principal: View {
         }
     }
 
+    private func irParaJFY() { nav.tela = .terminal }
+
     private func mostrar(_ t: Tela, @ViewBuilder _ conteudo: () -> some View) -> some View {
         let ativa = (tela ?? .terminal) == t
         return conteudo().opacity(ativa ? 1 : 0).allowsHitTesting(ativa).accessibilityHidden(!ativa)
@@ -158,7 +172,7 @@ struct Principal: View {
     /// ⌘1 a ⌘9 para as nove primeiras da barra lateral (não existe ⌘10)
     private var atalhos: some View {
         ForEach(Array(Tela.allCases.prefix(9).enumerated()), id: \.element) { i, t in
-            Button("") { tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
+            Button("") { nav.tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
         }
     }
 }

@@ -6,6 +6,7 @@ import SwiftUI
 /// --repos-json, --repo-acao, --github-conta, --github-login).
 struct GithubTela: View {
     let ativa: Bool
+    @ObservedObject var nav: Navegacao
     let irParaJFY: () -> Void
 
     struct PR: Decodable, Hashable {
@@ -13,6 +14,7 @@ struct GithubTela: View {
         let n, comentarios: Int
         let autor, projeto, cor: String?
         let rascunho: Bool
+        var ref: String { "\(repo)#\(n)" }
     }
 
     struct Dados: Decodable {
@@ -34,12 +36,13 @@ struct GithubTela: View {
         var id: String { pasta }
     }
 
-    private enum Modo: String, CaseIterable { case prs = "Pull requests", repos = "Repositórios" }
+    /// O que está escolhido na coluna da esquerda: as duas listas de PRs de todos os repos, ou um repositório.
+    private enum Lado: Hashable { case revisar, meus, repo(String) }
 
-    @State private var modo = Modo.prs
+    @State private var lado: Lado? = .meus
+    @State private var pr: String?  // "dono/repo#n"
     @State private var dados: Dados?
     @State private var repos: [Repo] = []
-    @State private var selecao: String?  // "seção|repo#n": o mesmo PR pode estar em duas seções
     @State private var aviso: String?
     @State private var carregando = false
     @State private var pushEm: Repo?
@@ -51,13 +54,29 @@ struct GithubTela: View {
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).padding(10).textSelection(.enabled) }
             if dados != nil && dados?.conta == nil {
                 semConta
-            } else if modo == .prs {
-                prs
             } else {
-                listaRepos
+                HStack(spacing: 0) {
+                    colunaRepos.frame(width: 250)
+                    Divider()
+                    colunaMeio.frame(width: 380)
+                    Divider()
+                    if let pr, let i = pr.lastIndex(of: "#"), let n = Int(pr[pr.index(after: i)...]) {
+                        PRDetalhe(repo: String(pr[..<i]), n: n, nav: nav, irParaJFY: irParaJFY,
+                                  mudou: { Task { await carregar() } }).id(pr)
+                    } else {
+                        Text("Escolha um PR").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
         }
-        .task(id: "\(ativa)|\(modo.rawValue)") { if ativa { await carregar() } }
+        .task(id: ativa) { if ativa { await carregar() } }
+        .onChange(of: nav.abrirPR) {
+            guard let alvo = nav.abrirPR else { return }  // veio de uma task na aba Projetos
+            pr = alvo
+            let slug = String(alvo[..<(alvo.lastIndex(of: "#") ?? alvo.endIndex)])
+            if let r = repos.first(where: { $0.remote == slug }) { lado = .repo(r.pasta) }
+            nav.abrirPR = nil
+        }
         .confirmationDialog("Dar push de \(pushEm?.branch ?? "") em \(pushEm?.nome ?? "")?",
                             isPresented: Binding(get: { pushEm != nil }, set: { if !$0 { pushEm = nil } })) {
             Button("Push") { if let r = pushEm { acaoRepo(r, "push") } }
@@ -66,7 +85,7 @@ struct GithubTela: View {
         }
     }
 
-    // ---------- topo: conta e modo ----------
+    // ---------- topo: conta ----------
     private var cabecalho: some View {
         HStack(spacing: 14) {
             Text("GitHub").font(.title2.bold())
@@ -82,8 +101,7 @@ struct GithubTela: View {
                 .help("A conta ativa do gh: vale para o gh e o git deste Mac")
             }
             Spacer()
-            Picker("Modo", selection: $modo) { ForEach(Modo.allCases, id: \.self) { Text($0.rawValue) } }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            if carregando { ProgressView().controlSize(.small) }
             Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Atualizar").disabled(carregando)
         }
@@ -99,121 +117,130 @@ struct GithubTela: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // ---------- pull requests ----------
-    private var prs: some View {
-        HStack(spacing: 0) {
-            List(selection: $selecao) {
-                if let d = dados {
-                    secao("Pedem sua revisão", "revisar", d.revisar)
-                    secao("Seus PRs", "meus", d.meus)
-                    secao("Nos projetos", "prs", d.prs)
-                } else if carregando {
-                    ProgressView().frame(maxWidth: .infinity)
-                }
-            }
-            .frame(width: 380)
-            Divider()
-            if let sel = selecao, let ref = sel.split(separator: "|").last, let i = ref.lastIndex(of: "#"),
-               let n = Int(ref[ref.index(after: i)...]) {
-                PRDetalhe(repo: String(ref[..<i]), n: n, mudou: { Task { await carregar() } }).id(sel)
-            } else {
-                Text("Escolha um PR").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-    }
-
-    @ViewBuilder private func secao(_ titulo: String, _ chave: String, _ lista: [PR]) -> some View {
-        Section("\(titulo) (\(lista.count))") {
-            if lista.isEmpty { Text("nenhum").foregroundStyle(.secondary) }
-            ForEach(lista, id: \.self) { p in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(p.titulo).lineLimit(2)
-                        if p.rascunho { Text("rascunho").font(.caption2).padding(.horizontal, 5).background(Capsule().fill(Color.secondary.opacity(0.2))) }
-                    }
-                    HStack(spacing: 5) {
-                        if p.projeto != nil { Circle().fill(Color(hex: p.cor)).frame(width: 6, height: 6) }
-                        Text("\(p.projeto ?? p.repo) #\(p.n) · \(p.autor ?? "?") · \(relativo(p.atualizado))")
-                        if p.comentarios > 0 { Label("\(p.comentarios)", systemImage: "text.bubble") }
-                    }
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .padding(.vertical, 3)
-                .tag("\(chave)|\(p.repo)#\(p.n)")
-            }
-        }
-    }
-
-    // ---------- repositórios ----------
-    private var listaRepos: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                if repos.isEmpty && carregando { ProgressView().padding(40) }
-                ForEach(repos) { cartaoRepo($0) }
-            }
-            .padding(20)
-        }
-    }
-
-    private func cartaoRepo(_ r: Repo) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Circle().fill(Color(hex: r.cor)).frame(width: 9, height: 9)
-                Text(r.projeto).font(.headline)
-                Text(r.remote ?? r.nome).foregroundStyle(.secondary)
-                Spacer()
-                Button("Fetch") { acaoRepo(r, "fetch") }.help("Busca o que mudou no origin, sem mexer nos seus arquivos")
-                Button("Pull") { acaoRepo(r, "pull") }.disabled(r.atras == 0).help("Só fast-forward: nunca cria merge sozinho")
-                Button("Push") { pushEm = r }.disabled(r.frente == 0 && r.upstream != nil)
-            }
-            HStack(spacing: 14) {
-                Label(r.branch ?? "?", systemImage: "arrow.triangle.branch").font(.callout.monospaced())
-                if r.upstream == nil { Text("sem upstream").foregroundStyle(.orange) }
-                if r.frente > 0 { Label("\(r.frente) para subir", systemImage: "arrow.up").foregroundStyle(.blue) }
-                if r.atras > 0 { Label("\(r.atras) para baixar", systemImage: "arrow.down").foregroundStyle(.orange) }
-                if r.frente == 0 && r.atras == 0 && r.upstream != nil { Text("em dia com o origin").foregroundStyle(.secondary) }
-            }
-            .font(.callout)
-            if r.nMexidos > 0 {
-                DisclosureGroup("\(r.nMexidos) arquivo(s) mexido(s) sem commit") {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(r.mexidos, id: \.self) { Text($0).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            DisclosureGroup("Últimos commits") {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(r.commits) { c in
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(c.sha).font(.caption.monospaced()).foregroundStyle(.secondary)
-                            Text(c.msg).lineLimit(1)
+    // ---------- esquerda: listas e repositórios ----------
+    private var colunaRepos: some View {
+        List(selection: $lado) {
+            Label("Pedem sua revisão", systemImage: "eye").badge(dados?.revisar.count ?? 0).tag(Lado.revisar)
+            Label("Seus PRs", systemImage: "person").badge(dados?.meus.count ?? 0).tag(Lado.meus)
+            Section("Repositórios") {
+                ForEach(repos) { r in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Circle().fill(Color(hex: r.cor)).frame(width: 8, height: 8)
+                            Text(r.projeto).fontWeight(.medium).lineLimit(1)
                             Spacer()
-                            Text("\(c.autor) · \(relativo(c.quando))").font(.caption).foregroundStyle(.secondary)
+                            let n = prsDo(r).count
+                            if n > 0 { Text("\(n) PR").font(.caption2.bold()).padding(.horizontal, 5).background(Capsule().fill(Color.accentColor.opacity(0.2))) }
+                        }
+                        HStack(spacing: 6) {
+                            Text(r.nome).lineLimit(1)
+                            if r.frente > 0 { Text("↑\(r.frente)").foregroundStyle(.blue) }
+                            if r.atras > 0 { Text("↓\(r.atras)").foregroundStyle(.orange) }
+                            if r.nMexidos > 0 { Text("●\(r.nMexidos)").help("arquivos mexidos sem commit") }
+                        }
+                        .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+                    .tag(Lado.repo(r.pasta))
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func prsDo(_ r: Repo) -> [PR] { (dados?.prs ?? []).filter { $0.repo == r.remote } }
+
+    // ---------- meio: o repositório (git e PRs) ou uma lista de PRs ----------
+    @ViewBuilder private var colunaMeio: some View {
+        switch lado {
+        case .revisar: listaPRs("Pedem sua revisão", dados?.revisar ?? [], repo: nil)
+        case .meus, .none: listaPRs("Seus PRs", dados?.meus ?? [], repo: nil)
+        case let .repo(pasta):
+            if let r = repos.first(where: { $0.pasta == pasta }) { listaPRs(r.projeto, prsDo(r), repo: r) }
+        }
+    }
+
+    private func listaPRs(_ titulo: String, _ lista: [PR], repo: Repo?) -> some View {
+        VStack(spacing: 0) {
+            if let r = repo { cartaoGit(r).padding(12); Divider() } else {
+                Text(titulo).font(.headline).frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                Divider()
+            }
+            List(selection: $pr) {
+                Section("Pull requests abertos (\(lista.count))") {
+                    if lista.isEmpty { Text("nenhum").foregroundStyle(.secondary) }
+                    ForEach(lista, id: \.ref) { linhaPR($0, comRepo: repo == nil).tag($0.ref) }
+                }
+                if let r = repo {
+                    if r.nMexidos > 0 {
+                        Section("Mexidos sem commit (\(r.nMexidos))") {
+                            ForEach(r.mexidos, id: \.self) { Text($0).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                        }
+                    }
+                    Section("Últimos commits em \(r.branch ?? "?")") {
+                        ForEach(r.commits) { c in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(c.msg).lineLimit(2)
+                                Text("\(c.sha) · \(c.autor) · \(relativo(c.quando))").font(.caption.monospaced()).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.secondary.opacity(0.15)))
+    }
+
+    private func linhaPR(_ p: PR, comRepo: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(p.titulo).lineLimit(2)
+                if p.rascunho { Text("rascunho").font(.caption2).padding(.horizontal, 5).background(Capsule().fill(Color.secondary.opacity(0.2))) }
+            }
+            HStack(spacing: 5) {
+                if comRepo, p.projeto != nil { Circle().fill(Color(hex: p.cor)).frame(width: 6, height: 6) }
+                Text((comRepo ? "\(p.projeto ?? p.repo) " : "") + "#\(p.n) · \(p.autor ?? "?") · \(relativo(p.atualizado))")
+                if p.comentarios > 0 { Label("\(p.comentarios)", systemImage: "text.bubble") }
+            }
+            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func cartaoGit(_ r: Repo) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Circle().fill(Color(hex: r.cor)).frame(width: 9, height: 9)
+                Text(r.projeto).font(.headline)
+                Text(r.remote ?? r.nome).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            HStack(spacing: 10) {
+                Label(r.branch ?? "?", systemImage: "arrow.triangle.branch").font(.callout.monospaced()).lineLimit(1)
+                if r.upstream == nil { Text("sem upstream").foregroundStyle(.orange) }
+                if r.frente > 0 { Text("↑\(r.frente) para subir").foregroundStyle(.blue) }
+                if r.atras > 0 { Text("↓\(r.atras) para baixar").foregroundStyle(.orange) }
+                if r.frente == 0 && r.atras == 0 && r.upstream != nil { Text("em dia").foregroundStyle(.secondary) }
+            }
+            .font(.callout)
+            HStack {
+                Button("Fetch") { acaoRepo(r, "fetch") }.help("Busca o que mudou no origin, sem mexer nos seus arquivos")
+                Button("Pull") { acaoRepo(r, "pull") }.disabled(r.atras == 0).help("Só fast-forward: nunca cria merge sozinho")
+                Button("Push") { pushEm = r }.disabled(r.frente == 0 && r.upstream != nil)
+            }
+            .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // ---------- jfy ----------
     private func carregar() async {
         carregando = true
         defer { carregando = false }
-        if modo == .prs || dados == nil {
-            let (d, msg): (Dados?, String?) = await JFY.ler(["--github-json"])
-            if let d { dados = d }
-            aviso = msg
-        }
-        if modo == .repos {
-            let (r, msg): ([Repo]?, String?) = await JFY.ler(["--repos-json"])
-            if let r { repos = r }
-            aviso = msg ?? aviso
-        }
+        async let g: (Dados?, String?) = JFY.ler(["--github-json"])
+        async let r: ([Repo]?, String?) = JFY.ler(["--repos-json"])
+        let ((d, m1), (lista, m2)) = await (g, r)
+        if let d { dados = d }
+        if let lista { repos = lista }
+        aviso = m1 ?? m2
     }
 
     private func acaoRepo(_ r: Repo, _ acao: String) {
@@ -239,12 +266,15 @@ struct GithubTela: View {
 struct PRDetalhe: View {
     let repo: String
     let n: Int
+    @ObservedObject var nav: Navegacao
+    let irParaJFY: () -> Void
     let mudou: () -> Void
 
     struct Detalhe: Decodable {
         struct Check: Decodable { let nome, estado: String }
         struct Commit: Decodable { let sha, msg: String; let autor, quando: String? }
         struct Nota: Decodable { let autor, estado, quando: String?; let texto: String }
+        struct TaskLigada: Decodable { let id, titulo, status, pid: String; let projeto, cor: String? }
         let titulo, corpo, url, de, para: String
         let autor, mergeavel, situacao, revisao, criado: String?
         let rascunho: Bool
@@ -253,6 +283,7 @@ struct PRDetalhe: View {
         let commits: [Commit]
         let revisoes, comentarios: [Nota]
         let metodos: [String]
+        let tasks: [TaskLigada]
     }
 
     @State private var d: Detalhe?
@@ -261,6 +292,7 @@ struct PRDetalhe: View {
     @State private var comentario = ""
     @State private var mergeCom: String?
     @State private var confirmarFechar = false
+    @State private var confirmarReview = false
 
     var body: some View {
         Group {
@@ -276,6 +308,11 @@ struct PRDetalhe: View {
         }
         .confirmationDialog("Fechar #\(n) sem merge?", isPresented: $confirmarFechar) {
             Button("Fechar sem merge", role: .destructive) { agir("fechar") }
+        }
+        .confirmationDialog("Revisar #\(n) com o Claude?", isPresented: $confirmarReview) {
+            Button("Revisar") { revisar() }
+        } message: {
+            Text("Abre uma aba do jfy com o Claude rodando o /code-review deste PR (usa tokens). Ele só mostra o que achou: não comenta nem aprova no GitHub sem você pedir.")
         }
     }
 
@@ -307,10 +344,26 @@ struct PRDetalhe: View {
                         ForEach(d.metodos, id: \.self) { m in Button(NOME_METODO[m] ?? m) { mergeCom = m } }
                     }
                     .fixedSize().disabled(d.rascunho || d.metodos.isEmpty)
+                    Button { confirmarReview = true } label: { Label("Revisar com o Claude", systemImage: "sparkles") }
+                        .buttonStyle(.borderedProminent)
                     Button("Aprovar") { agir("aprovar") }
                     Button("Fechar sem merge") { confirmarFechar = true }
                 }
                 .disabled(ocupado)
+                if !d.tasks.isEmpty {
+                    Grupo("Tasks do Journify") {
+                        ForEach(d.tasks, id: \.id) { t in
+                            Button { nav.abrirTask = .init(pid: t.pid, tid: t.id); nav.tela = .projetos } label: {
+                                HStack(spacing: 8) {
+                                    StatusChip(status: t.status)
+                                    Text(t.titulo).lineLimit(1)
+                                    if let p = t.projeto { Text("· \(p)").foregroundStyle(.secondary) }
+                                }
+                            }
+                            .buttonStyle(.plain).help("Abrir a task na aba Projetos")
+                        }
+                    }
+                }
                 if !d.checks.isEmpty {
                     Grupo("Checks") {
                         ForEach(Array(d.checks.enumerated()), id: \.offset) { _, c in
@@ -364,6 +417,10 @@ struct PRDetalhe: View {
         let (r, msg): (Detalhe?, String?) = await JFY.ler(["--pr-json", repo, String(n)])
         if let r { d = r }
         aviso = msg
+    }
+
+    private func revisar() {
+        Task { if let e = await JFY.fazer(["--pr-revisar", repo, String(n)]) { aviso = e } else { irParaJFY() } }
     }
 
     private func agir(_ acao: String, _ valor: String = "") {
