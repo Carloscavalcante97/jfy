@@ -11,7 +11,7 @@ struct HorasTela: View {
             let kid: String
             let pid, projeto, cor: String?
             let cat, desc: String
-            let med, lanc: Int
+            let med, lanc, trabalhado: Int
             let fixo: Int?
             let fora, reuniao, palpite: Bool
             var id: String { kid }
@@ -20,7 +20,7 @@ struct HorasTela: View {
             let id, nome: String
             let cor: String?
         }
-        let medido, pelaRegra, total: Int
+        let medido, pelaRegra, total, corrigidas: Int
         let fator: Double
         let itens: [Item]
         let projetos: [Projeto]
@@ -100,8 +100,8 @@ struct HorasTela: View {
                 Text(fmt(h.total)).font(.title.weight(.semibold)).monospacedDigit()
             }
             if !h.itens.isEmpty {
-                Text("medido \(fmt(h.medido)) · fator ×\(h.fator.formatted(.number.locale(Locale(identifier: "pt_BR")))) → \(fmt(h.pelaRegra))"
-                     + (h.total != h.pelaRegra ? " · com seus ajustes: \(fmt(h.total))" : ""))
+                Text("trabalhado \(fmt(h.medido))" + (h.corrigidas > 0 ? " (\(h.corrigidas) corrigida\(h.corrigidas == 1 ? "" : "s") à mão)" : "")
+                     + " · fator ×\(h.fator.formatted(.number.locale(Locale(identifier: "pt_BR")))) → \(fmt(h.pelaRegra))")
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
@@ -124,7 +124,8 @@ struct HorasTela: View {
                     HStack(spacing: 12) {
                         Text("Projeto").frame(width: 190, alignment: .leading)
                         Text("Categoria").frame(width: 150, alignment: .leading)
-                        Text("Horas").frame(width: 140, alignment: .leading)
+                        Text("Trabalhado").frame(width: 140, alignment: .leading)
+                        Text("Lança").frame(width: 70, alignment: .leading)
                         Text("Descrição").frame(maxWidth: .infinity, alignment: .leading)
                         Color.clear.frame(width: 22, height: 1)
                     }
@@ -136,14 +137,16 @@ struct HorasTela: View {
                             projeto(h, it).frame(width: 190, alignment: .leading)
                             categoria(h, it).frame(width: 150, alignment: .leading)
                             HStack(spacing: 4) {
-                                campo(it, "min", atual: hm(it.lanc), dica: "1:20").frame(width: 92)
+                                campo(it, "min", atual: hm(it.trabalhado), dica: "1:20").frame(width: 92)
                                 if it.fixo != nil {
                                     Image(systemName: "hand.raised").foregroundStyle(.secondary)
-                                        .help("Horas à mão. Apague e salve para voltar à regra.")
+                                        .help("Corrigida à mão (o medido era \(hm(it.med))). Apague e salve para voltar ao medido.")
                                 }
                             }
                             .frame(width: 140, alignment: .leading)
-                            .help("Medido: \(hm(it.med)). Enter, clicar fora ou o ✓ salva; vazio volta para a regra; Esc desfaz.")
+                            .help("O tempo trabalhado (medido: \(hm(it.med))). Corrija se o medido estiver errado: o fator vale em cima. Enter, clicar fora ou o ✓ salva; vazio volta ao medido; Esc desfaz.")
+                            Text(hm(it.lanc)).monospacedDigit().fontWeight(.semibold).frame(width: 70, alignment: .leading)
+                                .help("O que vai para o Journify: o trabalhado com a regra (fator, múltiplos de 5)")
                             campo(it, "desc", atual: it.desc, dica: "descrição").frame(maxWidth: .infinity, alignment: .leading)
                             Button { ajustar(it, "fora", "1") } label: { Image(systemName: "trash") }
                                 .buttonStyle(.borderless).help("Remover desse dia").frame(width: 22)
@@ -223,7 +226,7 @@ struct HorasTela: View {
         guard !salvando.contains(k), let v = rascunho[k], let i = k.lastIndex(of: "|"),
               let it = horas?.itens.first(where: { $0.kid == String(k[..<i]) }) else { return }
         let campo = String(k[k.index(after: i)...])
-        guard v != (campo == "min" ? hm(it.lanc) : it.desc) else {
+        guard v != (campo == "min" ? hm(it.trabalhado) : it.desc) else {
             rascunho[k] = nil
             return
         }

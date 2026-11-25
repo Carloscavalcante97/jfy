@@ -1146,8 +1146,8 @@ def gravar_ajuste(dia, kid, **campos):
 
 
 def itens_horas(cfg, dia):
-    """As linhas do dia como vão para o Journify: o medido, com os seus ajustes e a regra do config.
-    Devolve (itens, medido, total pela regra). Linha removida fica no fim, com fora=True."""
+    """As linhas do dia como vão para o Journify: o medido (ou a hora corrigida à mão, no lugar dele), com os seus
+    ajustes e a regra do config. Devolve (itens, medido, total pela regra). Linha removida fica no fim, com fora=True."""
     linhas, reun = horas_do_dia(dia)
     try:
         aj = json.load(open(ajustes_arq(dia)))
@@ -1160,11 +1160,12 @@ def itens_horas(cfg, dia):
         a = aj.get(kid, {})
         itens.append(dict(kid=kid, p=a.get("p", k[0]), cat=a.get("cat", k[1]), desc=a.get("desc", k[2]), med=m,
                           fixo=a.get("min"), fora=a.get("fora", False), reuniao=r, lanc=0))
-    vivos = {(i, it["cat"]): it["med"] for i, it in enumerate(itens) if not it["fora"]}
+    # a hora corrigida à mão é o tempo trabalhado da linha: entra no lugar do medido e a regra (fator, múltiplos de 5)
+    # vale em cima dela, como nas outras (antes ela substituía o lançado e o topo seguia somando o medido errado)
+    vivos = {(i, it["cat"]): it["med"] if it["fixo"] is None else it["fixo"] for i, it in enumerate(itens) if not it["fora"]}
     lanc = inflar(vivos, cfg.get("horas", {}))
     for (i, _), m in lanc.items():
-        # ponytail: hora fixada à mão substitui a da regra e não rebalanceia as outras linhas
-        itens[i]["lanc"] = m if itens[i]["fixo"] is None else itens[i]["fixo"]
+        itens[i]["lanc"] = m
     itens.sort(key=lambda it: (it["fora"], -it["lanc"]))
     return itens, sum(vivos.values()), sum(lanc.values())
 
@@ -1198,8 +1199,10 @@ def horas_json(dia):
     cor = lambda p: "#%02x%02x%02x" % rgb256(cor_projeto(p)) if p else None
     return {"dia": dia.isoformat(), "medido": medido, "pela_regra": pela_regra, "fator": cfg.get("horas", {}).get("fator", 1),
             "total": sum(it["lanc"] for it in itens if not it["fora"]),
+            "corrigidas": sum(1 for it in itens if it["fixo"] is not None and not it["fora"]),
             "itens": [{"kid": it["kid"], "pid": it["p"], "projeto": nome_projeto(cfg, it["p"]) if it["p"] else None,
                        "cor": cor(it["p"]), "cat": it["cat"], "desc": it["desc"], "med": it["med"], "lanc": it["lanc"],
+                       "trabalhado": it["med"] if it["fixo"] is None else it["fixo"],
                        "fixo": it["fixo"], "fora": it["fora"], "reuniao": bool(it["reuniao"]),
                        "palpite": bool(it["reuniao"] and it["reuniao"][2] and it["p"])} for it in itens],
             "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor(k)} for k, pr in cfg["projetos"].items()),
@@ -1220,7 +1223,8 @@ def lancar_horas(cfg, dia):
 - Projeto: o apelido acima é o do jfy (ou o nome do projeto no Journify, quando não tem id); escolha no select do modal o projeto do Journify que corresponde (o id ajuda). Se a linha tiver projeto "?" ou houver dúvida, me pergunte antes.
 - Categoria: a opção do select mais próxima da sugerida.
 - O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
-- Confira na tela se o dia já tem horas lançadas e me avise antes de duplicar. No fim, confirme que o total do dia ficou {hm(total)}."""
+- Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
+- No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}."""
     subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
 
 
@@ -3495,7 +3499,10 @@ def selftest():
     aplicar_ajuste(cfg_h, hoje, entrega, "fora", "1")
     itens, med, _ = itens_horas(cfg_h, hoje)
     assert [(x["p"], x["cat"], x["lanc"], x["fora"]) for x in itens] == [("Souv", "Análise e estudo", 25, False),
-                                                                         ("r", "Reunião", 0, True)] and med == 10, itens
+                                                                         ("r", "Reunião", 0, True)] and med == 25, itens
+    # a hora corrigida entra no lugar do medido e o fator vale em cima dela (12 min corrigidos × 1,2 = 15 em múltiplo de 5)
+    itens2, med2, regra2 = itens_horas(dict(cfg_h, horas={"fator": 1.2}), hoje)
+    assert (itens2[0]["lanc"], med2, regra2) == (5 * round(25 * 1.2 / 5), 25, 5 * round(25 * 1.2 / 5)), (itens2, med2, regra2)
     aplicar_ajuste(cfg_h, hoje, entrega, "fora", "")
     aplicar_ajuste(cfg_h, hoje, decal, "min", "")
     aplicar_ajuste(cfg_h, hoje, decal, "cat", "")
