@@ -67,6 +67,7 @@ struct EmailsTela: View {
     @State private var para = ""  // encaminhar
     @State private var cc = ""
     @State private var abertas: Set<String> = []  // mensagens antigas da conversa abertas
+    @State private var escrevendoNovo = false  // o email do zero
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,6 +78,8 @@ struct EmailsTela: View {
                     if let c = l.conta { Text("· \(c)").foregroundStyle(.secondary) }
                 }
                 Spacer()
+                Button { escrevendoNovo = true } label: { Label("Escrever", systemImage: "square.and.pencil") }
+                    .buttonStyle(.borderedProminent)
                 if let u = lista?.url.flatMap(URL.init(string:)) { Link("Abrir o Gmail", destination: u) }
                 Button("Marcar todos como lidos") { confirmarTodos = true }.disabled((lista?.total ?? 0) == 0)
                 Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar").disabled(carregando)
@@ -124,6 +127,9 @@ struct EmailsTela: View {
             Button("Enviar") { if let e = email { responderGmail(e, enviar: true) } }
         } message: {
             Text("Sai da sua conta do Gmail, na mesma conversa" + (email?.temAssinatura == true ? ", com a sua assinatura" : "") + ". Não tem volta pelo app.")
+        }
+        .sheet(isPresented: $escrevendoNovo) {
+            NovoEmail(fechar: { escrevendoNovo = false }, enviado: { feito = $0; escrevendoNovo = false })
         }
         .onChange(of: selecao) {
             feito = nil
@@ -315,6 +321,94 @@ final class Contatos: ObservableObject {
 
 /// Campo de emails separados por vírgula: enquanto você digita, sugere os contatos que batem (nome ou email); o
 /// clique troca o que está sendo digitado pelo email escolhido, como o Gmail.
+/// Um email do zero: Para e Cc (com as sugestões de contato), assunto e o texto, escrito por você ou pelo Claude (a
+/// partir do contexto), com a assinatura padrão do Gmail. Salva como rascunho ou envia (`--email-enviar` no modo novo).
+struct NovoEmail: View {
+    let fechar: () -> Void
+    let enviado: (String) -> Void
+    @State private var para = ""
+    @State private var cc = ""
+    @State private var assunto = ""
+    @State private var texto = ""
+    @State private var contexto = ""
+    @State private var escrevendo: String?
+    @State private var enviando = false
+    @State private var aviso: String?
+    @State private var confirmar = false
+
+    private var vazio: Bool { texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var semDestino: Bool { !para.contains("@") }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Novo email").font(Souv.titulo(22))
+                Spacer()
+                Button("Cancelar", action: fechar).keyboardShortcut(.cancelAction)
+            }
+            CampoEmails(rotulo: "Para", texto: $para)
+            CampoEmails(rotulo: "Cc", texto: $cc)
+            TextField("Assunto", text: $assunto).textFieldStyle(.roundedBorder)
+            TextEditor(text: $texto)
+                .font(.body).frame(minHeight: 220)
+                .padding(6).background(RoundedRectangle(cornerRadius: 8).strokeBorder(Souv.borda))
+                .disabled(escrevendo != nil)
+            TextField("Contexto para o Claude: o que o email precisa dizer, para quem, o tom…", text: $contexto, axis: .vertical)
+                .lineLimit(1...4).textFieldStyle(.roundedBorder)
+            HStack {
+                Button { ia("gerar") } label: { Label("Gerar com o Claude", systemImage: "sparkles") }
+                    .disabled(contexto.trimmingCharacters(in: .whitespaces).isEmpty).help("Escreve o email a partir do contexto")
+                Button("Corrigir") { ia("corrigir") }.disabled(vazio).help("Só os erros do seu texto, sem mudar o que ele diz")
+                Button("Melhorar") { ia("melhorar") }.disabled(vazio).help("Seu texto como base, mais claro e direto")
+                if let m = escrevendo {
+                    ProgressView().controlSize(.small)
+                    Text("O Claude está \(m == "gerar" ? "escrevendo" : m == "corrigir" ? "corrigindo" : "melhorando")…").foregroundStyle(Souv.texto2)
+                }
+                Spacer()
+                Button("Salvar rascunho") { mandar(false) }.disabled(vazio || semDestino || enviando)
+                Button("Enviar") { confirmar = true }.buttonStyle(.borderedProminent).disabled(vazio || semDestino || enviando)
+            }
+            .disabled(escrevendo != nil)
+            if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
+            Text("Vai com a sua assinatura padrão do Gmail, se você tiver uma. O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
+                .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(20)
+        .frame(width: 660)
+        .background(Souv.fundo)
+        .confirmationDialog("Enviar para \(para)?", isPresented: $confirmar) {
+            Button("Enviar") { mandar(true) }
+        } message: { Text("Sai da sua conta do Gmail" + (cc.contains("@") ? ", com cópia para \(cc)" : "") + ". Não tem volta pelo app.") }
+    }
+
+    private func ia(_ modo: String) {
+        Task {
+            escrevendo = modo
+            struct Texto: Decodable { let texto: String }
+            let (r, msg): (Texto?, String?) = await JFY.ler(["--email-ia", "", modo, texto, contexto])  // sem id: email novo
+            escrevendo = nil
+            if let r { texto = r.texto }
+            aviso = msg
+        }
+    }
+
+    private func mandar(_ enviar: Bool) {
+        Task {
+            enviando = true
+            defer { enviando = false }
+            struct Feito: Decodable { let para, cc: String }
+            let d: [String: Any] = ["modo": "novo", "para": para, "cc": cc, "assunto": assunto, "texto": texto, "enviar": enviar]
+            guard let json = try? JSONSerialization.data(withJSONObject: d), let txt = String(data: json, encoding: .utf8) else { return }
+            let (r, msg): (Feito?, String?) = await JFY.ler(["--email-enviar", txt])
+            if let r {
+                enviado((enviar ? "Enviado para " : "Rascunho salvo no Gmail, para ") + r.para + (r.cc.isEmpty ? "" : ", com cópia para \(r.cc)") + ".")
+            } else {
+                aviso = msg
+            }
+        }
+    }
+}
+
 struct CampoEmails: View {
     let rotulo: String
     @Binding var texto: String
