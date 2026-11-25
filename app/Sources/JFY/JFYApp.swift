@@ -128,9 +128,10 @@ struct JFYApp: App {
     @StateObject private var caixa = CaixaEmail()
     @StateObject private var portas = PortasAbertas()
     @StateObject private var nav = Navegacao()
+    @StateObject private var abas = AbasTmux()
 
     var body: some Scene {
-        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas, nav: nav) }
+        Window("jfy", id: "jfy") { Principal(terminal: terminal, notificacoes: notificacoes, caixa: caixa, portas: portas, nav: nav, abas: abas) }
             .defaultSize(width: 1200, height: 780)
     }
 }
@@ -141,14 +142,18 @@ struct Principal: View {
     @ObservedObject var caixa: CaixaEmail
     @ObservedObject var portas: PortasAbertas
     @ObservedObject var nav: Navegacao
+    @ObservedObject var abas: AbasTmux
     private var tela: Tela? { nav.tela }
     @State private var telaCheia = false
 
     var body: some View {
         NavigationSplitView {
-            List(Tela.allCases, selection: $nav.tela) { t in
-                Label(t.rawValue, systemImage: t.icone).tag(t)
-                    .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
+            List(selection: $nav.tela) {
+                ForEach(Tela.allCases) { t in
+                    Label(t.rawValue, systemImage: t.icone).tag(t)
+                        .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
+                    if t == .terminal { abasDoJFY }
+                }
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
             // em tela cheia não há nada atrás da janela e a barra lateral, que deixa ver o fundo, fica chapada:
@@ -182,6 +187,31 @@ struct Principal: View {
     }
 
     private func irParaJFY() { nav.tela = .terminal }
+
+    /// As abas abertas no jfy (o menu e as tasks), embaixo de "jfy": o clique leva o terminal até ela. A bolinha
+    /// vermelha é o Claude daquela aba pedindo atenção (o sino do tmux).
+    @ViewBuilder private var abasDoJFY: some View {
+        ForEach(abas.itens) { a in
+            Button {
+                abas.ir(a)
+                nav.tela = .terminal
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: a.nome == "menu" ? "list.bullet" : "chevron.right.square")
+                        .font(.caption).foregroundStyle(.secondary).frame(width: 14)
+                    Text(a.nome).lineLimit(1).truncationMode(.tail)
+                        .fontWeight(a.ativa && tela == .terminal ? .semibold : .regular)
+                    Spacer(minLength: 0)
+                    if a.sino { Circle().fill(.red).frame(width: 7, height: 7).help("O Claude desta aba pediu atenção") }
+                }
+                .font(.callout)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 20)
+            .help(a.nome)
+        }
+    }
 
     private func mostrar(_ t: Tela, @ViewBuilder _ conteudo: () -> some View) -> some View {
         let ativa = (tela ?? .terminal) == t

@@ -73,3 +73,55 @@ struct TerminalTela: View {
         func updateNSView(_ view: LocalProcessTerminalView, context: Context) {}
     }
 }
+
+/// As abas do tmux do jfy (o menu e uma por task, revisão, PR…), para a barra lateral listar embaixo de "jfy". Pergunta
+/// ao tmux a cada 3 s, direto, sem rodar o jfy.
+final class AbasTmux: ObservableObject {
+    struct Aba: Identifiable, Equatable {
+        let id, nome: String  // id = o da janela no tmux (@5)
+        let ativa, sino: Bool  // sino: o Claude daquela aba pediu atenção
+    }
+
+    @Published private(set) var itens: [Aba] = []
+    private var timer: Timer?
+
+    init() {
+        ler()
+        timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.ler() }
+    }
+
+    func ler() {
+        DispatchQueue.global(qos: .utility).async {
+            let saida = Self.tmux(["list-windows", "-t", "jfy", "-F", "#{window_id}\t#{window_name}\t#{window_active}\t#{window_bell_flag}"])
+            let lista = saida.split(separator: "\n").compactMap { l -> Aba? in
+                let c = l.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+                return c.count == 4 ? Aba(id: c[0], nome: c[1], ativa: c[2] == "1", sino: c[3] == "1") : nil
+            }
+            DispatchQueue.main.async { if lista != self.itens { self.itens = lista } }
+        }
+    }
+
+    /// Leva o terminal do jfy para a aba (vale para todos os terminais ligados ao jfy, como no Ctrl-b + número).
+    func ir(_ a: Aba) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = Self.tmux(["select-window", "-t", a.id])
+            DispatchQueue.main.async { self.ler() }
+        }
+    }
+
+    private static func tmux(_ args: [String]) -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["tmux", "-L", "jfy"] + args
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return "" }
+        let dados = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: dados, as: UTF8.self)
+    }
+}
