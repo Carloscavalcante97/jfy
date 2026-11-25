@@ -40,8 +40,22 @@ cat > "$APP/Contents/Info.plist" <<EOF
 </dict></plist>
 EOF
 
-# ponytail: assinatura local (ad hoc), roda neste Mac. Para mandar o .app a outra pessoa: Developer ID + notarização
-codesign --force --sign - "$APP"
+# assinatura com um certificado local, o mesmo em toda montagem: o macOS reconhece o app pelo certificado e lembra das
+# permissões que você deu (pasta Documentos, notificações). Ad hoc, cada montagem virava "outro app" e pedia tudo de
+# novo. O certificado "jfy local" é criado na primeira vez, no seu Chaves, liberado só para o codesign.
+# ponytail: vale para este Mac. Para mandar o .app a outra pessoa: Developer ID + notarização
+ID="jfy local"
+if ! security find-identity -p codesigning | grep -q "\"$ID\""; then
+  T="$(mktemp -d)"
+  SENHA="$(openssl rand -hex 16)"
+  printf '[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=%s\n[ext]\nbasicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=critical,codeSigning\n' "$ID" > "$T/cfg"
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$T/chave.pem" -out "$T/cert.pem" -days 3650 -config "$T/cfg" 2>/dev/null
+  openssl pkcs12 -export -inkey "$T/chave.pem" -in "$T/cert.pem" -name "$ID" -out "$T/id.p12" -passout "pass:$SENHA"
+  security import "$T/id.p12" -k "$HOME/Library/Keychains/login.keychain-db" -P "$SENHA" -T /usr/bin/codesign -f pkcs12 >/dev/null
+  rm -rf "$T"
+  printf '\033[32m✓\033[0m certificado "%s" criado no seu Chaves (assinatura estável do app)\n' "$ID"
+fi
+codesign --force --sign "$ID" "$APP" 2>/dev/null || codesign --force --sign - "$APP"  # sem o certificado: ad hoc
 
 DEST=/Applications
 [ -w "$DEST" ] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
