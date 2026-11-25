@@ -243,7 +243,7 @@ O modelo de cada atividade se escolhe no app, em **Configurações › Modelos d
 
 Logo abaixo, **Agentes da pipeline** escolhe o modelo de cada agente que o /pipeline chama (planner, builder, verifier, e2e-tester, committer, pr-creator): o padrão da pipeline do time, o mesmo da sessão, Fable, Opus, Sonnet ou Haiku. O jfy troca só a linha `model:` do agente no clone da pipeline (`~/.jfy/pipeline-Claude`) e guarda a escolha em `"modelos_agentes"` no config; ao atualizar a pipeline, o `install.sh` volta essa linha ao oficial antes do `git pull` e reaplica a sua escolha depois, sem mexer em mais nada dos arquivos.
 
-Sem escolha, as tarefas simples (lançar horas, emails, commit e abrir PR) rodam no **Sonnet**, e o resto no padrão do Claude Code. O fechamento da task fica no modelo da conversa de propósito: ele retoma a conversa ainda em cache, e trocar de modelo faria reler tudo a preço cheio.
+Sem escolha, as tarefas simples (lançar horas, emails, commit e abrir PR) rodam no **Sonnet**, e o resto no padrão do Claude Code. O fechamento da task segue, por padrão, **o mesmo modelo da conversa** que ele retoma (o jfy lê na transcrição qual foi): assim aproveita o cache dela, e trocar de modelo ali faria reler tudo a preço cheio.
 
 ## Onde ficam as coisas
 

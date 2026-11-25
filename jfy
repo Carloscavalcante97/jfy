@@ -1731,7 +1731,7 @@ MODELOS = [  # (id, nome, para que serve, padrão do jfy)
     ("revisao", "Revisar PR", "o /code-review de um PR", None),
     ("reuniao", "Preparar reunião", "pauta e contexto de uma reunião", None),
     ("avaliacao", "Avaliar o uso da IA", "o diagnóstico da aba Uso da IA", None),
-    ("fechamento", "Fechar a task", "handoff e memória ao sair; no modelo da conversa, aproveita o cache", None),
+    ("fechamento", "Fechar a task", "handoff e memória ao sair; no modelo da conversa, aproveita o cache", "conversa"),
     ("horas", "Lançar horas", "preencher o minhas-horas pelo Chrome", "sonnet"),
     ("email", "Emails", "gerar, corrigir e melhorar respostas", "sonnet"),
     ("commit", "Mensagem de commit", "pelas regras do committer", "sonnet"),
@@ -1753,10 +1753,33 @@ def com_modelo(atividade):
     return ["--model", m] if m else []
 
 
+def opcoes_modelo(atividade):
+    # o fechamento pode seguir o modelo da conversa que ele retoma (o padrão: aproveita o cache dela)
+    return (["conversa"] if atividade == "fechamento" else []) + OPCOES_MODELO
+
+
+def modelo_da_sessao(sid):
+    """O modelo que a conversa usou por último, lido da transcrição dela no Claude Code (None se não achar)."""
+    for raiz, _, nomes in os.walk(CLAUDE_PROJ):
+        if f"{sid}.jsonl" in nomes:
+            modelo = None
+            for l in open(os.path.join(raiz, f"{sid}.jsonl"), errors="ignore"):
+                if '"assistant"' in l and '"model"' in l:
+                    try:
+                        m = (json.loads(l).get("message") or {}).get("model")
+                    except ValueError:
+                        continue
+                    if m and m != "<synthetic>":
+                        modelo = m
+            return modelo
+    return None
+
+
 def modelos_json():
     """Configurações do app: o modelo de cada atividade e as opções."""
     return {"opcoes": OPCOES_MODELO, "atividades": [{"id": i, "nome": n, "descricao": d, "modelo": modelo_de(i) or "padrao",
-                                                     "padrao_jfy": m or "padrao"} for i, n, d, m in MODELOS]}
+                                                     "padrao_jfy": m or "padrao", "opcoes": opcoes_modelo(i)}
+                                                    for i, n, d, m in MODELOS]}
 
 
 # ---------- os agentes da pipeline: o modelo de cada um ----------
@@ -1836,7 +1859,7 @@ def agentes_aplicar():
 
 
 def modelo_escolher(atividade, valor):
-    if atividade not in {i for i, *_ in MODELOS} or valor not in OPCOES_MODELO:
+    if atividade not in {i for i, *_ in MODELOS} or valor not in opcoes_modelo(atividade):
         sys.exit("Atividade ou modelo desconhecido.")
     cfg = load()
     cfg.setdefault("modelos", {})[atividade] = valor
@@ -3582,7 +3605,10 @@ def fechar_agora(sid, cwd, arq, *outras):
     pedido = open(arq).read()
     os.remove(arq)
     # retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
-    subprocess.call(["claude", "-p", "--resume", sid, *com_modelo("fechamento"), "--permission-mode", "acceptEdits", "--allowedTools",
+    modelo = modelo_de("fechamento")
+    if modelo == "conversa":  # o mesmo modelo da conversa que ele retoma: aproveita o cache dela
+        modelo = modelo_da_sessao(sid)
+    subprocess.call(["claude", "-p", "--resume", sid, *(["--model", modelo] if modelo else []), "--permission-mode", "acceptEdits", "--allowedTools",
                      "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
                      "Bash(ls:*)", *add_dir([cwd, *outras]), "--", pedido], cwd=cwd, env=dict(os.environ, JFY_SEM_AVISO="1"),
                     stdout=subprocess.DEVNULL)
@@ -4651,6 +4677,15 @@ def selftest():
     cf = {"journify_uid": "eu", "projetos": {}}
     r = resumo_task(cf, {"id": "1", "title": "t", "statusId": "em_aberto", "projectId": "p", "assigneeIds": ["eu", "y"]})
     assert (r["resp"], r["eu"]) == (2, True), r
+    cpm = os.path.join(RUN_DIR, "teste-sessao", "p")
+    os.makedirs(cpm, exist_ok=True)
+    open(os.path.join(cpm, "s9.jsonl"), "w").write("\n".join(json.dumps({"type": "assistant", "message": {"model": m}})
+                                                             for m in ("claude-opus-5-5", "claude-sonnet-5-5", "<synthetic>")))
+    cp_real0 = CLAUDE_PROJ
+    globals()["CLAUDE_PROJ"] = os.path.dirname(cpm)
+    assert modelo_da_sessao("s9") == "claude-sonnet-5-5" and modelo_da_sessao("nenhuma") is None
+    globals()["CLAUDE_PROJ"] = cp_real0
+    shutil.rmtree(os.path.dirname(cpm))
     cp_real, cpd = CLAUDE_PROJ, os.path.join(RUN_DIR, "teste-sinais")
     os.makedirs(os.path.join(cpd, "p"), exist_ok=True)
     agora_iso = datetime.now().astimezone().isoformat()
@@ -4704,6 +4739,7 @@ def selftest():
         assert (modelo_de("horas"), modelo_de("pipeline"), modelo_de("email"), modelo_de("conversa"), modelo_de("revisao")) \
             == ("haiku", None, "sonnet", None, "opus")
         assert com_modelo("pipeline") == [] and com_modelo("email") == ["--model", "sonnet"]
+        assert modelo_de("fechamento") == "conversa" and "conversa" in opcoes_modelo("fechamento") and "conversa" not in opcoes_modelo("horas")
     finally:
         globals()["load"] = salvo_load
     pj_real = PROJ_JOURNIFY

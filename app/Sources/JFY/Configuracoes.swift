@@ -77,12 +77,13 @@ struct ConfiguracoesTela: View {
     struct Modelos: Decodable {
         struct Atividade: Decodable, Identifiable {
             let id, nome, descricao, modelo, padraoJfy: String
+            let opcoes: [String]?
         }
         let opcoes: [String]
         let atividades: [Atividade]
     }
 
-    private static let nomesModelo = ["padrao": "Padrão do Claude Code", "fable": "Fable", "opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"]
+    private static let nomesModelo = ["conversa": "O mesmo da conversa", "padrao": "Padrão do Claude Code", "fable": "Fable", "opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"]
     @State private var token = ""
 
     var body: some View {
@@ -316,11 +317,11 @@ struct ConfiguracoesTela: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(a.nome).fontWeight(.medium)
-                        Text(a.descricao + (a.padraoJfy == "padrao" ? "" : " · padrão do jfy: \(Self.nomesModelo[a.padraoJfy] ?? a.padraoJfy)"))
+                        Text(a.descricao + (a.padraoJfy == "padrao" || a.padraoJfy == "conversa" ? "" : " · padrão do jfy: \(Self.nomesModelo[a.padraoJfy] ?? a.padraoJfy)"))
                             .font(.caption).foregroundStyle(Souv.texto2).lineLimit(2)
                     }
                     Spacer(minLength: 8)
-                    SouvSelect(opcoes: m.opcoes.map { .init(valor: $0, rotulo: Self.nomesModelo[$0] ?? $0) }, selecionado: a.modelo) { novo in
+                    SouvSelect(opcoes: (a.opcoes ?? m.opcoes).map { .init(valor: $0, rotulo: Self.nomesModelo[$0] ?? $0) }, selecionado: a.modelo) { novo in
                         Task {
                             if let e = await JFY.fazer(["--modelo", a.id, novo]) { aviso = e } else { feito = "\(a.nome): \(Self.nomesModelo[novo] ?? novo)." }
                             let (m, _): (Modelos?, String?) = await JFY.ler(["--modelos-json"])
