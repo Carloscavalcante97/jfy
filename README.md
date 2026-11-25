@@ -24,6 +24,7 @@ O `install.sh`:
 - pergunta, um por um, se você quer os extras. Responda `n` em todos para ficar só com o menu de tasks. O que você já ligou antes não é perguntado de novo:
   - **uso da IA na barra**: muda o `statusLine` do `~/.claude/settings.json`;
   - **aviso do Claude no macOS**: dois hooks no `~/.claude/settings.json` (valem para todo Claude Code) e o `terminal-notifier`;
+  - **ícone do jfy na barra de cima do Mac**: instala o [SwiftBar](https://swiftbar.app) (Homebrew) e um plugin dele;
   - **notificação das 7h**: um LaunchAgent.
 
 ### 2. Rodar
@@ -122,6 +123,14 @@ Rode `jfy --login`. Na primeira vez ele abre no navegador o [JSON do app jfy da 
 
 O acesso fica no Chaves do macOS. O jfy olha a agenda a cada 2 min e o Gmail a cada 30 s (um email novo aparece na barra em até ~45 s). Se a barra mostrar `✉ erro`, rode `jfy --login` de novo.
 
+### Portas abertas (`o`)
+
+No menu principal, `o` lista as portas abertas por programas de desenvolvimento, uma linha por processo (ou por container do Docker): o que é (Next, Vite, Node, Expo, Firebase, Python, Java, Docker, Postgres, MySQL, Redis, Mongo, Ruby), cada um com seu ícone, de que projeto é, se tem Claude aberto naquele repositório (e em que aba do jfy) e se foi o Claude que subiu o servidor. O número encerra (pede para sair e, se em 3 s não saiu, força; container é parado com `docker stop`). Fica de fora o que não é de desenvolvimento (Figma, CleanMyMac, o próprio macOS). `jfy --portas` abre direto. Banco instalado pelo Homebrew (`brew services`) volta sozinho depois de encerrado: pare com `brew services stop <nome>`.
+
+### Ícone na barra de cima do Mac
+
+Com o extra do SwiftBar, o jfy ganha um ícone (a chama, só ela: em Mac com notch, ícone largo some atrás dele) ao lado do relógio do Mac. O menu tem: abrir o jfy (traz o terminal dele, ou abre um com o jfy), pausar/retomar a jornada, as próximas reuniões (clique entra na chamada), as tasks no foco (clique abre no Journify), as portas abertas com "Encerrar" em cada uma e os emails não lidos. Atualiza a cada minuto e quando você abre o menu.
+
 ### Notificação das 7h
 
 De segunda a sexta, às 7h, chega uma notificação do macOS com as reuniões do dia e as tasks no foco. Se o Mac estiver dormindo, ela chega quando ele acordar. Se a notificação não aparecer, libere as notificações do **Editor de Scripts** em Ajustes do Sistema > Notificações.
@@ -158,10 +167,14 @@ O fator multiplica só as linhas de trabalho; reunião fica com a duração da a
 
 ### Ao encerrar uma task (`/exit`)
 
-O jfy pergunta:
-1. pronta: comenta o tempo gasto na task e move para `finalizado_validacao`;
-2. não pronta: só comenta o tempo;
-3. não registrar nada.
+Ao abrir, a task já tinha ido para `em_progresso`. No `/exit`, o jfy pergunta:
+1. pronta, vai para **em teste**;
+2. pronta, vai para **em revisão**;
+3. pronta, vai para **fechado**: pede o link do vídeo do teste ou, sem vídeo, o motivo (o Journify exige um dos dois para fechar);
+4. não pronta: só comenta o tempo (Enter);
+5. não registrar nada.
+
+De 1 a 3, comenta o tempo gasto e muda o status. Na sessão de várias tasks, o Claude pergunta o mesmo e roda `jfy --fim <id> --status em_teste|em_revisao|fechado`.
 
 O tempo vem do relógio (da abertura até o `/exit`, sem as reuniões da agenda que caíram no meio) e você pode corrigir (`80`, `1h20`, `1:20`). Ele vai como comentário porque o MCP do Journify não tem campo de tempo, e também para o log de [horas](#horas).
 
@@ -181,6 +194,7 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 | projeto e contexto de cada reunião (base das horas) | `~/.jfy/reunioes.json` |
 | ajustes que você fez na tabela de horas de um dia | `~/.jfy/horas/AAAA-MM-DD.ajustes.json` |
 | notificação das 7h | `~/Library/LaunchAgents/jfy.dia.plist` |
+| plugin do ícone na barra de cima | `~/.jfy/swiftbar/jfy.1m.sh` (ou a pasta de plugins do seu SwiftBar) |
 | acesso ao Google | Chaves do macOS, item `jfy-google` |
 
 **Duas tasks no mesmo repositório ao mesmo tempo**: a segunda roda num `git worktree` separado, com branch própria, para os pipelines não mexerem nos mesmos arquivos. O worktree recebe uma cópia dos `.env`, mas não as dependências (`node_modules`, venv); o Claude instala se precisar.
@@ -199,7 +213,8 @@ Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git
 - **O `/pipeline` para dizendo que a branch está errada**: ele só roda em `feature/`, `bugfix/`, `hotfix/` ou `release/`. Escolha o tipo quando o jfy oferecer criar a branch.
 - **O `/pipeline` diz que a task não é de código**: use a opção `2` (conversar com o Claude).
 - **Um projeto não aparece no menu**: o menu mostra os projetos configurados e os que têm tasks abertas atribuídas a você. Um projeto novo, sem task sua, só aparece depois de configurado (ou quando chegar uma task).
-- **Ícones do tema não aparecem (espaço vazio ou quadradinho)**: o terminal não está com a fonte JFY Mono, ou não foi reiniciado depois de instalá-la. Escolha "JFY Mono" e feche o terminal com ⌘Q.
+- **Ícones do tema não aparecem (espaço vazio ou quadradinho)**: o terminal não está com a fonte JFY Mono, ou não foi reiniciado depois de instalá-la. Escolha "JFY Mono" e feche o terminal com ⌘Q. Depois de um `git pull` que trouxe ícones novos, rode o `./install.sh` (ele copia a fonte nova) e reinicie o terminal.
+- **O ícone da barra de cima não aparece**: abra o SwiftBar (`open /Applications/SwiftBar.app`). Em Mac com notch, o macOS esconde atrás do notch os ícones que não cabem (o mais novo é o primeiro a sumir): segure ⌘ e arraste a chama para perto do relógio, ou tire da barra um ícone que você não usa.
 
 ## Desinstalar
 
@@ -207,6 +222,7 @@ Para atualizar também a pipeline, rode `~/jfy/install.sh` de novo: ele dá `git
 rm "$(command -v jfy)"
 find ~/.claude/commands ~/.claude/agents ~/.claude/hooks -type l -lname "*pipeline-Claude/*" -delete
 launchctl bootout gui/$(id -u)/jfy.dia; rm ~/Library/LaunchAgents/jfy.dia.plist
+brew uninstall --cask swiftbar  # se você só usava ele para o jfy
 security delete-generic-password -s jfy-google
 rm -rf ~/.jfy ~/jfy
 # e tire o "tee ~/.jfy/claude-status.json | " do statusLine e os hooks "jfy --avisar" em ~/.claude/settings.json

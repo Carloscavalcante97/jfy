@@ -105,6 +105,29 @@ if quer "Usar a JFY Mono neste terminal? (Terminal do macOS ou Warp; o tamanho d
 else
   aviso "escolha \"JFY Mono\" como fonte do seu terminal e reabra ele, senão os ícones dos temas aparecem como ?"
 fi
+# ícone do jfy na barra de cima do Mac: plugin do SwiftBar que roda o jfy --mac a cada minuto e quando o menu abre
+PLUG="$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || echo "$HOME/.jfy/swiftbar")"
+if [ -f "$PLUG/jfy.1m.sh" ] || quer "Ícone do jfy na barra de cima do Mac (abrir o jfy, jornada, reuniões, foco, portas abertas)? Instala o SwiftBar."; then
+  if [ ! -d /Applications/SwiftBar.app ]; then
+    if command -v brew >/dev/null; then brew install --cask swiftbar; else aviso "sem Homebrew: instale o SwiftBar (swiftbar.app) e rode de novo"; fi
+  fi
+  if [ -d /Applications/SwiftBar.app ]; then
+    mkdir -p "$PLUG"
+    defaults write com.ameba.SwiftBar PluginDirectory "$PLUG"
+    cat > "$PLUG/jfy.1m.sh" <<EOF
+#!/bin/sh
+# <swiftbar.refreshOnOpen>true</swiftbar.refreshOnOpen>
+# <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
+# <swiftbar.hideLastUpdated>true</swiftbar.hideLastUpdated>
+# <swiftbar.hideDisablePlugin>true</swiftbar.hideDisablePlugin>
+# <swiftbar.hideAbout>true</swiftbar.hideAbout>
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+exec "$DIR/jfy" --mac
+EOF
+    chmod +x "$PLUG/jfy.1m.sh"
+    open /Applications/SwiftBar.app && ok "ícone do jfy na barra de cima (SwiftBar, plugins em ${PLUG/#$HOME/~})"
+  fi
+fi
 PLIST="$HOME/Library/LaunchAgents/jfy.dia.plist"
 if [ -f "$PLIST" ] || quer "Notificação às 7h (seg a sex) com as reuniões e as tasks no foco? Cria um LaunchAgent."; then
   DIAS=""; for d in 1 2 3 4 5; do DIAS="$DIAS<dict><key>Weekday</key><integer>$d</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>"; done

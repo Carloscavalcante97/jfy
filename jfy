@@ -2,7 +2,7 @@
 # jfy: menu do Journify que manda a task para o Claude Code (/pipeline) e registra o tempo.
 # Roda dentro de um tmux próprio (socket "jfy"): aba 0 = menu, uma aba por task rodando.
 # ponytail: /usr/bin/python3 (o do macOS) de propósito: o Python do python.org costuma vir sem certificados SSL.
-import itertools, json, os, re, select, shutil, subprocess, sys, textwrap, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
+import base64, itertools, json, os, re, select, shutil, signal, subprocess, sys, textwrap, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~/.jfy")
@@ -22,16 +22,16 @@ CATEGORIA = {"pipeline": "Desenvolvimento", "sessao": "Desenvolvimento", "livre"
 JORNADA = 8 * 60  # minutos; o cronômetro fica verde e avisa ao chegar aqui
 SELF = os.path.realpath(__file__)
 TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(HOME, "tmux.conf")]  # tmux.conf do repo já com as cores do tema
-STATUS_FIM = "finalizado_validacao"  # status ao concluir; troque aqui se o Journify ganhar um "em_teste"
+FINAIS = ["em_teste", "em_revisao", "fechado"]  # task pronta: quem encerra escolhe para onde vai (ao iniciar: em_progresso)
 # ordem na tela do projeto: o que dá para tocar agora primeiro, o que espera os outros depois
 ORDEM = ["em_progresso", "priorizado", "em_aberto", "criando_escopo", "em_revisao", "em_teste",
-         "pendente_validacao", "bloqueado", STATUS_FIM]
+         "pendente_validacao", "bloqueado", "finalizado_validacao"]
 JANELA = 7  # dias: prazo até aqui (ou vencido) entra no foco do menu principal
 BRANCH_OK = re.compile(r"^(feature|bugfix|hotfix|release)/[a-z0-9._-]+$")
 
 # ---------- cores e temas ----------
 PALETA = [39, 214, 170, 78, 141, 203, 51, 220, 117, 209]
-COR_STATUS = {"em_progresso": 220, "bloqueado": 203, STATUS_FIM: 78}
+COR_STATUS = {"em_progresso": 220, "bloqueado": 203, "fechado": 78}
 # Tema = troca das cores do Padrão (cores 256 do terminal). O código pinta com as cores do Padrão e c(),
 # tematizar() e cor_projeto() trocam na saída. Papéis: 39 destaque, 78 ok, 220 em andamento, 214 alerta,
 # 203 perigo, 244 apagado, 250 texto, 255 texto forte, 236 fundo da barra; "projetos" = cores das abas.
@@ -426,7 +426,12 @@ def rgb256(n):
     return nv[(n - 16) // 36], nv[(n - 16) // 6 % 6], nv[(n - 16) % 6]
 
 
-def png(caminho, desenho, rgb, escala=12):
+def desenho(nome):
+    txt = open(os.path.join(os.path.dirname(SELF), "fonte", "icones.txt")).read()
+    return re.search(rf"^== {re.escape(nome)} [0-9A-F ]+\n((?:[.#]+\n?)+)", txt, re.M)[1].split()
+
+
+def png(caminho, desenho, rgb, escala=12, dpi=72):
     """Pixel art ('#' pinta, '.' vazio) -> PNG quadrado, fundo transparente, sem dependência (zlib + struct)."""
     import struct, zlib
     larg = max(map(len, desenho))
@@ -437,7 +442,9 @@ def png(caminho, desenho, rgb, escala=12):
     linha = lambda y: b"\0" + b"".join((cor if cheio(y, x) else nada) * escala for x in range(lado))
     bruto = b"".join(linha(y) * escala for y in range(lado))
     bloco = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    ppm = round(dpi / 0.0254)  # 144 = o macOS mostra na metade do tamanho, com o dobro de pixels
     open(caminho, "wb").write(b"\x89PNG\r\n\x1a\n" + bloco(b"IHDR", struct.pack(">IIBBBBB", lado * escala, lado * escala, 8, 6, 0, 0, 0))
+                              + bloco(b"pHYs", struct.pack(">IIB", ppm, ppm, 1))
                               + bloco(b"IDAT", zlib.compress(bruto)) + bloco(b"IEND", b""))
 
 
@@ -447,11 +454,8 @@ def imagem_tema():
     nome = load().get("tema", "Padrão")
     tema, arq = TEMAS.get(nome, {}), os.path.join(HOME, "notif", slug(nome) + ".png")
     if not os.path.exists(arq):
-        txt = open(os.path.join(os.path.dirname(SELF), "fonte", "icones.txt")).read()
-        quem = (tema.get("andador") or ["chama"])[0]
-        desenho = re.search(rf"^== {re.escape(quem)} [0-9A-F ]+\n((?:[.#]+\n)+)", txt, re.M)[1].split()
         os.makedirs(os.path.dirname(arq), exist_ok=True)
-        png(arq, desenho, rgb256(tema.get(39, 202)))  # cor de destaque do tema; no Padrão, o laranja da chama do jfy
+        png(arq, desenho((tema.get("andador") or ["chama"])[0]), rgb256(tema.get(39, 202)))  # cor de destaque do tema; no Padrão, o laranja da chama do jfy
     return arq
 
 
@@ -739,6 +743,12 @@ def corpo_email(payload):
     return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip(), anexos
 
 
+def url_gmail(conta, frag="inbox"):
+    """?authuser=<email> vai para essa conta entre as logadas no navegador e, se ela não estiver logada, o Google pede
+    login. O /u/<email> dava "Temporary Error (404)" no navegador (ou perfil) sem a conta; o /u/0 abria outra conta."""
+    return "https://mail.google.com/mail/" + (f"?authuser={urllib.parse.quote(conta, safe='@')}" if conta else "") + "#" + frag
+
+
 def link_gmail(tok, thread):
     """Link do email no Gmail na conta do jfy. u/0 abre a primeira conta logada no navegador, que pode ser outra."""
     cfg = load()
@@ -746,7 +756,7 @@ def link_gmail(tok, thread):
     if not conta:  # uma vez só; o jfy --login limpa (pode ter trocado de conta)
         conta = cfg["google"]["conta"] = http_json(GMAIL.rsplit("/", 1)[0] + "/profile", token=tok)["emailAddress"]
         save(cfg)
-    return f"https://mail.google.com/mail/u/{urllib.parse.quote(conta, safe='@')}/#inbox/{thread}"
+    return url_gmail(conta, "inbox/" + thread)
 
 
 def ler_email(tok, mid):
@@ -890,7 +900,7 @@ def atalhos():
                                               ("d", "sai deixando as tasks rodando (jfy volta)"), ("c", "esta lista")]),
         ("Menu principal", [("número", "abre a task do foco ou o projeto"), ("l", "terminal livre"),
                             ("r", "reuniões de hoje: projeto e contexto para as horas (p + número prepara com o Claude)"), ("h", "horas de hoje: número edita, - + troca o dia, l lança"),
-                            ("t", "tema"), ("0", "sair")]),
+                            ("o", "portas abertas: o que é cada uma, de que projeto, e encerrar"), ("t", "tema"), ("0", "sair")]),
         ("Projeto", [("número", "abre a task"), ("s", "sessão: várias tasks num chat só"), ("l", "terminal livre no repo"),
                      ("c", "trocar o repositório")]),
         ("Task", [("1", "implementar (/pipeline)"), ("2", "conversar com o Claude (estudo, análise, documento)"),
@@ -898,7 +908,7 @@ def atalhos():
                   ("p", "definir prazo"), ("w", "abre a task no Journify"),
                   ("/exit", "no Claude: encerra e registra o tempo")]),
         ("No terminal", [("jfy", "abre ou volta para o jfy"), ("jfy --comecar", "primeiros passos de novo"),
-                         ("jfy --hoje", "reuniões e foco de hoje"),
+                         ("jfy --hoje", "reuniões e foco de hoje"), ("jfy --portas", "portas abertas"),
                          ("jfy --horas -1", "horas de ontem (ou 20/11)"), ("jfy --login", "conecta agenda e Gmail")]),
     ]
     for titulo, itens in secoes:
@@ -1221,6 +1231,211 @@ def tela_horas(dia=None):
     subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
 
 
+# ---------- portas abertas (tela o e barra de cima do Mac) ----------
+# (tipo, regex no comando, ícone, cor 256 fora das que os temas trocam): vale o primeiro que casar, então o
+# específico vem antes do genérico (firebase e next antes de node/java)
+TECNOLOGIAS = [
+    ("firebase", r"firebase|cloud-firestore-emulator|pubsub-emulator", "chama", 208),
+    ("expo", r"\bexpo\b|react-native|\bmetro\b", "celular", 117),
+    ("next", r"\bnext\b|next-server|next/dist", "next", 231),
+    ("vite", r"\bvite\b", "raio", 135),
+    ("node", r"\b(node|bun|deno)\b", "node", 71),
+    ("python", r"python|uvicorn|gunicorn|celery|manage\.py", "python", 33),
+    ("java", r"\bjava\b", "cafe", 172),
+    ("docker", r"com\.docker|\bdocker\b|vpnkit", "docker", 38),
+    ("postgres", r"postgres", "postgres", 67),
+    ("mysql", r"mysqld|mariadb", "mysql", 30),
+    ("redis", r"redis", "redis", 160),
+    ("mongo", r"mongod", "folha", 70),
+    ("ruby", r"\bruby\b|rails|puma", "gema", 124),
+]
+
+
+def tecnologia(cmd):
+    return next((t for t in TECNOLOGIAS if re.search(t[1], cmd.lower())), None)
+
+
+def containers():
+    """Porta do Mac -> (nome, imagem) de cada container rodando. Sem Docker: vazio."""
+    try:
+        out = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    return {int(pt): (nome, img) for nome, img, pts in (l.split("\t") for l in out.splitlines() if l.count("\t") == 2)
+            for pt in re.findall(r":(\d+)->", pts)}
+
+
+def lsof_campos(*args):
+    """lsof -F: {pid: [valores do campo n]}."""
+    r, pid = {}, None
+    for l in subprocess.run(["lsof", *args], capture_output=True, text=True).stdout.splitlines():
+        if l[:1] == "p":
+            pid = int(l[1:])
+        elif l[:1] == "n":
+            r.setdefault(pid, []).append(l[1:])
+    return r
+
+
+def portas():
+    """Portas TCP abertas por programas de desenvolvimento: o que é, de que projeto, se tem Claude no repo e como parar.
+    Fica de fora o que não é de desenvolvimento (Figma, CleanMyMac, o próprio macOS)."""
+    cfg, casa = load(), os.path.expanduser("~")
+    abertas = {pid: {int(n.rsplit(":", 1)[1]) for n in ns} for pid, ns in lsof_campos("-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn").items()}
+    ps = {}  # pid -> (ppid, comando)
+    for l in subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout.splitlines():
+        a, b, cmd = (l.split(None, 2) + [""])[:3]
+        ps[int(a)] = (int(b), cmd)
+    claudes = {pid for pid, (_, cmd) in ps.items() if os.path.basename(cmd.split(" ")[0]) == "claude"}
+    cwd = {pid: os.path.realpath(ns[0]) for pid, ns in
+           (lsof_campos("-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, [*abertas, *claudes]))) if abertas else {}).items()}
+    raizes = [(os.path.realpath(r), k) for k, pr in cfg["projetos"].items() for r in repos_de(pr)]
+    paineis = [l.split("\t", 1) for l in subprocess.run(TMUX + ["list-panes", "-a", "-F", "#{pane_current_path}\t#{window_name}"],
+                                                         capture_output=True, text=True).stdout.splitlines() if "\t" in l]
+    dentro = lambda pasta, raiz: pasta == raiz or pasta.startswith(raiz + "/")
+    docker, linhas = containers(), []
+
+    def pelo_claude(pid):  # o Claude subiu o servidor (npm run dev num Bash dele) e ele ficou rodando
+        for _ in range(30):
+            pid = ps.get(pid, (0,))[0]
+            if pid in claudes:
+                return True
+            if pid <= 1:
+                return False
+        return False
+
+    for pid, pts in abertas.items():
+        tec = tecnologia(ps.get(pid, (0, ""))[1])
+        if tec and tec[0] == "docker":  # quem abre a porta é o Docker: uma linha por container
+            for nome, img in sorted({docker[pt] for pt in pts if pt in docker}):
+                t = tecnologia(img) or tec
+                linhas.append({"portas": sorted(pt for pt in pts if docker.get(pt) == (nome, img)), "tipo": t[0], "icone": t[2],
+                               "cor": t[3], "nome": nome, "notas": [f"container Docker ({img})"], "parar": "docker:" + nome})
+            continue
+        pasta = cwd.get(pid, "/")
+        k, raiz = next(((k, r) for r, k in raizes if dentro(pasta, r)
+                        or pasta.startswith(os.path.join(os.path.realpath(WT_DIR), os.path.basename(r) + "-"))), (None, None))
+        if not tec and not k:
+            continue
+        raiz = raiz or (pasta if pasta not in ("/", casa) and not pasta.startswith("/opt/") else None)
+        aba = next((n for caminho, n in paineis if raiz and dentro(os.path.realpath(caminho), raiz)), None)
+        claude = raiz and any(dentro(cwd.get(c, "/"), raiz) for c in claudes)
+        t = tec or ("outro", "", "sinal", 245)
+        notas = [x for x in (os.path.basename(pasta) if k else "", f"aba do jfy: {aba}" if aba else "Claude aberto neste repo" if claude else "",
+                             "aberta pelo Claude" if pelo_claude(pid) else "", f"processo {pid}") if x]
+        linhas.append({"portas": sorted(pts), "tipo": t[0], "icone": t[2], "cor": t[3], "parar": str(pid), "notas": notas,
+                       "nome": cfg["projetos"][k]["nome"] if k else os.path.basename(pasta) if raiz else os.path.basename(ps[pid][1].split(" ")[0])})
+    return sorted(linhas, key=lambda x: x["portas"][0])
+
+
+def txt_portas(x):
+    return ", ".join(map(str, x["portas"][:3])) + ("…" if len(x["portas"]) > 3 else "")
+
+
+def encerrar(alvo):
+    """alvo: pid ou docker:<container>. Pede para sair; se em 3s não saiu, força. Devolve se parou."""
+    if alvo.startswith("docker:"):
+        return subprocess.run(["docker", "stop", alvo[7:]], capture_output=True).returncode == 0
+    pid = int(alvo)
+    for sinal in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sinal)
+            for _ in range(30):
+                time.sleep(0.1)
+                os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+    return False
+
+
+def tela_portas():
+    while True:
+        lista = portas()
+        w = max([len(txt_portas(x)) for x in lista] + [0]) + 2
+        itens = [c(txt_portas(x).ljust(w), 255, True) + c(f"{PIXEL.get(x['icone'], '•')} {x['tipo']:<9}", x["cor"], True)
+                 + f" {x['nome']}" + dim("  · " + " · ".join(x["notas"])) for x in lista]
+        op = menu("Portas abertas", itens or [(dim("nenhuma porta de desenvolvimento aberta"),)],
+                  [("número", "encerra"), ("enter", "atualiza")])
+        if op == "0":
+            return
+        if op.isdigit() and 1 <= int(op) <= len(lista):
+            x = lista[int(op) - 1]
+            if escolha(f"\n Encerrar {x['tipo']} {x['nome']} ({txt_portas(x)})? (s/n) [n] ", "sn") == "s":
+                if not encerrar(x["parar"]):
+                    ask(c(" Não consegui encerrar. Enter para continuar.", 203))
+
+
+def icone_png(nome, cor):
+    """Ícone da fonte como PNG em base64, para o menu da barra de cima. Cache em ~/.jfy/icones."""
+    arq = os.path.join(HOME, "icones", f"{nome}-{cor}.png")
+    if not os.path.exists(arq):
+        os.makedirs(os.path.dirname(arq), exist_ok=True)
+        png(arq, desenho(nome), rgb256(cor), escala=3, dpi=144)
+    return base64.b64encode(open(arq, "rb").read()).decode()
+
+
+def barra_mac():
+    """Menu do ícone do jfy na barra de cima do Mac: plugin do SwiftBar (o install.sh instala), roda a cada minuto
+    e quando o menu abre."""
+    cfg, agora = load(), time.time()
+    limpo = lambda t: " ".join(str(t).replace("|", "/").split())  # | separa os parâmetros do SwiftBar
+    acao = lambda *a, atualiza=False: (f" | bash={SELF} " + " ".join(f"param{i}={x}" for i, x in enumerate(a, 1))
+                                       + " terminal=false" + (" refresh=true" if atualiza else ""))
+    m, rodando = cronometro()
+    evs = [e for e in eventos_hoje() if e[1] > agora]
+    # só o ícone: em Mac com notch, o que não cabe entre o notch e os outros ícones some (texto alargava demais)
+    L = [f" | image={icone_png('chama', TEMA.get(39, 202))}", "---",
+         "Abrir o jfy" + acao("--abrir"),
+         ("Pausar" if rodando else "Retomar") + f" a jornada ({fmt_min(m)} hoje)" + acao("--pausar", atualiza=True)]
+    if evs:
+        L += ["---", "Reuniões"] + [limpo(datetime.fromtimestamp(i).strftime("%H:%M  ") + t + (" (agora)" if i <= agora else "")) + (f" | href={r[0]}" if r and r[0] else "")
+                                    for i, f, t, *r in evs]
+    arq = os.path.join(RUN_DIR, "mac-tasks.json")  # o Journify no máximo a cada 5min
+    try:
+        tasks = json.load(open(arq)) if agora - os.path.getmtime(arq) < 300 else None
+    except (OSError, ValueError):
+        tasks = None
+    if tasks is None:
+        try:
+            tasks = mcp("minhas_tasks")
+            json.dump(tasks, open(arq, "w"))
+        except Exception:
+            tasks = []
+    urgentes = foco(tasks)
+    if urgentes:
+        url = cfg.get("journify", JOURNIFY)
+        L += ["---", "Foco"] + [limpo(t["title"])[:60] + f" | href={url}/projects/{t['projectId']}?task={t['id']}" for t in urgentes]
+    lista = portas()
+    L += ["---", f"Portas abertas ({len(lista)})" if lista else "Nenhuma porta aberta"]
+    for x in lista:
+        L.append(limpo(f"{txt_portas(x)}  {x['tipo']} · {x['nome']}") + f" | image={icone_png(x['icone'], x['cor'])}")
+        L += ["--" + limpo(n) for n in x["notas"]] + ["--Encerrar" + acao("--encerrar", x["parar"], atualiza=True)]
+    try:
+        n = len(json.load(open(EMAIL)).get("ids", [])) if cfg.get("google") else 0
+    except (OSError, ValueError):
+        n = 0
+    if n:
+        L += ["---", f"{n}{'+' if n >= 100 else ''} email(s) não lido(s) | href={url_gmail(cfg['google'].get('conta'))}"]
+    print("\n".join(L))
+
+
+def abrir():
+    """Clique em "Abrir o jfy" na barra de cima: traz o terminal com o jfy no menu, ou abre um com o jfy."""
+    app = load().get("terminal", "com.apple.Terminal")  # o principal() grava o terminal em que o jfy roda
+    if subprocess.run(TMUX + ["list-clients"], capture_output=True, text=True).stdout.strip():
+        subprocess.run(TMUX + ["select-window", "-t", "jfy:menu"], capture_output=True)
+        subprocess.run(["open", "-b", app])
+    elif app == "com.apple.Terminal":
+        subprocess.run(["osascript", "-e", f'tell application "Terminal" to do script "{SELF}"', "-e", 'tell application "Terminal" to activate'])
+    else:  # ponytail: Warp e iTerm abrem um .command numa janela nova
+        arq = os.path.join(HOME, "abrir.command")
+        open(arq, "w").write(f"#!/bin/sh\nexec '{SELF}'\n")
+        os.chmod(arq, 0o755)
+        subprocess.run(["open", "-b", app, arq])
+
+
 # ---------- configuração de projeto ----------
 def escolher_pasta(inicio, sem_repo=False):
     """Pasta escolhida, None se voltou, "" se o projeto não tem repositório (só com sem_repo)."""
@@ -1448,8 +1663,23 @@ def inicio(tid):
     print(f"Relógio ligado, status em_progresso: {tid}")
 
 
-def fim(tid, minutos=None, pronta=False, nada=False, modo="sessao"):
-    """Comenta o tempo gasto e, se pronta, muda o status. Sem minutos, usa o relógio do inicio() (sem as reuniões).
+def destino():
+    """Pergunta do fim da task: (status novo ou None, vídeo, motivo); None = não registrar nada."""
+    op = escolha(" Pronta? Registra o tempo e move para:  " + "   ".join(f"{i} {status(s)}" for i, s in enumerate(FINAIS, 1))
+                 + "\n 4 não pronta: só registrar o tempo   5 não registrar nada\n> [4] ", "12345") or "4"
+    if op == "5":
+        return None
+    novo = FINAIS[int(op) - 1] if op in ("1", "2", "3") else None
+    video = motivo = None
+    if novo == "fechado":  # o Journify só fecha task de projeto com o vídeo do teste ou o motivo de não ter
+        video = ask("Link do vídeo do teste (enter = sem vídeo): ").strip() or None
+        motivo = None if video else ask("Por que não tem vídeo? ").strip()
+        motivo = motivo if video or len(motivo) >= 3 else "não há o que gravar"
+    return novo, video, motivo
+
+
+def fim(tid, minutos=None, novo=None, nada=False, modo="sessao", video=None, motivo=None):
+    """Comenta o tempo gasto e, se pronta, muda o status para `novo` (um dos FINAIS). Sem minutos, usa o relógio do inicio() (sem as reuniões).
     O tempo também vai para o log de horas do dia."""
     arq = os.path.join(RUN_DIR, tid + ".t")
     if nada:  # só desliga o relógio, nada vai para o Journify
@@ -1463,11 +1693,12 @@ def fim(tid, minutos=None, pronta=False, nada=False, modo="sessao"):
     registrar_horas(ini, agora, minutos, modo, tid=tid)  # antes do Journify: o tempo foi trabalhado mesmo se ele falhar
     quando = datetime.now().strftime("%d/%m/%Y %H:%M")
     mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
-    if pronta:
-        mcp("atualizar_task", taskId=tid, statusId=STATUS_FIM)
+    if novo:
+        mcp("atualizar_task", taskId=tid, statusId=novo,
+            **({"videoTesteUrl": video} if video else {"semVideoMotivo": motivo} if motivo else {}))
     if os.path.exists(arq):
         os.remove(arq)
-    print(c(f"Journify atualizado: {fmt_min(minutos)}" + (f", status {STATUS_FIM}" if pronta else ""), 78))
+    print(c(f"Journify atualizado: {fmt_min(minutos)}" + (f", status {novo}" if novo else ""), 78))
 
 
 def rodar(tid, modo="pipeline"):
@@ -1501,14 +1732,12 @@ def rodar(tid, modo="pipeline"):
     minutos = minutos_uteis(abrir_claude(pastas[0], contexto, pedido, locks, sid, add_dir(pastas)), time.time())
 
     print("\n" + c(" Fim da sessão ", 39, True) + " " + task["title"])
-    op = escolha(f" 1) pronta: registrar tempo e mover para {status(STATUS_FIM)}\n"
-                 " 2) não pronta: só registrar o tempo\n"
-                 " 3) não registrar nada\n> [2] ", "123") or "2"
-    if op == "3":
+    d = destino()
+    if d is None:
         fim(tid, nada=True)
     else:
         m = ask(f"Tempo gasto, já sem as reuniões (80, 1h20) [{fmt_min(minutos)}]: ")
-        fim(tid, ler_minutos(m) or minutos, op == "1", modo=modo)
+        fim(tid, ler_minutos(m) or minutos, d[0], modo=modo, video=d[1], motivo=d[2])
     fechar(sid, pastas, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
     ask(dim("Enter fecha esta aba."))
 
@@ -1529,7 +1758,7 @@ Regras desta sessão:
 - Ao começar uma task, rode `{SELF} --inicio <id>` e leia a task com mcp__journify__obter_task.
 - Task de código: confira se a branch é gitflow (feature/<slug>). Se não for, proponha a branch e espere meu ok. Depois rode o /pipeline com o id da task.
 - Task que não é código (estudo, análise, documento): faça direto comigo. Nada vai para o Journify sem eu aprovar.
-- Ao terminar, pergunte se a task está pronta e se quero corrigir o tempo. Rode `{SELF} --fim <id>`, com `--pronta` se estiver pronta e `--min N` se eu corrigir o tempo (sem --min o jfy usa o relógio). Se eu não quiser registrar, rode `{SELF} --fim <id> --nada`. Nunca mude status nem tempo no Journify de outro jeito.
+- Ao terminar, pergunte se a task está pronta e para onde ela vai: em teste, em revisão ou fechado (fechado: peça o link do vídeo do teste ou o motivo de não ter). Pergunte também se quero corrigir o tempo. Rode `{SELF} --fim <id>`, com `--status em_teste`, `--status em_revisao` ou `--status fechado` se estiver pronta (fechado: mais `--video <link>` ou `--sem-video "<motivo>"`) e `--min N` se eu corrigir o tempo (sem --min o jfy usa o relógio). Se eu não quiser registrar, rode `{SELF} --fim <id> --nada`. Nunca mude status nem tempo no Journify de outro jeito.
 - Logo depois do --fim, faça o encerramento da task: {fechamento(pid_proj)}
 - Depois atualize a lista com mcp__journify__minhas_tasks (projetoId {pid_proj}) e pergunte se seguimos com outra."""
     sid = str(uuid.uuid4())
@@ -1541,7 +1770,11 @@ Regras desta sessão:
             if m == "n":
                 os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
                 continue
-            fim(t["id"], ler_minutos(m), escolha("Está pronta? (s/n) [n]: ", "sn") == "s")
+            d = destino()
+            if d is None:
+                os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
+                continue
+            fim(t["id"], ler_minutos(m), d[0], video=d[1], motivo=d[2])
     fechar(sid, pastas, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
                      "'nada a atualizar'. Senão, confira o encerramento de todas as tasks trabalhadas (inclusive as "
                      "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"))
@@ -1781,7 +2014,11 @@ def tela_projeto(cfg, pid):
 
 
 def principal():
-    if not load().get("comecou"):  # primeiro acesso: guia o que falta antes do menu
+    cfg = load()
+    if os.environ.get("__CFBundleIdentifier", cfg.get("terminal")) != cfg.get("terminal"):  # "Abrir o jfy" da barra de cima
+        cfg["terminal"] = os.environ["__CFBundleIdentifier"]
+        save(cfg)
+    if not cfg.get("comecou"):  # primeiro acesso: guia o que falta antes do menu
         primeiros_passos()
     tasks, buscado = [], 0
     while True:
@@ -1812,8 +2049,8 @@ def principal():
             abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
             dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
             op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
-                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("t", "tema"), ("enter", "atualiza")],
-                      "sai", teclas="lrht")
+                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("o", "portas"), ("t", "tema"), ("enter", "atualiza")],
+                      "sai", teclas="lrhot")
             if op == "":  # Enter não sai mais: atualiza as tasks
                 buscado = 0
                 continue
@@ -1824,6 +2061,8 @@ def principal():
                 return
             if op == "t":
                 tela_tema()
+            if op == "o":
+                tela_portas()
             if op == "r":
                 tela_reunioes(cfg)
             if op == "h":
@@ -2069,6 +2308,14 @@ def main():
     if a[:1] == ["--hoje"]:  # o dia sem abrir o menu
         titulo, linhas = resumo_dia()
         return print(c(titulo, 39, True) + "\n" + "\n".join(linhas))
+    if a[:1] == ["--mac"]:  # plugin do SwiftBar: o menu do ícone na barra de cima
+        return barra_mac()
+    if a[:1] == ["--abrir"]:
+        return abrir()
+    if a[:1] == ["--portas"]:
+        return tela_portas()
+    if a[:1] == ["--encerrar"]:  # jfy --encerrar <pid | docker:container>
+        return print("encerrado" if encerrar(a[1]) else "não consegui encerrar")
     if a[:1] == ["--fonte"]:  # install.sh: JFY Mono no terminal em uso
         return print(usar_fonte())
     if a[:1] == ["--comecar"]:  # primeiros passos de novo (Journify, notificações, Google, projetos, tema)
@@ -2093,7 +2340,11 @@ def main():
     if a[:1] == ["--avisar"]:  # hook do Claude Code
         return avisar()
     if a[:1] == ["--fim"]:
-        return fim(a[1], int(a[a.index("--min") + 1]) if "--min" in a else None, "--pronta" in a, "--nada" in a)
+        arg = lambda k: a[a.index(k) + 1] if k in a[:-1] else None
+        novo = arg("--status") or ("em_teste" if "--pronta" in a else None)  # --pronta: sessões abertas antes do --status
+        if novo and novo not in FINAIS:
+            return print(c(f"--status precisa ser um destes: {', '.join(FINAIS)}", 203))
+        return fim(a[1], int(arg("--min")) if arg("--min") else None, novo, "--nada" in a, video=arg("--video"), motivo=arg("--sem-video"))
     if os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
         return principal()
     # fora do tmux: entra (ou volta) na sessão jfy, garantindo a aba do menu
@@ -2235,16 +2486,20 @@ def selftest():
     mcp = lambda tool, **kw: chamadas.append((tool, kw))  # Journify falso
     inicio("TESTE")
     open(os.path.join(RUN_DIR, "TESTE.t"), "w").write(str(time.time() - 125 * 60))
-    fim("TESTE", pronta=True)
+    fim("TESTE", novo="em_teste")
     assert chamadas[1][1]["texto"].startswith("Tempo gasto: 2h 05min"), chamadas
     log = [json.loads(l) for f in os.listdir(HORAS_DIR) for l in open(os.path.join(HORAS_DIR, f))]
     assert [(e["tid"], e["min"], e["modo"]) for e in log] == [("TESTE", 125, "sessao")], log
     shutil.rmtree(HORAS_DIR)
-    assert chamadas[2] == ("atualizar_task", {"taskId": "TESTE", "statusId": STATUS_FIM})
+    assert chamadas[2] == ("atualizar_task", {"taskId": "TESTE", "statusId": "em_teste"})
     assert not os.path.exists(os.path.join(RUN_DIR, "TESTE.t"))
     inicio("TESTE")
     fim("TESTE", nada=True)
     assert len(chamadas) == 4 and not os.path.exists(os.path.join(RUN_DIR, "TESTE.t"))
+    os.makedirs(HORAS_DIR, exist_ok=True)
+    fim("TESTE", 30, "fechado", motivo="só backend")  # fechado leva o motivo de não ter vídeo
+    assert chamadas[-1] == ("atualizar_task", {"taskId": "TESTE", "statusId": "fechado", "semVideoMotivo": "só backend"})
+    shutil.rmtree(HORAS_DIR, ignore_errors=True)
     # token do Google: reaproveita do Chaves até 5min antes de vencer, depois renova
     global EMAIL, load, google_token, gmail_nao_lidos, gmail_cabecalho, notificar, chaves, http_json
     load = lambda: {"projetos": {}, "google": {"client_id": "x", "client_secret": "y"}}
