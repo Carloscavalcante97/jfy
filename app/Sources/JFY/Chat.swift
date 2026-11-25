@@ -69,7 +69,7 @@ struct ChatTela: View {
 
     // ---------- lista de conversas ----------
     private var lista: some View {
-        List(conversas, selection: $selecionada) { c in
+        List(conversas) { c in
             HStack(alignment: .top, spacing: 10) {
                 Avatar(nome: c.nome, canal: c.tipo == "canal")
                 VStack(alignment: .leading, spacing: 2) {
@@ -90,9 +90,10 @@ struct ChatTela: View {
                 }
             }
             .padding(.vertical, 4)
-            .tag(c.id)
+            .linhaSouv(selecionada == c.id) { selecionada = c.id }
         }
         .listStyle(.sidebar)
+        .listaSouv()
     }
 
     // ---------- uma conversa ----------

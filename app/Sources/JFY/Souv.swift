@@ -15,6 +15,12 @@ enum Souv {
     static let primaria = Color(claro: 0x2054E1, escuro: 0x2054E1)     // Vivid Blue
     static let destaque = Color(claro: 0x2054E1, escuro: 0x61FAFA)     // foco e seleção: Vivid Blue / Eletric Cyan
     static let indigo = Color(claro: 0x0D2369, escuro: 0x0D2369)       // Indigo Blue
+    /// A barra lateral: o fundo da Souv um pouco transparente, sobre o material do macOS (ou a mesa, em tela cheia).
+    static let barraLateral = Color(nsColor: NSColor(name: nil) { ap in
+        ap.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 10 / 255, green: 14 / 255, blue: 45 / 255, alpha: 0.82)
+            : NSColor(srgbRed: 238 / 255, green: 240 / 255, blue: 247 / 255, alpha: 0.85)
+    })
 
     /// Títulos: Lexend fina, como no manual.
     static func titulo(_ tamanho: CGFloat = 28) -> Font { .custom("Lexend", size: tamanho).weight(.light) }
@@ -150,5 +156,40 @@ struct LinhaSelect: View {
         }
         .buttonStyle(.plain)
         .onHover { sobre = $0 }
+    }
+}
+
+extension View {
+    /// Uma linha de lista na identidade da Souv: o clique escolhe; a escolhida ganha o fundo Vivid Blue suave e a
+    /// barrinha de destaque, e o mouse por cima, um realce leve. Fica no lugar da seleção do List, que pinta com a cor
+    /// de destaque do macOS (e cinza fora de foco), não com a do app.
+    func linhaSouv(_ marcada: Bool, _ escolher: @escaping () -> Void) -> some View {
+        modifier(LinhaSouv(marcada: marcada, escolher: escolher))
+    }
+
+    /// Lista sem o fundo do sistema, sobre uma cor da Souv (as colunas laterais na superfície; o meio da tela no fundo).
+    func listaSouv(_ fundo: Color = Souv.superficie) -> some View {
+        scrollContentBackground(.hidden).background(fundo)
+    }
+}
+
+struct LinhaSouv: ViewModifier {
+    let marcada: Bool
+    let escolher: () -> Void
+    @State private var sobre = false
+
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: escolher)
+            .onHover { sobre = $0 }
+            .listRowBackground(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(marcada ? Souv.primaria.opacity(0.22) : sobre ? Souv.texto.opacity(0.05) : .clear)
+                    .overlay(alignment: .leading) {
+                        if marcada { Capsule().fill(Souv.destaque).frame(width: 3).padding(.vertical, 7) }
+                    }
+                    .padding(.horizontal, 6).padding(.vertical, 1))
     }
 }

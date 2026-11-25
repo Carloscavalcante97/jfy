@@ -125,9 +125,10 @@ def limpar():
 
 
 # ---------- Journify (MCP HTTP direto, sem gastar tokens) ----------
-def mcp(tool, **args):
-    # ponytail: lê URL e token do ~/.claude.json, um só lugar para trocar o token (claude mcp add)
-    srv = json.load(open(os.path.expanduser("~/.claude.json"))).get("mcpServers", {}).get("journify")
+def mcp(tool, servidor=None, **args):
+    # ponytail: lê URL e token do ~/.claude.json, um só lugar para trocar o token (claude mcp add); `servidor` testa
+    # um token antes de gravar
+    srv = servidor or servidor_journify()
     if not srv:
         raise RuntimeError("MCP 'journify' não configurado: rode jfy --comecar")
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": tool, "arguments": args}}
@@ -143,6 +144,13 @@ def mcp(tool, **args):
         return json.loads(txt)
     except ValueError:
         return txt
+
+
+def servidor_journify():
+    try:
+        return json.load(open(os.path.expanduser("~/.claude.json"))).get("mcpServers", {}).get("journify")
+    except (OSError, ValueError):
+        return None
 
 
 # ---------- utilidades ----------
@@ -625,6 +633,8 @@ def login():
     e guarda o refresh token no Chaves."""
     import base64, hashlib, http.server, secrets
     cfg = load()
+    if not cfg.get("google") and cfg.get("google_cliente"):  # desconectado pelo app: o client do jfy ficou guardado
+        cfg["google"] = cfg.pop("google_cliente")
     if not cfg.get("google"):
         subprocess.run(["open", GOOGLE_JSON])
         arq = ask(f"Abri no navegador o JSON do app jfy da Souv ({GOOGLE_JSON}).\n"
@@ -651,10 +661,11 @@ def login():
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
         "client_id": cli["client_id"], "redirect_uri": volta, "response_type": "code", "scope": " ".join(ESCOPOS),
         "code_challenge": desafio, "code_challenge_method": "S256", "state": estado,
-        "access_type": "offline", "prompt": "consent"})
+        "access_type": "offline", "prompt": "select_account consent"})  # escolhe a conta: dá para trocar
     subprocess.run(["open", url])
     print(f"Abri o login do Google no navegador. Se não abriu, cole isto nele:\n{url}\n")
-    while "code" not in recebido and "error" not in recebido:  # ignora /favicon.ico e afins
+    srv.timeout, fim = 5, time.time() + 300  # o app espera por aqui: navegador fechado não deixa o jfy preso
+    while "code" not in recebido and "error" not in recebido and time.time() < fim:  # ignora /favicon.ico e afins
         srv.handle_request()
     srv.server_close()
     if recebido.get("state") != estado or "code" not in recebido:
@@ -2212,6 +2223,82 @@ def github_conta(login):
     gh("auth", "switch", "-h", "github.com", "-u", login)
 
 
+def github_sair(login=None):
+    """Tira uma conta do gh deste Mac (sem login: todas). O token não é revogado no GitHub, só sai daqui."""
+    _, contas = contas_gh()
+    for u in [login] if login else contas:
+        gh("auth", "logout", "-h", "github.com", "-u", u)
+
+
+def contas_json():
+    """Aba Configurações: as contas do jfy. Google (agenda e Gmail), as do gh e o token do MCP do Journify (o MCP
+    não diz de quem é: o app mostra quantas tasks suas ele enxerga e o fim do token)."""
+    cfg, google = load(), {"conectado": False, "conta": None, "erro": None}
+    if cfg.get("google") and chaves("jfy-google"):
+        google["conectado"] = True
+        try:
+            google["conta"] = conta_gmail(google_token())
+        except Exception as e:
+            google["erro"] = str(e)[:200]
+    google["cliente"] = bool(cfg.get("google") or cfg.get("google_cliente"))  # sem ele, o 1º login pede o JSON
+    ativa, contas = contas_gh()
+    tok = ((servidor_journify() or {}).get("headers") or {}).get("Authorization", "").removeprefix("Bearer ").strip()
+    journify = {"conectado": bool(tok), "fim": tok[-4:] or None, "tasks": None, "erro": None, "site": cfg.get("journify", JOURNIFY)}
+    if tok:
+        try:
+            journify["tasks"] = len(mcp("minhas_tasks"))
+        except Exception as e:
+            journify["erro"] = str(e)[:200]
+    return {"google": google, "github": {"ativa": ativa, "contas": contas}, "journify": journify}
+
+
+def google_sair():
+    """Desconecta o Google: revoga o acesso no Google e apaga os tokens do Chaves. O client do app vai para
+    google_cliente (conectar de novo não pede o JSON) e o que era da conta antiga zera: não lidos, contatos, agenda vista."""
+    cfg = load()
+    rt = chaves("jfy-google")
+    if rt:
+        try:
+            http_json("https://oauth2.googleapis.com/revoke", {"token": rt})
+        except RuntimeError:
+            pass  # já revogado ou expirado: segue apagando daqui
+    for servico in ("jfy-google", "jfy-google-acesso"):
+        subprocess.run(["security", "delete-generic-password", "-a", "jfy", "-s", servico], capture_output=True)
+    if cfg.get("google"):
+        cfg["google_cliente"] = {k: cfg["google"][k] for k in ("client_id", "client_secret") if k in cfg["google"]}
+        cfg.pop("google")
+        save(cfg)
+    for arq in (EMAIL, CONTATOS):
+        if os.path.exists(arq):
+            os.remove(arq)
+    if os.path.exists(VIGIAS):
+        st = json.load(open(VIGIAS))
+        st.pop("agenda", None)  # a conta nova começa sem avisar dos eventos que já existiam
+        json.dump(st, open(VIGIAS, "w"))
+
+
+def journify_token():
+    """Conecta o Journify com o token colado no app (lido do stdin: não aparece no ps). Testa antes: um token
+    recusado não apaga o que estava funcionando."""
+    tok = sys.stdin.readline().strip().removeprefix("Bearer ").strip()
+    if not tok:
+        raise RuntimeError("Cole o token gerado no Journify.")
+    try:
+        mcp("minhas_tasks", servidor={"url": MCP_URL, "headers": {"Authorization": f"Bearer {tok}"}})
+    except Exception as e:
+        raise RuntimeError(f"O Journify não aceitou esse token: {e}") from None
+    subprocess.run(["claude", "mcp", "remove", "journify", "--scope", "user"], capture_output=True)
+    r = subprocess.run(["claude", "mcp", "add", "--transport", "http", "journify", MCP_URL,
+                        "--header", f"Authorization: Bearer {tok}", "--scope", "user"], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(f"claude mcp add falhou: {(r.stderr or r.stdout).strip()[:200]}")
+
+
+def journify_sair():
+    """Tira o MCP do Journify do Claude Code: o jfy e o Claude deixam de ver as tasks até conectar de novo."""
+    subprocess.run(["claude", "mcp", "remove", "journify", "--scope", "user"], capture_output=True)
+
+
 def github_login():
     """Conecta uma conta do GitHub: o gh auth login roda numa aba do jfy (ele pede para abrir o navegador)."""
     if not os.environ.get("TMUX"):
@@ -2744,15 +2831,6 @@ def pr_abrir(pasta):
               "limite de 2 PRs por pessoa, plano de testes por critério da task, push sem --force) vale como lá. Mostre o título e o "
               "corpo e espere eu aprovar antes do gh pr create, e de novo antes de comentar o link nas tasks do Journify.")
     subprocess.call(["claude", pedido], cwd=pasta)
-
-
-def creditos_json():
-    """Aba Créditos: desde quando o jfy existe e quantos commits cada um fez, pelo git do próprio repositório (pelo nome
-    de quem commitou: Paiva, Cavalcante)."""
-    sem_acento = lambda t: unicodedata.normalize("NFD", t).encode("ascii", "ignore").decode().lower()
-    linhas = [l.split("\x1f") for l in git(os.path.dirname(SELF), "log", "--format=%an%x1f%aI").stdout.splitlines() if "\x1f" in l]
-    conta = lambda nome: sum(1 for autor, _ in linhas if nome in sem_acento(autor))
-    return {"inicio": min((d for _, d in linhas), default=None), "total": len(linhas), "jose": conta("paiva"), "antonio": conta("cavalcante")}
 
 
 def app(f, *a):
@@ -3621,10 +3699,12 @@ def main():
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
                 "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
-                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar, "--creditos-json": creditos_json,
+                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
-                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,
+                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--github-sair": github_sair,
+                "--contas-json": contas_json, "--google-sair": google_sair, "--journify-token": journify_token,
+                "--journify-sair": journify_sair, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
                 "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-ia": email_ia, "--contatos-json": contatos_json,
@@ -3688,6 +3768,27 @@ def main():
 
 def selftest():
     import base64, glob
+    salvo = {k: globals()[k] for k in ("load", "save", "chaves", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
+    cfg_f, apagados = {"google": {"client_id": "i", "client_secret": "s", "conta": "a@b"}}, []
+    tmp = os.path.join(RUN_DIR, "teste-sair")
+    os.makedirs(tmp, exist_ok=True)
+    for n in ("email", "contatos"):
+        open(os.path.join(tmp, n), "w").write("{}")
+    json.dump({"agenda": {"x": 1}, "prs": [1]}, open(os.path.join(tmp, "vigias"), "w"))
+    globals().update(load=lambda: cfg_f, save=lambda c: None, chaves=lambda s, v=None: "rt",
+                     http_json=lambda *a, **k: apagados.append(a[0]) or {},
+                     EMAIL=os.path.join(tmp, "email"), CONTATOS=os.path.join(tmp, "contatos"), VIGIAS=os.path.join(tmp, "vigias"))
+    sub = subprocess.run
+    subprocess.run = lambda cmd, **k: apagados.append(cmd[-1])
+    try:
+        google_sair()
+    finally:
+        subprocess.run = sub
+        globals().update(salvo)
+    assert cfg_f == {"google_cliente": {"client_id": "i", "client_secret": "s"}}, cfg_f
+    assert apagados[0].endswith("/revoke") and apagados[1:] == ["jfy-google", "jfy-google-acesso"], apagados
+    assert sorted(os.listdir(tmp)) == ["vigias"] and json.load(open(os.path.join(tmp, "vigias"))) == {"prs": [1]}
+    shutil.rmtree(tmp)
     assert repos_de({"repo": "/a"}) == ["/a"] and repos_da_task({"repo": "/a", "repos": ["/a"]}) == ["/a"]
     assert add_dir(["/a"]) == [] and add_dir(["/a", "/b", "/c"]) == ["--add-dir", "/b", "/c"]
     for x in glob.glob(os.path.join(RUN_DIR, "teste-*")):

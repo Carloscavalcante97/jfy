@@ -83,6 +83,7 @@ struct NotificacoesTela: View {
                     }
                 }
                 .listStyle(.inset)
+                .listaSouv(Souv.fundo)
             }
         }
         .padding(24)

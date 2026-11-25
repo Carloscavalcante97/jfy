@@ -86,7 +86,7 @@ struct EmailsTela: View {
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).padding(10).textSelection(.enabled) }
             if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green).padding(10) }
             HStack(spacing: 0) {
-                List(selection: $selecao) {
+                List {
                     if let l = lista, l.emails.isEmpty { Text("Caixa zerada: nenhum não lido na Principal.").foregroundStyle(.secondary) }
                     ForEach(lista?.emails ?? []) { e in
                         VStack(alignment: .leading, spacing: 2) {
@@ -98,9 +98,10 @@ struct EmailsTela: View {
                             Text(e.assunto).lineLimit(2).foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 3)
-                        .tag(e.id)
+                        .linhaSouv(selecao == e.id) { selecao = e.id }
                     }
                 }
+                .listaSouv()
                 .frame(width: 360)
                 Divider()
                 detalhe.frame(maxWidth: .infinity, maxHeight: .infinity)

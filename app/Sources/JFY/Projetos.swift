@@ -74,10 +74,10 @@ struct ProjetosTela: View {
 
     // ---------- projetos ----------
     private var listaProjetos: some View {
-        List(selection: $projeto) {
+        List {
             if let d = dados {
                 if !d.foco.isEmpty {
-                    Label("Foco (\(d.foco.count))", systemImage: "flame").tag(Self.foco)
+                    Label("Foco (\(d.foco.count))", systemImage: "flame").linhaSouv(projeto == Self.foco) { projeto = Self.foco }
                 }
                 Section("Projetos") {
                     ForEach(d.projetos.filter { $0.tasks > 0 }) { linhaProjeto($0) }
@@ -92,6 +92,7 @@ struct ProjetosTela: View {
             }
         }
         .listStyle(.sidebar)
+        .listaSouv()
         .safeAreaInset(edge: .bottom) {
             Button { Task { await carregarProjetos() } } label: { Label("Atualizar", systemImage: "arrow.clockwise") }
                 .buttonStyle(.borderless).padding(8).frame(maxWidth: .infinity, alignment: .leading)
@@ -116,7 +117,7 @@ struct ProjetosTela: View {
             .buttonStyle(.borderless)
             .help(fav ? "Tirar dos favoritos da barra lateral" : "Favoritar: aparece na barra lateral (até \(Navegacao.maxFavoritos))")
         }
-        .tag(p.id)
+        .linhaSouv(projeto == p.id) { projeto = p.id }
     }
 
     // ---------- tasks ----------
@@ -141,13 +142,14 @@ struct ProjetosTela: View {
                 Text(projeto == nil ? "" : aviso ?? "Nenhuma task aqui.").foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity).padding()
             } else {
-                List(selection: $task) {
+                List {
                     ForEach(secoes, id: \.0) { nome, itens in
                         Section(nome) {
                             ForEach(itens) { linhaTask($0) }
                         }
                     }
                 }
+                .listaSouv(Souv.fundo)
                 .opacity(carregando ? 0.5 : 1)
             }
         }
@@ -177,7 +179,7 @@ struct ProjetosTela: View {
             .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 3)
-        .tag(t.id)
+        .linhaSouv(task == t.id) { task = t.id }
     }
 
     // ---------- jfy ----------

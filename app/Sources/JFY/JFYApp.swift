@@ -6,8 +6,9 @@ enum JFY {
     static let script = Bundle.main.object(forInfoDictionaryKey: "JFYScript") as? String
         ?? NSHomeDirectory() + "/jfy/jfy"
 
-    /// Roda `jfy <args>` fora da thread principal e devolve o código de saída, a saída e o erro.
-    static func rodar(_ args: [String]) async -> (status: Int32, saida: String, erro: String) {
+    /// Roda `jfy <args>` fora da thread principal e devolve o código de saída, a saída e o erro. `entrada` vai pelo
+    /// stdin (um token, por exemplo, que não pode aparecer na linha de comando).
+    static func rodar(_ args: [String], entrada: String? = nil) async -> (status: Int32, saida: String, erro: String) {
         await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async {
                 let p = Process()
@@ -19,10 +20,16 @@ enum JFY {
                 let out = Pipe(), err = Pipe()
                 p.standardOutput = out
                 p.standardError = err
+                let inn = Pipe()
+                if entrada != nil { p.standardInput = inn }
                 do {
                     try p.run()
                 } catch {
                     return cont.resume(returning: (-1, "", "Não consegui rodar \(script): \(error.localizedDescription)"))
+                }
+                if let entrada {
+                    inn.fileHandleForWriting.write(Data((entrada + "\n").utf8))
+                    try? inn.fileHandleForWriting.close()
                 }
                 // ponytail: lê a saída toda antes do erro; o stderr do jfy é curto, então o pipe não enche
                 let o = out.fileHandleForReading.readDataToEndOfFile()
@@ -52,8 +59,8 @@ extension JFY {
     }
 
     /// Roda um comando que só muda algo. Devolve nil se deu certo, senão a mensagem de erro.
-    static func fazer(_ args: [String]) async -> String? {
-        let r = await rodar(args)
+    static func fazer(_ args: [String], entrada: String? = nil) async -> String? {
+        let r = await rodar(args, entrada: entrada)
         let msg = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
         return r.status == 0 ? nil : msg.isEmpty ? "jfy \(args[0]) falhou (código \(r.status))" : msg
     }
@@ -86,7 +93,7 @@ extension Color {
 enum Tela: String, CaseIterable, Identifiable {
     case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
          portas = "Portas", uso = "Uso da IA",
-         chat = "Chat", notificacoes = "Notificações", temas = "Temas", creditos = "Créditos"
+         chat = "Chat", notificacoes = "Notificações", temas = "Temas", configuracoes = "Configurações", creditos = "Créditos"
     var id: Self { self }
     var icone: String {
         switch self {
@@ -101,6 +108,7 @@ enum Tela: String, CaseIterable, Identifiable {
         case .chat: "bubble.left.and.bubble.right"
         case .notificacoes: "bell"
         case .creditos: "heart"
+        case .configuracoes: "gearshape"
         case .temas: "paintpalette"
         }
     }
@@ -217,10 +225,15 @@ struct Principal: View {
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $nav.tela) {
+            List {
                 ForEach(Tela.allCases) { t in
-                    HStack(spacing: 4) {
-                        Label(t.rawValue, systemImage: t.icone)
+                    let marcada = (tela ?? .terminal) == t
+                    HStack(spacing: 8) {
+                        Image(systemName: t.icone).frame(width: 18)
+                            .foregroundStyle(marcada ? Souv.destaque : Souv.texto2)
+                        Text(t.rawValue).foregroundStyle(Souv.texto).fontWeight(marcada ? .medium : .regular).lineLimit(1)
+                        Spacer(minLength: 0)
+                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
                         if t == .terminal, !abas.itens.isEmpty {
                             Spacer(minLength: 0)
                             // recolhida, a bolinha do sino continua aparecendo na linha do jfy
@@ -232,8 +245,8 @@ struct Principal: View {
                             setinha($favoritosRecolhidos, "os projetos favoritos")
                         }
                     }
-                    .tag(t)
-                    .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
+                    .padding(.vertical, 2)
+                    .linhaSouv(marcada) { nav.tela = t }
                     if t == .terminal, !abasRecolhidas { abasDoJFY }
                     if t == .projetos, !favoritosRecolhidos { favoritosDaBarra }
                 }
@@ -241,8 +254,15 @@ struct Principal: View {
             .navigationSplitViewColumnWidth(min: 150, ideal: 180, max: 230)
             // em tela cheia não há nada atrás da janela e a barra lateral, que deixa ver o fundo, fica chapada:
             // nela, a barra mostra a imagem da mesa desfocada, como fora da tela cheia
-            .scrollContentBackground(telaCheia ? .hidden : .automatic)
-            .background { if telaCheia { FundoDaMesa() } }
+            // Midnight Blue (Cloud White no claro) um pouco transparente: a barra continua deixando ver o fundo
+            .scrollContentBackground(.hidden)
+            .background {
+                ZStack {
+                    if telaCheia { FundoDaMesa() }
+                    Souv.barraLateral
+                }
+                .ignoresSafeArea()
+            }
         } detail: {
             // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
@@ -260,7 +280,8 @@ struct Principal: View {
                     NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: irParaJFY)
                 }
                 mostrar(.temas) { TemasTela(ativa: tela == .temas) }
-                mostrar(.creditos) { CreditosTela(ativa: tela == .creditos) }
+                mostrar(.configuracoes) { ConfiguracoesTela(ativa: tela == .configuracoes, irParaJFY: irParaJFY) }
+                mostrar(.creditos) { CreditosTela() }
             }
         }
         .toolbar {
@@ -285,6 +306,15 @@ struct Principal: View {
     }
 
     private func irParaJFY() { nav.tela = .terminal }
+
+    /// O número da linha da barra lateral (não lidos, novas, portas), no Vivid Blue da Souv.
+    @ViewBuilder private func selo(_ n: Int) -> some View {
+        if n > 0 {
+            Text("\(n)").font(.caption2.bold()).monospacedDigit().foregroundStyle(.white)
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(Capsule().fill(Souv.primaria))
+        }
+    }
 
     /// A setinha que recolhe e abre a lista embaixo de uma linha da barra lateral (fica lembrado entre aberturas).
     private func setinha(_ recolhida: Binding<Bool>, _ oque: String) -> some View {

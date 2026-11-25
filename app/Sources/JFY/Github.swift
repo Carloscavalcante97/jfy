@@ -107,9 +107,9 @@ struct GithubTela: View {
 
     // ---------- esquerda: listas e repositórios ----------
     private var colunaRepos: some View {
-        List(selection: $lado) {
-            Label("Pedem sua revisão", systemImage: "eye").badge(dados?.revisar.count ?? 0).tag(Lado.revisar)
-            Label("Seus PRs", systemImage: "person").badge(dados?.meus.count ?? 0).tag(Lado.meus)
+        List {
+            Label("Pedem sua revisão", systemImage: "eye").badge(dados?.revisar.count ?? 0).linhaSouv(lado == .revisar) { lado = .revisar }
+            Label("Seus PRs", systemImage: "person").badge(dados?.meus.count ?? 0).linhaSouv(lado == .meus) { lado = .meus }
             Section("Repositórios") {
                 ForEach(repos) { r in
                     VStack(alignment: .leading, spacing: 3) {
@@ -129,20 +129,21 @@ struct GithubTela: View {
                         .font(.caption).foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 2)
-                    .tag(Lado.repo(r.pasta))
+                    .linhaSouv(lado == .repo(r.pasta)) { lado = .repo(r.pasta) }
                 }
             }
         }
         .listStyle(.sidebar)
+        .listaSouv()
     }
 
     private func prsDo(_ r: Repo) -> [PR] { (dados?.prs ?? []).filter { $0.repo == r.remote } }
 
     private func listaPRs(_ lista: [PR]) -> some View {
-        List(selection: $pr) {
+        List {
             Section("\(lado == .revisar ? "Pedem sua revisão" : "Seus PRs") (\(lista.count))") {
                 if lista.isEmpty { Text("nenhum").foregroundStyle(.secondary) }
-                ForEach(lista, id: \.ref) { LinhaPR(p: $0, comRepo: true).tag($0.ref) }
+                ForEach(lista, id: \.ref) { p in LinhaPR(p: p, comRepo: true).linhaSouv(pr == p.ref) { pr = p.ref } }
             }
         }
     }
@@ -291,10 +292,11 @@ struct RepoPainel: View {
             case .historico: HistoricoPainel(pasta: repo.pasta)
             case .prs:
                 HStack(spacing: 0) {
-                    List(selection: $pr) {
+                    List {
                         if prs.isEmpty { Text("Nenhum PR aberto neste repositório.").foregroundStyle(.secondary) }
-                        ForEach(prs, id: \.ref) { LinhaPR(p: $0, comRepo: false).tag($0.ref) }
+                        ForEach(prs, id: \.ref) { p in LinhaPR(p: p, comRepo: false).linhaSouv(pr == p.ref) { pr = p.ref } }
                     }
+                    .listaSouv()
                     .frame(width: 340)
                     Divider()
                     if let pr, let i = pr.lastIndex(of: "#"), let n = Int(pr[pr.index(after: i)...]) {
@@ -361,7 +363,7 @@ struct HistoricoPainel: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            List(selection: $sel) {
+            List {
                 ForEach(commits) { c in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(c.assunto).lineLimit(2)
@@ -373,9 +375,10 @@ struct HistoricoPainel: View {
                         if !c.refs.isEmpty { Text(c.refs).font(.caption2.monospaced()).foregroundStyle(.blue).lineLimit(1) }
                     }
                     .padding(.vertical, 2)
-                    .tag(c.sha)
+                    .linhaSouv(sel == c.sha) { sel = c.sha }
                 }
             }
+            .listaSouv()
             .frame(width: 340)
             Divider()
             if let d = detalhe {
@@ -879,7 +882,7 @@ struct CommitPainel: View {
                     }
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     Divider()
-                    List(selection: $atual) {
+                    List {
                         ForEach(d.arquivos, id: \.arquivo) { a in
                             HStack(spacing: 6) {
                                 Toggle("", isOn: Binding(get: { marcados.contains(a.arquivo) },
@@ -887,10 +890,11 @@ struct CommitPainel: View {
                                     .toggleStyle(.checkbox).labelsHidden()
                                 ArquivoLinha(estado: a.estado, caminho: a.arquivo)
                             }
-                            .tag(a.arquivo)
+                            .linhaSouv(atual == a.arquivo) { atual = a.arquivo }
                         }
                     }
                     .listStyle(.plain)
+                    .listaSouv()
                 }
             }
         } else if let aviso {
