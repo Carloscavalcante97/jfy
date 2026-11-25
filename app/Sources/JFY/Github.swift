@@ -60,7 +60,9 @@ struct GithubTela: View {
                     Divider()
                     colunaMeio.frame(width: 380)
                     Divider()
-                    if let pr, let i = pr.lastIndex(of: "#"), let n = Int(pr[pr.index(after: i)...]) {
+                    if let pr, pr.hasPrefix("alteracoes|") {
+                        CommitPainel(pasta: String(pr.dropFirst("alteracoes|".count)), mudou: { Task { await carregar() } }).id(pr)
+                    } else if let pr, let i = pr.lastIndex(of: "#"), let n = Int(pr[pr.index(after: i)...]) {
                         PRDetalhe(repo: String(pr[..<i]), n: n, nav: nav, irParaJFY: irParaJFY,
                                   mudou: { Task { await carregar() } }).id(pr)
                     } else {
@@ -172,10 +174,11 @@ struct GithubTela: View {
                     ForEach(lista, id: \.ref) { linhaPR($0, comRepo: repo == nil).tag($0.ref) }
                 }
                 if let r = repo {
-                    if r.nMexidos > 0 {
-                        Section("Mexidos sem commit (\(r.nMexidos))") {
-                            ForEach(r.mexidos, id: \.self) { Text($0).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                        }
+                    Section("Commit") {
+                        Label(r.nMexidos > 0 ? "Alterações (\(r.nMexidos)): escolher arquivos e commitar" : "Nenhuma alteração para commitar",
+                              systemImage: "checklist")
+                            .foregroundStyle(r.nMexidos > 0 ? .primary : .secondary)
+                            .tag("alteracoes|\(r.pasta)")
                     }
                     Section("Últimos commits em \(r.branch ?? "?")") {
                         ForEach(r.commits) { c in
@@ -488,6 +491,212 @@ private struct Grupo<C: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(titulo.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             conteudo
+        }
+    }
+}
+
+// ---------- commit pelos arquivos marcados (como o GitHub Desktop) ----------
+/// Os arquivos mexidos com caixa de marcar, o diff do escolhido e a mensagem: o "Gerar com o committer" escreve pelas
+/// regras do agente committer, e o commit é do jfy, com as travas dele (--repo-mudancas, --repo-diff,
+/// --commit-mensagem, --commit-autor, --commit-fazer).
+struct CommitPainel: View {
+    let pasta: String
+    let mudou: () -> Void
+
+    struct Mudancas: Decodable {
+        struct Arquivo: Decodable, Hashable {
+            let estado, arquivo: String
+        }
+        let branch: String
+        let gitflow: Bool
+        let arquivos: [Arquivo]
+    }
+
+    @State private var dados: Mudancas?
+    @State private var marcados: Set<String> = []
+    @State private var atual: String?
+    @State private var diff = ""
+    @State private var resumo = ""
+    @State private var descricao = ""
+    @State private var gerando = false
+    @State private var commitando = false
+    @State private var aviso: String?
+    @State private var feito: String?
+    @State private var pedirNome = false
+    @State private var nome = ""
+
+    /// O que o committer deixa de fora (segredo e ruído): já vem desmarcado.
+    private static let ruido = #/(^|/)(\.env(?!\.example)[^/]*|\.DS_Store|[^/]*\.(pem|key)|node_modules/.*|(dist|\.next|build|coverage)/.*)$/#
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if let d = dados {
+                HStack {
+                    Label(d.branch, systemImage: "arrow.triangle.branch").font(.headline.monospaced())
+                    Text("\(d.arquivos.count) alteração(ões)").foregroundStyle(.secondary)
+                    Spacer()
+                    Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar")
+                }
+                .padding(12)
+                if !d.gitflow {
+                    Label("O committer não commita em \(d.branch): crie uma branch feature/, bugfix/, hotfix/ ou release/.",
+                          systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).padding(.horizontal, 12).padding(.bottom, 8)
+                }
+                Divider()
+                HStack(spacing: 0) {
+                    arquivos(d).frame(width: 300)
+                    Divider()
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, l in linhaDiff(l) }
+                        }
+                        .padding(8)
+                    }
+                    .background(Color(nsColor: .textBackgroundColor))
+                }
+                Divider()
+                caixaCommit(d)
+            } else if let aviso {
+                Text(aviso).foregroundStyle(.secondary).padding()
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await carregar() }
+        .task(id: atual) { await carregarDiff() }
+    }
+
+    private func arquivos(_ d: Mudancas) -> some View {
+        VStack(spacing: 0) {
+            Toggle(isOn: Binding(get: { !d.arquivos.isEmpty && marcados.count == d.arquivos.count },
+                                 set: { marcados = $0 ? Set(d.arquivos.map(\.arquivo)) : [] })) {
+                Text("\(marcados.count) de \(d.arquivos.count) marcados").font(.callout)
+            }
+            .toggleStyle(.checkbox).frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            Divider()
+            List(selection: $atual) {
+                ForEach(d.arquivos, id: \.arquivo) { a in
+                    HStack(spacing: 6) {
+                        Toggle("", isOn: Binding(get: { marcados.contains(a.arquivo) },
+                                                 set: { if $0 { marcados.insert(a.arquivo) } else { marcados.remove(a.arquivo) } }))
+                            .toggleStyle(.checkbox).labelsHidden()
+                        let e = estado(a.estado)
+                        Text(e.0).font(.caption.monospaced().bold()).foregroundStyle(e.1).frame(width: 14)
+                        Text(a.arquivo).lineLimit(1).truncationMode(.head).help(a.arquivo)
+                    }
+                    .tag(a.arquivo)
+                }
+            }
+        }
+    }
+
+    private func caixaCommit(_ d: Mudancas) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
+            if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            if pedirNome {
+                HStack {
+                    TextField("Seu nome para o prefixo [Nome] dos commits (conta compartilhada)", text: $nome).textFieldStyle(.roundedBorder)
+                    Button("Salvar e gerar") { salvarNome() }.disabled(nome.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            TextField("Resumo (obrigatório)", text: $resumo).textFieldStyle(.roundedBorder).font(.body.monospaced())
+            TextEditor(text: $descricao).font(.body.monospaced()).frame(height: 70)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            HStack {
+                Button { gerar() } label: { Label("Gerar com o committer", systemImage: "sparkles") }
+                    .disabled(marcados.isEmpty || gerando)
+                if gerando { ProgressView().controlSize(.small); Text("O committer está escrevendo…").foregroundStyle(.secondary) }
+                Spacer()
+                Button("Commit de \(marcados.count) arquivo(s) em \(d.branch)") { commitar() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!d.gitflow || marcados.isEmpty || resumo.trimmingCharacters(in: .whitespaces).isEmpty || commitando)
+            }
+            Text("A mensagem segue as regras do agente committer (formato, prefixo na conta compartilhada, linha Journify). Gerar usa tokens; o commit leva só os marcados.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder private func linhaDiff(_ l: String) -> some View {
+        let cor: Color? = l.hasPrefix("+") && !l.hasPrefix("+++") ? .green : l.hasPrefix("-") && !l.hasPrefix("---") ? .red
+            : l.hasPrefix("@@") ? .blue : nil
+        Text(l.isEmpty ? " " : l).font(.system(size: 11.5, design: .monospaced))
+            .foregroundStyle(cor ?? .primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background((cor ?? .clear).opacity(cor == .blue ? 0 : 0.08))
+            .textSelection(.enabled)
+    }
+
+    private func estado(_ e: String) -> (String, Color) {
+        e == "??" || e.contains("A") ? ("+", .green) : e.contains("D") ? ("−", .red) : e.contains("R") ? ("R", .blue) : ("M", .orange)
+    }
+
+    // ---------- jfy ----------
+    private func carregar() async {
+        let (d, msg): (Mudancas?, String?) = await JFY.ler(["--repo-mudancas", pasta])
+        if let d {
+            let primeira = dados == nil
+            dados = d
+            let todos = Set(d.arquivos.map(\.arquivo))
+            marcados = primeira ? Set(todos.filter { $0.firstMatch(of: Self.ruido) == nil }) : marcados.intersection(todos)
+            if atual == nil || !todos.contains(atual!) { atual = d.arquivos.first?.arquivo }
+        }
+        aviso = msg
+    }
+
+    private func carregarDiff() async {
+        guard let atual else { diff = ""; return }
+        struct D: Decodable { let diff: String }
+        let (r, _): (D?, String?) = await JFY.ler(["--repo-diff", pasta, atual])
+        if self.atual == atual { diff = r?.diff ?? "" }
+    }
+
+    private func gerar() {
+        Task {
+            gerando = true
+            feito = nil
+            struct M: Decodable { let mensagem: String }
+            let (r, msg): (M?, String?) = await JFY.ler(["--commit-mensagem", pasta] + marcados.sorted())
+            gerando = false
+            if let r {
+                let linhas = r.mensagem.components(separatedBy: "\n")
+                resumo = linhas.first ?? ""
+                descricao = linhas.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                aviso = nil
+            } else if let msg, msg.hasPrefix("NOME:") {
+                pedirNome = true
+                aviso = String(msg.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            } else {
+                aviso = msg
+            }
+        }
+    }
+
+    private func salvarNome() {
+        Task {
+            if let e = await JFY.fazer(["--commit-autor", nome]) { aviso = e; return }
+            pedirNome = false
+            gerar()
+        }
+    }
+
+    private func commitar() {
+        Task {
+            commitando = true
+            struct C: Decodable { let sha, assunto: String }
+            let msg = resumo + (descricao.isEmpty ? "" : "\n\n" + descricao)
+            let (r, erro): (C?, String?) = await JFY.ler(["--commit-fazer", pasta, msg] + marcados.sorted())
+            commitando = false
+            aviso = r == nil ? erro : nil
+            if let r {
+                feito = "Commit \(r.sha): \(r.assunto)"
+                resumo = ""
+                descricao = ""
+                await carregar()
+                mudou()
+            }
         }
     }
 }

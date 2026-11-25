@@ -2074,13 +2074,150 @@ def email_ia(mid, modo, rascunho="", contexto=""):
     pasta = os.path.join(RUN_DIR, "email-ia")
     os.makedirs(pasta, exist_ok=True)
     try:
-        r = subprocess.run(["claude", "-p", pedido], cwd=pasta, capture_output=True, text=True, timeout=180,
+        r = subprocess.run(["claude", "-p", "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True, timeout=180,
+                           stdin=subprocess.DEVNULL,
                            env=dict(os.environ, JFY_SEM_AVISO="1"))  # sem o aviso "Claude respondeu" do hook
     except subprocess.TimeoutExpired:
         sys.exit("O Claude demorou mais de 3 min. Tente de novo.")
     if r.returncode or not r.stdout.strip():
         sys.exit((r.stderr or r.stdout).strip() or "O Claude não devolveu texto.")
     return {"texto": r.stdout.strip()}
+
+
+# ---------- commit pelo app (aba GitHub): os arquivos que você marca, a mensagem pelas regras do committer ----------
+COMMITTER = os.path.expanduser("~/.claude/agents/committer.md")
+SEGREDO = (r"-----BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk_live_[0-9A-Za-z]+|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|"
+           r"AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|"
+           r"(password|senha|secret|token)[[:space:]]*[:=][[:space:]]*[\"'][^\"']{6,}")  # a varredura do committer
+
+
+def repo_do_jfy(pasta):
+    if pasta not in {r for _, r in pastas_projetos(load())}:
+        sys.exit("Esse repositório não é de um projeto do jfy.")
+
+
+def mudancas(pasta):
+    """[(estado, arquivo)] do git status, um arquivo por linha (pastas novas abertas), como o GitHub Desktop."""
+    out, campos = [], git(pasta, "status", "--porcelain=v1", "-z", "-uall").stdout.split("\0")
+    i = 0
+    while i < len(campos) and campos[i]:
+        x = campos[i]
+        estado, arq = x[:2], x[3:]
+        if "R" in estado or "C" in estado:
+            i += 1  # renomeado: o caminho antigo vem no campo seguinte
+        out.append((estado.strip() or "?", arq))
+        i += 1
+    return out
+
+
+def repo_mudancas(pasta):
+    """Aba GitHub > Alterações: os arquivos mexidos, a branch e se o committer aceita commitar nela."""
+    repo_do_jfy(pasta)
+    branch = git(pasta, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    return {"branch": branch, "gitflow": bool(BRANCH_OK.match(branch)),
+            "arquivos": [{"estado": e, "arquivo": a} for e, a in mudancas(pasta)]}
+
+
+def repo_diff(pasta, arquivo):
+    """O diff de um arquivo (novo: o conteúdo inteiro como adicionado), cortado em 4000 linhas."""
+    repo_do_jfy(pasta)
+    if git(pasta, "ls-files", "--error-unmatch", "--", arquivo).returncode:  # ainda não rastreado
+        r = subprocess.run(["git", "-c", "core.quotePath=false", "diff", "--no-index", "--", "/dev/null", arquivo], cwd=pasta,
+                           capture_output=True, text=True)
+    else:
+        r = git(pasta, "-c", "core.quotePath=false", "diff", "HEAD", "--", arquivo)
+    return {"diff": "\n".join(r.stdout.splitlines()[:4000]) or "(sem diferença de texto: arquivo binário ou só permissão)"}
+
+
+def identidade(pasta):
+    """(conta compartilhada?, nome para o prefixo) pela regra do committer: user.name ou user.email do repo com
+    atom.?studio.?ferramentas; o nome sai do git config --global pipeline.commitAuthor."""
+    quem = git(pasta, "config", "user.name").stdout + " " + git(pasta, "config", "user.email").stdout
+    return bool(re.search(r"atom.?studio.?ferramentas", quem, re.I)), git(pasta, "config", "--global", "pipeline.commitAuthor").stdout.strip()
+
+
+def commit_mensagem(pasta, *arquivos):
+    """A mensagem do commit dos arquivos marcados, pelas regras do agente committer (lidas do committer.md: mudar o
+    agente muda aqui). Vai para o Claude só o diff desses arquivos; ele roda sem ferramentas, no modelo do agente."""
+    repo_do_jfy(pasta)
+    if not arquivos:
+        sys.exit("Marque os arquivos do commit.")
+    try:
+        agente = open(COMMITTER).read()
+    except OSError:
+        sys.exit("Não achei o agente committer em ~/.claude/agents (rode o ./install.sh do jfy).")
+    regras = agente[agente.find("### 5. Message format"):agente.find("### 6. Commit")]
+    modelo = (re.search(r"(?m)^model:\s*(\S+)", agente) or [None, "sonnet"])[1]
+    compartilhada, nome = identidade(pasta)
+    if compartilhada and not nome:
+        sys.exit("NOME: conta compartilhada sem nome salvo: diga o seu nome para o prefixo dos commits.")
+    branch = git(pasta, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    tasks = tasks_commitadas(pasta, branch)
+    diff = "\n".join(repo_diff(pasta, a)["diff"] for a in arquivos)[:30000]
+    pedido = (f"Você é o committer do time. Escreva UMA mensagem de commit para as mudanças abaixo, seguindo estas "
+              f"regras do agente committer:\n\n{regras}\n"
+              f"Dados: branch {branch}. " + (f"Conta compartilhada: o assunto começa com [{nome}]. " if compartilhada
+                                              else "Não é a conta compartilhada: sem prefixo de nome. ")
+              + (f"Tasks do Journify desta branch: {', '.join(tasks)} (uma linha 'Journify: <id>' para cada, no fim). "
+                 if tasks else "Sem task do Journify: sem a linha Journify. ")
+              + "Idioma: o dos commits recentes:\n" + git(pasta, "log", "-8", "--format=  %s").stdout
+              + "\nDevolva só a mensagem (assunto, linha em branco, corpo opcional), sem comentário e sem cercas de código. "
+              "Nunca ponha Co-Authored-By.\n\n<mudancas>\n" + diff + "\n</mudancas>")
+    pasta_vazia = os.path.join(RUN_DIR, "commit-ia")
+    os.makedirs(pasta_vazia, exist_ok=True)
+    try:
+        r = subprocess.run(["claude", "-p", "--model", modelo, "--tools", "", "--", pedido], cwd=pasta_vazia, capture_output=True,
+                           text=True, timeout=180, stdin=subprocess.DEVNULL, env=dict(os.environ, JFY_SEM_AVISO="1"))
+    except subprocess.TimeoutExpired:
+        sys.exit("O Claude demorou mais de 3 min. Tente de novo.")
+    if r.returncode or not r.stdout.strip():
+        sys.exit((r.stderr or r.stdout).strip() or "O Claude não devolveu a mensagem.")
+    return {"mensagem": re.sub(r"^```\w*\n|\n```$", "", r.stdout.strip())}
+
+
+def tasks_commitadas(pasta, branch):
+    """Ids do Journify já commitados na branch (a linha 'Journify: <id>' do committer), desde a base gitflow local
+    (sem fetch: o commit não espera a rede)."""
+    if not BRANCH_OK.match(branch):
+        return []
+    nomes = ["main", "master"] if branch.startswith(("hotfix/", "release/")) else ["develop", "main", "master"]
+    base_ref = next((r for n in nomes for r in (f"origin/{n}", n) if git(pasta, "rev-parse", "--verify", "--quiet", r).returncode == 0), None)
+    if not base_ref:
+        return []
+    return list(dict.fromkeys(git(pasta, "log", base_ref + "..HEAD", "--format=%(trailers:key=Journify,valueonly)").stdout.split()))
+
+
+def commit_autor(nome):
+    """Salva o nome do prefixo dos commits na conta compartilhada (o mesmo que o committer pergunta uma vez)."""
+    subprocess.run(["git", "config", "--global", "pipeline.commitAuthor", nome.strip()], check=True)
+
+
+def commit_fazer(pasta, mensagem, *arquivos):
+    """Commita só os arquivos marcados, com as travas do committer: nada em main/master/develop nem fora do gitflow,
+    nada no meio de merge ou rebase, varredura de segredos antes do git add, e nunca Co-Authored-By."""
+    repo_do_jfy(pasta)
+    branch = git(pasta, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if not BRANCH_OK.match(branch):
+        sys.exit(f"O committer não commita em '{branch}': use uma branch feature/, bugfix/, hotfix/ ou release/.")
+    gitdir = git(pasta, "rev-parse", "--git-dir").stdout.strip()
+    if any(os.path.exists(os.path.join(pasta, gitdir, x)) for x in ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD")):
+        sys.exit("Tem merge, rebase ou cherry-pick em andamento: termine antes de commitar.")
+    mensagem = "\n".join(l for l in mensagem.strip().splitlines() if not re.match(r"(?i)co-authored-by:", l)).strip()
+    if not arquivos or not mensagem:
+        sys.exit("Marque os arquivos e escreva a mensagem.")
+    existem = [a for a in arquivos if os.path.isfile(os.path.join(pasta, a))]
+    achado = subprocess.run(["grep", "-nIE", "--", SEGREDO, *existem], cwd=pasta, capture_output=True, text=True).stdout if existem else ""
+    if achado:
+        sys.exit("Possível segredo, commit parado:\n" + "\n".join(achado.splitlines()[:5]))
+    r = git(pasta, "add", "-A", "--", *arquivos)
+    if r.returncode:
+        sys.exit(r.stderr.strip())
+    arq = os.path.join(RUN_DIR, "commit-msg.txt")
+    open(arq, "w").write(mensagem + "\n")
+    r = git(pasta, "commit", "-F", arq, "--", *arquivos)
+    if r.returncode:
+        sys.exit((r.stderr or r.stdout).strip())
+    return {"sha": git(pasta, "rev-parse", "--short", "HEAD").stdout.strip(), "assunto": mensagem.splitlines()[0]}
 
 
 def app(f, *a):
@@ -2947,7 +3084,9 @@ def main():
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
-                "--portas-encerrar-todas": portas_encerrar_todas, "--email-resposta": email_resposta, "--email-ia": email_ia}
+                "--portas-encerrar-todas": portas_encerrar_todas, "--email-resposta": email_resposta, "--email-ia": email_ia,
+                "--repo-mudancas": repo_mudancas, "--repo-diff": repo_diff, "--commit-mensagem": commit_mensagem,
+                "--commit-autor": commit_autor, "--commit-fazer": commit_fazer}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
     if a[:1] == ["--horas-json"]:  # aba Horas do app: jfy --horas-json [AAAA-MM-DD]
@@ -3308,6 +3447,34 @@ def selftest():
     assert url1.endswith("/messages/send") and url2.endswith("/drafts") and env["threadId"] == rasc["message"]["threadId"] == "TH"
     assert (msg["To"], msg["Subject"], msg["In-Reply-To"]) == ("time@x.com", "Re: Proposta", "<m1@x>"), dict(msg)
     assert msg.get_content().strip() == "Fechado, obrigado!"
+    # commit pelo app: só os arquivos marcados, nunca em main, sem Co-Authored-By, e segredo para antes do git add
+    rp = os.path.join(RUN_DIR, "teste-commit")
+    os.makedirs(rp)
+    g = lambda *a: subprocess.run(["git", *a], cwd=rp, capture_output=True, text=True)
+    for a in (["init", "-q", "-b", "main"], ["config", "user.name", "t"], ["config", "user.email", "t@t"],
+              ["commit", "-q", "--allow-empty", "-m", "base"]):
+        g(*a)
+    open(os.path.join(rp, "a.txt"), "w").write("a\n")
+    open(os.path.join(rp, "b.txt"), "w").write("b\n")
+    reais = {"pastas_projetos": globals()["pastas_projetos"]}
+    globals()["pastas_projetos"] = lambda cfg: [("p", rp)]
+    try:
+        commit_fazer(rp, "feat: x", "a.txt")
+        assert False, "commitou em main"
+    except SystemExit:
+        pass
+    g("switch", "-q", "-c", "feature/x")
+    assert [e for e, _ in mudancas(rp)] == ["??", "??"]
+    commit_fazer(rp, "feat(x): adicionar a\n\nCo-Authored-By: Alguém <a@b>", "a.txt")
+    assert g("log", "-1", "--format=%B").stdout.strip() == "feat(x): adicionar a" and mudancas(rp) == [("??", "b.txt")]
+    open(os.path.join(rp, "c.txt"), "w").write('senha = "abcdefgh123"\n')
+    try:
+        commit_fazer(rp, "feat: c", "c.txt")
+        assert False, "commitou um segredo"
+    except SystemExit as e:
+        assert "segredo" in str(e) and not g("diff", "--cached", "--name-only").stdout.strip()
+    globals().update(reais)
+    shutil.rmtree(rp)
     # chat: sem argumento lista as conversas, com a conversa lista as mensagens, com o texto envia
     reais = {k: globals()[k] for k in ("chat_conversas", "chat_mensagens", "chat_enviar")}
     globals().update(chat_conversas=lambda: "c", chat_mensagens=lambda cid: "m" + cid, chat_enviar=lambda cid, t: "e" + cid + t)
