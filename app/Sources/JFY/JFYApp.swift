@@ -71,13 +71,14 @@ extension Color {
 }
 
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", projetos = "Projetos", horas = "Horas", reunioes = "Reuniões", uso = "Uso da IA",
+    case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Reuniões", uso = "Uso da IA",
          chat = "Chat", notificacoes = "Notificações", temas = "Temas"
     var id: Self { self }
     var icone: String {
         switch self {
         case .terminal: "terminal"
         case .projetos: "folder"
+        case .github: "arrow.triangle.branch"
         case .horas: "clock"
         case .reunioes: "calendar"
         case .uso: "chart.bar.xaxis"
@@ -123,6 +124,7 @@ struct Principal: View {
             ZStack {
                 mostrar(.terminal) { TerminalTela(host: terminal) }
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, irParaJFY: { tela = .terminal }) }
+                mostrar(.github) { GithubTela(ativa: tela == .github, irParaJFY: { tela = .terminal }) }
                 mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: { tela = .terminal }) }
                 mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: { tela = .terminal }) }
                 mostrar(.uso) { UsoTela() }
@@ -144,7 +146,7 @@ struct Principal: View {
         return conteudo().opacity(ativa ? 1 : 0).allowsHitTesting(ativa).accessibilityHidden(!ativa)
     }
 
-    /// ⌘1 a ⌘8, na ordem da barra lateral
+    /// ⌘1 a ⌘9, na ordem da barra lateral
     private var atalhos: some View {
         ForEach(Array(Tela.allCases.enumerated()), id: \.element) { i, t in
             Button("") { tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()

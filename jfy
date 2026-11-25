@@ -1740,6 +1740,181 @@ def aplicar_tema(nome):
     subprocess.run(TMUX + ["source-file", tmux_conf()], capture_output=True)
 
 
+# ---------- GitHub (aba GitHub do app): PRs e git dos repositórios dos projetos, pelo gh ----------
+METODOS_MERGE = ("squash", "merge", "rebase")
+
+
+def gh(*args):
+    """Roda o gh (a conta ativa dele) e devolve o JSON, ou o texto. Erro do gh vira a mensagem que o app mostra."""
+    if not shutil.which("gh"):
+        sys.exit("Instale o GitHub CLI (brew install gh) e conecte sua conta.")
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError((r.stderr or r.stdout).strip() or f"gh {args[0]} falhou")
+    try:
+        return json.loads(r.stdout)
+    except ValueError:
+        return r.stdout.strip()
+
+
+def slug_github(url):
+    """'owner/repo' de um remote do GitHub (https ou ssh); None se não for do GitHub."""
+    m = re.search(r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?$", url or "")
+    return m[1] if m else None
+
+
+def pastas_projetos(cfg):
+    """[(pid, pasta)] de todos os repositórios dos projetos configurados."""
+    return [(pid, r) for pid, pr in cfg["projetos"].items() if pr.get("repo") or pr.get("repos") for r in repos_de(pr)]
+
+
+def repos_github(cfg):
+    """{owner/repo: pid} dos repositórios dos projetos que têm o remote origin no GitHub."""
+    out = {}
+    for pid, pasta in pastas_projetos(cfg):
+        slug = slug_github(git(pasta, "remote", "get-url", "origin").stdout.strip()) if os.path.isdir(pasta) else None
+        if slug:
+            out.setdefault(slug, pid)
+    return out
+
+
+BUSCA_PRS = """fragment p on PullRequest { number title url isDraft updatedAt repository { nameWithOwner } author { login }
+  comments { totalCount } }
+query($projetos: String!, $revisar: String!, $meus: String!) {
+  projetos: search(type: ISSUE, query: $projetos, first: 100) { nodes { ...p } }
+  revisar: search(type: ISSUE, query: $revisar, first: 100) { nodes { ...p } }
+  meus: search(type: ISSUE, query: $meus, first: 100) { nodes { ...p } } }"""
+
+
+def contas_gh(txt=None):
+    """(conta ativa, todas) do gh, lidas da config dele: o gh auth status valida cada token pela rede (~7 s)."""
+    try:
+        txt = open(os.path.expanduser("~/.config/gh/hosts.yml")).read() if txt is None else txt
+    except OSError:
+        return None, []
+    bloco = re.search(r"(?ms)^github\.com:\n(.*?)(?=^\S|\Z)", txt)
+    bloco = bloco[1] if bloco else ""
+    usuarios = re.search(r"(?ms)^ {4}users:\n((?: {8}.*\n?)*)", bloco)
+    ativa = re.search(r"(?m)^ {4}user: (\S+)", bloco)
+    return (ativa[1] if ativa else None), re.findall(r"(?m)^ {8}(\S+):", usuarios[1] if usuarios else "")
+
+
+def github_json():
+    """Aba GitHub: as contas do gh e os PRs abertos dos repositórios dos projetos, os que pedem sua revisão e os seus.
+    Uma consulta GraphQL só (~2 s); as buscas do gh search, uma por vez, levavam de 4 a 12 s cada."""
+    ativa, contas = contas_gh()
+    if not ativa:
+        return {"conta": None, "contas": [], "repos": [], "prs": [], "revisar": [], "meus": []}
+    cfg = load()
+    repos = repos_github(cfg)
+    # ponytail: sem repo nenhum, a busca dos projetos vira uma que não acha nada (a query não pode ficar vazia)
+    filtro = " ".join(f"repo:{r}" for r in repos) or "repo:jfy-sem-repo/nenhum"
+    d = gh("api", "graphql", "-f", "query=" + BUSCA_PRS, "-f", f"projetos=is:pr is:open {filtro}",
+           "-f", "revisar=is:pr is:open review-requested:@me", "-f", "meus=is:pr is:open author:@me")["data"]
+
+    def item(p):
+        slug = p["repository"]["nameWithOwner"]
+        pid = repos.get(slug)
+        return {"repo": slug, "n": p["number"], "titulo": p["title"], "autor": (p.get("author") or {}).get("login"),
+                "rascunho": p["isDraft"], "atualizado": p["updatedAt"], "url": p["url"],
+                "comentarios": (p.get("comments") or {}).get("totalCount", 0),
+                "pid": pid, "projeto": cfg["projetos"][pid]["nome"] if pid else None, "cor": cor_hex(pid) if pid else None}
+    return {"conta": ativa, "contas": contas,
+            "repos": [{"repo": k, "projeto": cfg["projetos"][v]["nome"], "cor": cor_hex(v)} for k, v in repos.items()],
+            "prs": [item(p) for p in d["projetos"]["nodes"] if p], "revisar": [item(p) for p in d["revisar"]["nodes"] if p],
+            "meus": [item(p) for p in d["meus"]["nodes"] if p]}
+
+
+def pr_json(repo, n):
+    """Um PR inteiro: branches, situação do merge, checks, commits, revisões e comentários, e os merges que o repo aceita."""
+    p = gh("pr", "view", n, "-R", repo, "--json", "number,title,body,author,url,isDraft,headRefName,baseRefName,mergeable,"
+           "mergeStateStatus,reviewDecision,statusCheckRollup,commits,additions,deletions,changedFiles,reviews,comments,createdAt")
+    aceita = gh("repo", "view", repo, "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed")
+    quem = lambda x: (x.get("author") or {}).get("login")
+    return {"repo": repo, "n": p["number"], "titulo": p["title"], "corpo": p.get("body") or "", "autor": quem(p), "url": p["url"],
+            "rascunho": p["isDraft"], "de": p["headRefName"], "para": p["baseRefName"], "mergeavel": p.get("mergeable"),
+            "situacao": p.get("mergeStateStatus"), "revisao": p.get("reviewDecision"), "criado": p.get("createdAt"),
+            "mais": p.get("additions", 0), "menos": p.get("deletions", 0), "arquivos": p.get("changedFiles", 0),
+            "checks": [{"nome": c.get("name") or c.get("context") or "?",
+                        "estado": (c.get("conclusion") or c.get("state") or c.get("status") or "").lower()}
+                       for c in p.get("statusCheckRollup") or []],
+            "commits": [{"sha": c["oid"][:7], "msg": c.get("messageHeadline", ""), "quando": c.get("committedDate"),
+                         "autor": ((c.get("authors") or [{}])[0].get("login") or (c.get("authors") or [{}])[0].get("name"))}
+                        for c in p.get("commits") or []],
+            "revisoes": [{"autor": quem(r), "estado": r.get("state"), "texto": r.get("body") or "", "quando": r.get("submittedAt")}
+                         for r in p.get("reviews") or []],
+            "comentarios": [{"autor": quem(c), "texto": c.get("body") or "", "quando": c.get("createdAt")} for c in p.get("comments") or []],
+            "metodos": [m for m, k in zip(METODOS_MERGE, ("squashMergeAllowed", "mergeCommitAllowed", "rebaseMergeAllowed")) if aceita.get(k)]}
+
+
+def pr_acao(repo, n, acao, valor=""):
+    """O que a aba GitHub faz num PR: merge (valor = squash, merge ou rebase), fechar (sem merge; valor = comentário
+    opcional), aprovar (valor = comentário opcional) ou comentar (valor = texto)."""
+    if acao == "merge":
+        if valor not in METODOS_MERGE:
+            sys.exit(f"Merge precisa de um destes: {', '.join(METODOS_MERGE)}")
+        gh("pr", "merge", n, "-R", repo, "--" + valor)
+        return
+    args = {"fechar": ["close", n, "-R", repo] + (["-c", valor] if valor else []),
+            "aprovar": ["review", n, "-R", repo, "--approve"] + (["-b", valor] if valor else []),
+            "comentar": ["comment", n, "-R", repo, "-b", valor]}.get(acao)
+    if not args or (acao == "comentar" and not valor):
+        sys.exit("Ação de PR desconhecida, ou comentário vazio.")
+    gh("pr", *args)
+
+
+def cabecalho_status(linha):
+    """'## main...origin/main [ahead 1, behind 2]' (git status --branch) -> (branch, upstream, à frente, atrás)."""
+    m = re.match(r"## (?:No commits yet on |Nenhum commit ainda em )?(.+?)(?:\.\.\.(\S+))?(?: \[(.*)\])?$", linha or "")
+    if not m:
+        return None, None, 0, 0
+    conta = lambda k: int((re.search(rf"{k} (\d+)", m[3] or "") or [0, 0])[1])
+    return m[1], m[2], conta("ahead"), conta("behind")
+
+
+def repos_json():
+    """Aba GitHub > Repositórios: o git de cada repositório dos projetos (o que o último fetch sabe): branch, o que
+    falta subir e baixar, os arquivos mexidos e os últimos commits."""
+    cfg, out = load(), []
+    for pid, pasta in sorted(pastas_projetos(cfg), key=lambda x: (cfg["projetos"][x[0]]["nome"].lower(), x[1])):
+        if not os.path.isdir(os.path.join(pasta, ".git")):
+            continue
+        st = git(pasta, "-c", "core.quotePath=false", "status", "--porcelain=v1", "--branch").stdout.splitlines()
+        branch, upstream, frente, atras = cabecalho_status(st[0] if st else "")
+        log = [l.split("\x1f") for l in git(pasta, "log", "-15", "--format=%h%x1f%s%x1f%an%x1f%cI").stdout.splitlines()]
+        out.append({"pasta": pasta, "nome": os.path.basename(pasta), "projeto": cfg["projetos"][pid]["nome"], "cor": cor_hex(pid),
+                    "remote": slug_github(git(pasta, "remote", "get-url", "origin").stdout.strip()),
+                    "branch": branch, "upstream": upstream, "frente": frente, "atras": atras,
+                    "mexidos": [l[3:] for l in st[1:]][:30], "n_mexidos": len(st) - 1,
+                    "commits": [{"sha": c[0], "msg": c[1], "autor": c[2], "quando": c[3]} for c in log if len(c) == 4]})
+    return out
+
+
+def repo_acao(pasta, acao):
+    """fetch, pull (só fast-forward: nunca cria merge sozinho) ou push (a branch atual, criando o upstream se faltar)."""
+    if pasta not in {r for _, r in pastas_projetos(load())}:
+        sys.exit("Esse repositório não é de um projeto do jfy.")
+    args = {"fetch": ["fetch", "--prune"], "pull": ["pull", "--ff-only"], "push": ["push", "-u", "origin", "HEAD"]}.get(acao)
+    if not args:
+        sys.exit("Ação desconhecida: use fetch, pull ou push.")
+    r = git(pasta, *args)
+    if r.returncode:
+        sys.exit((r.stderr or r.stdout).strip())
+
+
+def github_conta(login):
+    """Troca a conta ativa do gh (vale para o gh e o git deste Mac, não só para o app)."""
+    gh("auth", "switch", "-h", "github.com", "-u", login)
+
+
+def github_login():
+    """Conecta uma conta do GitHub: o gh auth login roda numa aba do jfy (ele pede para abrir o navegador)."""
+    if not os.environ.get("TMUX"):
+        return abrir_aba("GitHub: login", "github", "--github-login")
+    subprocess.call(["gh", "auth", "login", "-h", "github.com", "--web", "--git-protocol", "https"])
+    ask(dim("\nEnter fecha esta aba. Atualize a aba GitHub do app."))
+
+
 def app(f, *a):
     """Roda um comando do app: o resultado em JSON no stdout; erro do Journify vira a mensagem, sem traceback."""
     try:
@@ -2600,7 +2775,8 @@ def main():
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
                 "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--reunioes-json": reunioes_json,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
-                "--tema": aplicar_tema}
+                "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
+                "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
     if a[:1] == ["--horas-json"]:  # aba Horas do app: jfy --horas-json [AAAA-MM-DD]
@@ -2919,6 +3095,28 @@ def selftest():
                       ("comentar_task", {"taskId": "T", "texto": "oi"})], feitas
     t = {"id": "T", "title": "x", "statusId": "fechado", "projectId": "p", "dueDate": "2000-01-01"}
     assert resumo_task({"projetos": {}}, t)["etapa"] == "Encerradas"  # prazo vencido de task fechada não é urgente
+    # GitHub: remote em https e ssh, a linha de status do git, as contas do gh e o comando de cada ação de PR
+    assert slug_github("https://github.com/SouvTech/okra-monorepo.git") == "SouvTech/okra-monorepo"
+    assert slug_github("git@github.com:linkemeapp/linkeme-web-prod.git") == "linkemeapp/linkeme-web-prod"
+    assert slug_github("https://gitlab.com/x/y.git") is None and slug_github("") is None
+    assert cabecalho_status("## main...origin/main [ahead 1, behind 2]") == ("main", "origin/main", 1, 2)
+    assert cabecalho_status("## feature/x...origin/feature/x [behind 14]") == ("feature/x", "origin/feature/x", 0, 14)
+    assert cabecalho_status("## develop") == ("develop", None, 0, 0)
+    assert contas_gh("github.com:\n    git_protocol: https\n    users:\n        Ana:\n        Bia:\n    user: Bia\n") == ("Bia", ["Ana", "Bia"])
+    feitas, gh_real = [], globals()["gh"]
+    globals()["gh"] = lambda *a: feitas.append(a)
+    pr_acao("o/r", "7", "merge", "squash")
+    pr_acao("o/r", "7", "fechar")
+    pr_acao("o/r", "7", "aprovar", "ok")
+    pr_acao("o/r", "7", "comentar", "oi")
+    try:
+        pr_acao("o/r", "7", "merge", "--admin")  # só os três métodos passam
+        assert False, "merge com método inválido passou"
+    except SystemExit:
+        pass
+    globals()["gh"] = gh_real
+    assert feitas == [("pr", "merge", "7", "-R", "o/r", "--squash"), ("pr", "close", "7", "-R", "o/r"),
+                      ("pr", "review", "7", "-R", "o/r", "--approve", "-b", "ok"), ("pr", "comment", "7", "-R", "o/r", "-b", "oi")], feitas
     # chat: sem argumento lista as conversas, com a conversa lista as mensagens, com o texto envia
     reais = {k: globals()[k] for k in ("chat_conversas", "chat_mensagens", "chat_enviar")}
     globals().update(chat_conversas=lambda: "c", chat_mensagens=lambda cid: "m" + cid, chat_enviar=lambda cid, t: "e" + cid + t)
