@@ -33,6 +33,11 @@ final class PortasAbertas: ObservableObject {
         aviso = msg
     }
 
+    @MainActor func encerrarTodas() async {
+        aviso = await JFY.fazer(["--portas-encerrar-todas"])
+        await atualizar()
+    }
+
     @MainActor func encerrar(_ p: Porta) async {
         aviso = await JFY.fazer(["--porta-encerrar", p.parar])
         await atualizar()
@@ -43,6 +48,7 @@ struct PortasTela: View {
     @ObservedObject var portas: PortasAbertas
     let ativa: Bool
     @State private var encerrando: PortasAbertas.Porta?
+    @State private var encerrarTodas = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -53,6 +59,7 @@ struct PortasTela: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Encerrar todas", role: .destructive) { encerrarTodas = true }.disabled(portas.itens.isEmpty)
                 Button { Task { await portas.atualizar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar")
             }
             if let a = portas.aviso { Label(a, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
@@ -71,6 +78,12 @@ struct PortasTela: View {
             Button("Encerrar", role: .destructive) { if let p = encerrando { Task { await portas.encerrar(p) } } }
         } message: {
             Text("Pede para o programa sair; se em 3 s ele não saiu, força. Container do Docker é parado com docker stop.")
+        }
+        .confirmationDialog("Encerrar as \(portas.itens.count) portas abertas?", isPresented: $encerrarTodas) {
+            Button("Encerrar todas", role: .destructive) { Task { await portas.encerrarTodas() } }
+        } message: {
+            Text(portas.itens.map { "\($0.tipo) \($0.nome)" }.joined(separator: ", ")
+                 + ". Servidores que o Claude usa param também; banco do brew services volta sozinho.")
         }
     }
 

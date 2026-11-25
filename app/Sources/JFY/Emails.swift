@@ -49,6 +49,11 @@ struct EmailsTela: View {
     @State private var aviso: String?
     @State private var carregando = false
     @State private var confirmarTodos = false
+    @State private var resposta = ""
+    @State private var contexto = ""
+    @State private var escrevendo: String?  // o modo que o Claude está fazendo
+    @State private var confirmarEnvio = false
+    @State private var feito: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,6 +71,7 @@ struct EmailsTela: View {
             .padding(.horizontal, 20).padding(.vertical, 12)
             Divider()
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).padding(10).textSelection(.enabled) }
+            if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green).padding(10) }
             HStack(spacing: 0) {
                 List(selection: $selecao) {
                     if let l = lista, l.emails.isEmpty { Text("Caixa zerada: nenhum não lido na Principal.").foregroundStyle(.secondary) }
@@ -93,6 +99,16 @@ struct EmailsTela: View {
         .confirmationDialog("Marcar todos os não lidos da Principal como lidos no Gmail?", isPresented: $confirmarTodos) {
             Button("Marcar todos") { agir(["--emails-lidos"]) }
         }
+        .confirmationDialog("Enviar a resposta para \(email.map { remetente($0.de) } ?? "")?", isPresented: $confirmarEnvio) {
+            Button("Enviar") { if let e = email { responderGmail(e, enviar: true) } }
+        } message: {
+            Text("Sai da sua conta do Gmail, na mesma conversa. Não tem volta pelo app.")
+        }
+        .onChange(of: selecao) {
+            feito = nil
+            resposta = ""
+            contexto = ""
+        }
     }
 
     @ViewBuilder private var detalhe: some View {
@@ -115,12 +131,64 @@ struct EmailsTela: View {
                     }
                     Divider()
                     Text(e.texto).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Divider().padding(.top, 8)
+                    responder(e)
                 }
                 .padding(24)
                 .frame(maxWidth: 820, alignment: .leading)
             }
         } else {
             Text(selecao == nil ? "Escolha um email" : "").foregroundStyle(.secondary)
+        }
+    }
+
+    // ---------- responder ----------
+    private func responder(_ e: Email) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RESPONDER").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            TextEditor(text: $resposta)
+                .font(.body).frame(minHeight: 140)
+                .padding(6).background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.3)))
+                .disabled(escrevendo != nil)
+            TextField("Contexto para o Claude (opcional): o que responder, o tom, o que já foi combinado…", text: $contexto, axis: .vertical)
+                .lineLimit(1...4).textFieldStyle(.roundedBorder)
+            HStack {
+                Button { ia(e, "gerar") } label: { Label("Gerar com o Claude", systemImage: "sparkles") }
+                Button("Corrigir") { ia(e, "corrigir") }.disabled(vazia).help("Só os erros do seu texto, sem mudar o que ele diz")
+                Button("Melhorar") { ia(e, "melhorar") }.disabled(vazia).help("Seu texto como base, mais claro e direto")
+                if let m = escrevendo { ProgressView().controlSize(.small); Text("O Claude está \(m == "gerar" ? "escrevendo" : m == "corrigir" ? "corrigindo" : "melhorando")…").foregroundStyle(.secondary) }
+                Spacer()
+                Button("Salvar rascunho") { responderGmail(e, enviar: false) }.disabled(vazia)
+                Button("Enviar") { confirmarEnvio = true }.buttonStyle(.borderedProminent).disabled(vazia)
+            }
+            .disabled(escrevendo != nil)
+            Text("O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var vazia: Bool { resposta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private func remetente(_ de: String) -> String { de.components(separatedBy: " <").first ?? de }
+
+    private func ia(_ e: Email, _ modo: String) {
+        Task {
+            escrevendo = modo
+            struct Texto: Decodable { let texto: String }
+            let (r, msg): (Texto?, String?) = await JFY.ler(["--email-ia", e.id, modo, resposta, contexto])
+            escrevendo = nil
+            if let r { resposta = r.texto }
+            aviso = msg
+        }
+    }
+
+    private func responderGmail(_ e: Email, enviar: Bool) {
+        Task {
+            struct Feito: Decodable { let para: String }
+            let (r, msg): (Feito?, String?) = await JFY.ler(["--email-resposta", e.id, resposta] + (enviar ? ["1"] : []))
+            aviso = r == nil ? msg : nil
+            feito = r.map { enviar ? "Enviado para \($0.para)." : "Rascunho salvo no Gmail (para \($0.para))." }
+            if r != nil, enviar { resposta = "" }
         }
     }
 

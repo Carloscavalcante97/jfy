@@ -98,6 +98,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
+/// A imagem da mesa desfocada, atrás da barra lateral em tela cheia. Imagem que não carrega (fundo em vídeo, por
+/// exemplo) fica sem: a barra volta ao normal.
+struct FundoDaMesa: View {
+    private let imagem = NSScreen.main.flatMap { NSWorkspace.shared.desktopImageURL(for: $0) }.flatMap { NSImage(contentsOf: $0) }
+    var body: some View {
+        if let imagem {
+            Image(nsImage: imagem).resizable().scaledToFill().blur(radius: 40).overlay(.ultraThinMaterial).clipped()
+                .ignoresSafeArea()
+        }
+    }
+}
+
 /// Para uma aba abrir algo em outra: o PR abre a task na aba Projetos, a task abre o PR na aba GitHub.
 final class Navegacao: ObservableObject {
     struct TaskRef: Equatable {
@@ -130,6 +142,7 @@ struct Principal: View {
     @ObservedObject var portas: PortasAbertas
     @ObservedObject var nav: Navegacao
     private var tela: Tela? { nav.tela }
+    @State private var telaCheia = false
 
     var body: some View {
         NavigationSplitView {
@@ -138,6 +151,10 @@ struct Principal: View {
                     .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
+            // em tela cheia não há nada atrás da janela e a barra lateral, que deixa ver o fundo, fica chapada:
+            // nela, a barra mostra a imagem da mesa desfocada, como fora da tela cheia
+            .scrollContentBackground(telaCheia ? .hidden : .automatic)
+            .background { if telaCheia { FundoDaMesa() } }
         } detail: {
             // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
@@ -157,6 +174,8 @@ struct Principal: View {
             }
         }
         .background { atalhos }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in telaCheia = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in telaCheia = false }
         .onChange(of: tela) { _, nova in
             if nova == .terminal { terminal.focar() }
         }
