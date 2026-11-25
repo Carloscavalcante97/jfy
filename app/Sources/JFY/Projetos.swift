@@ -15,6 +15,8 @@ struct ProjetosTela: View {
         let dias: Int?
         let pontos: Double?
         let etapaN: Int
+        let resp: Int?  // quantos responsáveis
+        let eu: Bool?  // você é um deles
     }
 
     struct Projetos: Decodable {
@@ -25,6 +27,13 @@ struct ProjetosTela: View {
         }
         let foco: [Resumo]
         let projetos: [Projeto]
+        let statusLote: [String]
+    }
+
+    struct Lote: Decodable {
+        struct Erro: Decodable { let id, erro: String }
+        let ok: Int
+        let erros: [Erro]
     }
 
     static let foco = "foco"  // o item "Foco" da lista de projetos
@@ -37,27 +46,48 @@ struct ProjetosTela: View {
     @State private var deFora = false  // a task veio de outra aba (um PR): trocar de projeto não a fecha
     @State private var carregando = false
     @State private var aviso: String?
+    // seleção (botão direito › Selecionar): bolinhas em todas as tasks para mudar status ou prazo de várias de uma vez
+    @State private var selecionando = false
+    @State private var marcadas: Set<String> = []
+    @State private var pedidoLote: (campo: String, valor: String, rotulo: String)?
+    @State private var prazoLote = Date()
+    @State private var escolhendoPrazo = false
+    @State private var resultadoLote: String?
+    @AppStorage("projetos.tabela") private var modoTabela = false  // a tabela agrupada, como no ClickUp
 
     var body: some View {
         HStack(spacing: 0) {
             listaProjetos.frame(width: 210)
             Divider()
-            listaTasks.frame(width: 340)
-            Divider()
-            if let task {
-                TaskDetalhe(tid: task, irParaJFY: irParaJFY, mudou: { Task { await carregarTasks() } },
-                            abrirPR: { nav.abrirPR = $0; nav.tela = .github }).id(task)
+            if modoTabela {
+                areaTabela
             } else {
-                Text(projeto == nil ? "Escolha um projeto" : "Escolha uma task").foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                listaTasks.frame(width: 340)
+                Divider()
+                if let task {
+                    detalhe(task)
+                } else {
+                    Text(projeto == nil ? "Escolha um projeto" : "Escolha uma task").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
+        // na tabela, a task abre ao lado, num painel que fecha
+        .inspector(isPresented: Binding(get: { modoTabela && task != nil }, set: { if !$0 { task = nil } })) {
+            if let task { detalhe(task).inspectorColumnWidth(min: 380, ideal: 480, max: 720) }
+        }
+        .onChange(of: modoTabela) { sairDaSelecao() }
         .task(id: ativa) { if ativa, dados == nil { await carregarProjetos() } }
         .task(id: "\(projeto ?? "")|\(todas)") { await carregarTasks() }
         .onChange(of: projeto) {
             if !deFora { task = nil }
             deFora = false
+            sairDaSelecao()
         }
+        .confirmationDialog(pedidoLote.map { "\($0.rotulo) de \(marcadas.count) task\(marcadas.count == 1 ? "" : "s")?" } ?? "",
+                            isPresented: Binding(get: { pedidoLote != nil }, set: { if !$0 { pedidoLote = nil } })) {
+            Button("Mudar no Journify") { if let p = pedidoLote { aplicarLote(p.campo, p.valor) } }
+        } message: { Text("A mudança vai direto para o Journify, em cada task escolhida.") }
         .onChange(of: nav.abrirProjeto) {
             guard let p = nav.abrirProjeto, dados != nil else { return }  // sem dados ainda: o carregarProjetos abre
             projeto = p
@@ -121,20 +151,57 @@ struct ProjetosTela: View {
     }
 
     // ---------- tasks ----------
+    private func detalhe(_ tid: String) -> some View {
+        TaskDetalhe(tid: tid, irParaJFY: irParaJFY, mudou: { Task { await carregarTasks() } },
+                    abrirPR: { nav.abrirPR = $0; nav.tela = .github }).id(tid)
+    }
+
+    /// O topo das tasks (nas duas formas): o projeto, Minhas/Todas, Lista/Tabela e a barra de lote.
+    @ViewBuilder private var cabecalhoTasks: some View {
+        HStack {
+            Text(tituloProjeto).font(.headline).lineLimit(1)
+            Spacer()
+            if projeto != Self.foco && projeto != nil {
+                Picker("Tasks", selection: $todas) {
+                    Text("Minhas").tag(false)
+                    Text("Todas").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            }
+            Picker("Ver", selection: $modoTabela) {
+                Image(systemName: "list.bullet").tag(false).help("Lista")
+                Image(systemName: "tablecells").tag(true).help("Tabela: agrupada, com filtros")
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+        }
+        .padding(12)
+        if selecionando || modoTabela && !marcadas.isEmpty { barraLote }
+        if let resultadoLote {
+            Label(resultadoLote, systemImage: "info.circle").font(.caption).foregroundStyle(Souv.texto2)
+                .textSelection(.enabled).padding(.horizontal, 12).padding(.bottom, 8)
+        }
+    }
+
+    private var areaTabela: some View {
+        VStack(spacing: 0) {
+            cabecalhoTasks
+            if carregando && tasks.isEmpty {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if tasks.isEmpty {
+                Text(projeto == nil ? "Escolha um projeto" : aviso ?? "Nenhuma task aqui.").foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                TabelaTasks(tasks: tasks, statusOrdem: (dados?.statusLote ?? []) + ["finalizado_validacao", "fechado"],
+                            comProjeto: projeto == Self.foco, marcadas: $marcadas, aberta: $task)
+                    .opacity(carregando ? 0.5 : 1)
+            }
+        }
+        .background(Souv.fundo)
+    }
+
     private var listaTasks: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(tituloProjeto).font(.headline).lineLimit(1)
-                Spacer()
-                if projeto != Self.foco && projeto != nil {
-                    Picker("Tasks", selection: $todas) {
-                        Text("Minhas").tag(false)
-                        Text("Todas").tag(true)
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
-                }
-            }
-            .padding(12)
+            cabecalhoTasks
             Divider()
             if carregando && tasks.isEmpty {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -168,8 +235,10 @@ struct ProjetosTela: View {
     }
 
     private func linhaTask(_ t: Resumo) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(t.titulo).lineLimit(2)
+        HStack(alignment: .top, spacing: 8) {
+            if selecionando { bolinha(t.id) }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(t.titulo).lineLimit(2)
             HStack(spacing: 6) {
                 if projeto == Self.foco { Circle().fill(Color(hex: t.cor)).frame(width: 6, height: 6); Text(t.projeto ?? "") }
                 StatusChip(status: t.status, dias: t.dias)
@@ -177,9 +246,86 @@ struct ProjetosTela: View {
                 if let pts = t.pontos { Text("\(pts.formatted()) pts") }
             }
             .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 3)
-        .linhaSouv(task == t.id) { task = t.id }
+        .linhaSouv(selecionando ? marcadas.contains(t.id) : task == t.id) {
+            if selecionando { marcar(t.id) } else { task = t.id }
+        }
+        .contextMenu { menuSelecao(t.id) }
+    }
+
+    // ---------- seleção em lote ----------
+    private func bolinha(_ id: String) -> some View {
+        Image(systemName: marcadas.contains(id) ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(marcadas.contains(id) ? Souv.destaque : Souv.texto2)
+    }
+
+    @ViewBuilder private func menuSelecao(_ id: String) -> some View {
+        if selecionando {
+            Button(marcadas.contains(id) ? "Desmarcar" : "Marcar") { marcar(id) }
+            Button("Sair da seleção") { sairDaSelecao() }
+        } else {
+            Button("Selecionar") { selecionando = true; marcadas = [id]; resultadoLote = nil }
+        }
+    }
+
+    private var barraLote: some View {
+        HStack(spacing: 8) {
+            Button(marcadas.count == tasks.count ? "Nenhuma" : "Todas") {
+                marcadas = marcadas.count == tasks.count ? [] : Set(tasks.map(\.id))
+            }
+            .buttonStyle(.link)
+            Text("\(marcadas.count) marcada\(marcadas.count == 1 ? "" : "s")").font(.caption).foregroundStyle(Souv.texto2)
+            Spacer(minLength: 4)
+            SouvSelect(opcoes: (dados?.statusLote ?? []).map { .init(valor: $0, rotulo: rotulo($0), cor: CORES_STATUS[$0] ?? .gray) },
+                       selecionado: nil, vazio: "Status") { s in pedidoLote = ("status", s, "Mudar para \(rotulo(s)) o status") }
+                .frame(width: 110)
+            Button { prazoLote = Date(); escolhendoPrazo = true } label: { Label("Prazo", systemImage: "calendar") }
+                .popover(isPresented: $escolhendoPrazo) {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        DatePicker("Prazo", selection: $prazoLote, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
+                        Button("Usar este prazo") {
+                            escolhendoPrazo = false
+                            pedidoLote = ("prazo", diaLocal(prazoLote),
+                                          "Pôr o prazo de \(prazoLote.formatted(.dateTime.day().month(.twoDigits).year())) em")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .padding(12)
+                }
+            Button { sairDaSelecao() } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Sair da seleção (Esc)")
+        }
+        .disabled(carregando)
+        .padding(.horizontal, 12).padding(.bottom, 8)
+        .onExitCommand { sairDaSelecao() }
+    }
+
+    private func marcar(_ id: String) {
+        if marcadas.contains(id) { marcadas.remove(id) } else { marcadas.insert(id) }
+    }
+
+    private func sairDaSelecao() {
+        selecionando = false
+        marcadas = []
+    }
+
+    private func aplicarLote(_ campo: String, _ valor: String) {
+        let ids = tasks.map(\.id).filter(marcadas.contains)  // na ordem da lista
+        guard !ids.isEmpty else { return }
+        Task {
+            carregando = true
+            let (r, msg): (Lote?, String?) = await JFY.ler(["--tasks-mudar", campo, valor] + ids)
+            if let r {
+                let titulo = { (id: String) in tasks.first { $0.id == id }?.titulo ?? id }
+                resultadoLote = "\(r.ok) de \(ids.count) mudada\(r.ok == 1 ? "" : "s") no Journify."
+                    + (r.erros.isEmpty ? "" : " Não mudaram: " + r.erros.map { "\(titulo($0.id)) (\($0.erro))" }.joined(separator: "; "))
+                if r.erros.isEmpty { sairDaSelecao() } else { marcadas = Set(r.erros.map(\.id)) }  // ficam marcadas as que falharam
+            } else {
+                resultadoLote = msg
+            }
+            await carregarTasks()
+        }
     }
 
     // ---------- jfy ----------

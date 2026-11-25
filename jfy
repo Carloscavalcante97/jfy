@@ -1915,22 +1915,37 @@ def cor_hex(p):
     return "#%02x%02x%02x" % rgb256(cor_projeto(p))
 
 
+def meu_uid(cfg, minhas):
+    """O seu id no Journify (o MCP não diz quem é): o responsável que está em todas as suas tasks. Fica no config."""
+    if not cfg.get("journify_uid") and minhas:
+        comuns = set.intersection(*(set(t.get("assigneeIds") or []) for t in minhas))
+        if len(comuns) == 1:
+            cfg["journify_uid"] = comuns.pop()
+            gravar = load()
+            gravar["journify_uid"] = cfg["journify_uid"]
+            save(gravar)
+    return cfg.get("journify_uid")
+
+
 def resumo_task(cfg, t):
     fim = t["statusId"] in PEDE_VIDEO
+    resp = t.get("assigneeIds") or []
     return {"id": t["id"], "titulo": t["title"], "status": t["statusId"], "prioridade": t.get("priority"),
             "prazo": (t.get("dueDate") or "")[:10] or None, "dias": dias_prazo(t), "pontos": (t.get("estimate") or {}).get("value"),
             "prazo_txt": re.sub(r"\x1b\[[0-9;]*m", "", tag_prazo(t)).strip(),
             "etapa": "Encerradas" if fim else ETAPAS[etapa(t)].capitalize(), "etapa_n": 5 if fim else etapa(t),
-            "pid": t["projectId"], "projeto": cfg["projetos"].get(t["projectId"], {}).get("nome"), "cor": cor_hex(t["projectId"])}
+            "pid": t["projectId"], "projeto": cfg["projetos"].get(t["projectId"], {}).get("nome"), "cor": cor_hex(t["projectId"]),
+            "resp": len(resp), "eu": bool(cfg.get("journify_uid")) and cfg["journify_uid"] in resp}  # a tabela agrupa por responsável
 
 
 def projetos_json():
     """Aba Projetos: os projetos (com task sua primeiro, depois os configurados sem task) e o foco de todos."""
     cfg, tasks = load(), mcp("minhas_tasks")
+    meu_uid(cfg, tasks)
     n = lambda p: sum(x["projectId"] == p for x in tasks)
     pids = sorted({x["projectId"] for x in tasks} | set(cfg["projetos"]),
                   key=lambda p: (not n(p), cfg["projetos"].get(p, {}).get("nome", "~" + p).lower()))
-    return {"foco": [resumo_task(cfg, t) for t in foco(tasks)],
+    return {"foco": [resumo_task(cfg, t) for t in foco(tasks)], "status_lote": [x for x in STATUS_APP if x not in PEDE_VIDEO],
             "projetos": [{"id": p, "nome": cfg["projetos"].get(p, {}).get("nome"), "cor": cor_hex(p), "tasks": n(p),
                           "exemplo": None if p in cfg["projetos"] else next(x["title"] for x in tasks if x["projectId"] == p)}
                          for p in pids]}
@@ -1940,6 +1955,8 @@ def tasks_json(pid, todas=False):
     """As tasks do projeto na ordem da tela do projeto: as suas abertas, ou todas (com as encerradas no fim)."""
     cfg = load()
     ts = mcp("listar_tasks_projeto", projetoId=pid) if todas else mcp("minhas_tasks", projetoId=pid)
+    if not todas:
+        meu_uid(cfg, ts)
     if todas:  # ponytail: das encerradas, só as 30 mexidas por último; o resto fica no Journify
         fim = sorted((t for t in ts if t["statusId"] in PEDE_VIDEO), key=lambda t: t.get("updatedAt") or "", reverse=True)
         ts = [t for t in ts if t["statusId"] not in PEDE_VIDEO] + fim[:30]
@@ -1969,6 +1986,27 @@ def task_mudar(tid, campo, valor, extra=""):
         return mcp("comentar_task", taskId=tid, texto=valor)
     video = ({"videoTesteUrl": extra} if extra.startswith("http") else {"semVideoMotivo": extra}) if campo == "status" and extra else {}
     mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
+
+
+def tasks_mudar(campo, valor, *tids):
+    """Mudança em lote (a seleção da lista de tasks do app): status ou prazo de várias tasks, 4 por vez. Uma que falha
+    não para as outras: volta na lista de erros. Status que pede o vídeo do teste não vai em lote (cada task tem o seu)."""
+    from concurrent.futures import ThreadPoolExecutor
+    if campo not in ("status", "prazo"):
+        sys.exit(f"Em lote, só status ou prazo (não {campo}).")
+    if campo == "status" and valor in PEDE_VIDEO:
+        sys.exit("Esse status pede o vídeo do teste de cada task: mude uma por vez, na tela da task.")
+    if not tids:
+        sys.exit("Nenhuma task escolhida.")
+
+    def uma(tid):
+        try:
+            task_mudar(tid, campo, valor)
+        except Exception as e:
+            return {"id": tid, "erro": str(e)[:200]}
+    with ThreadPoolExecutor(4) as ex:
+        erros = [e for e in ex.map(uma, tids) if e]
+    return {"ok": len(tids) - len(erros), "erros": erros}
 
 
 def task_abrir(tid, modo):
@@ -3779,7 +3817,7 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
+                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
                 "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
@@ -4148,6 +4186,19 @@ def selftest():
     h = horas_json(hoje)
     assert h["lancado"]["removidas"] == 1 and [x["estado"] for x in h["itens"]] == ["mudou", "nova"], h["itens"]
     os.remove(arq_lancado(hoje))
+    real_tm, feitos = task_mudar, []
+    globals()["task_mudar"] = lambda t, c, v: feitos.append((t, c, v)) if t != "ruim" else (_ for _ in ()).throw(RuntimeError("negado"))
+    r = tasks_mudar("status", "em_revisao", "t1", "ruim", "t2")
+    globals()["task_mudar"] = real_tm
+    assert r == {"ok": 2, "erros": [{"id": "ruim", "erro": "negado"}]} and sorted(feitos) == [("t1", "status", "em_revisao"), ("t2", "status", "em_revisao")], r
+    try:
+        tasks_mudar("status", "fechado", "t1")
+        assert False
+    except SystemExit as e:
+        assert "vídeo" in str(e)
+    cf = {"journify_uid": "eu", "projetos": {}}
+    r = resumo_task(cf, {"id": "1", "title": "t", "statusId": "em_aberto", "projectId": "p", "assigneeIds": ["eu", "y"]})
+    assert (r["resp"], r["eu"]) == (2, True), r
     pj_real = PROJ_JOURNIFY
     globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")  # sem a lista: os apelidos do jfy
     h = horas_json(hoje)
