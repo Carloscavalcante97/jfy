@@ -478,6 +478,7 @@ struct TaskDetalhe: View {
                     Text(d.projeto ?? "projeto sem nome").foregroundStyle(.secondary)
                     if let e = d.epico { Text("· \(e)").foregroundStyle(.secondary) }
                     Spacer()
+                    BotaoContexto(item: .init(tipo: "task", ref: tid, titulo: d.titulo, origem: d.projeto, pid: d.pid))
                     Link(destination: URL(string: d.url)!) { Label("Abrir no Journify", systemImage: "arrow.up.right.square") }
                     if let fechar {
                         Button(action: fechar) { Image(systemName: "xmark").font(.body.weight(.semibold)) }
@@ -522,6 +523,7 @@ struct TaskDetalhe: View {
                             .buttonStyle(.plain).help(l.url)
                             .contextMenu {
                                 Button("Copiar o link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(l.url, forType: .string) }
+                                MenuContexto(item: .init(tipo: "link", ref: l.url, titulo: l.nome, origem: d.titulo, pid: d.pid))
                             }
                         }
                     }
@@ -597,6 +599,7 @@ struct TaskDetalhe: View {
                             }
                         }
                         .buttonStyle(.plain).help(a.nome)
+                        .contextMenu { menuAnexo(a) }
                     }
                 }
             }
@@ -605,8 +608,13 @@ struct TaskDetalhe: View {
                     Label { Text("a\(a.n)  \(a.nome)") } icon: { Image(systemName: icone(a.tipo)) }
                 }
                 .buttonStyle(.link).help("Abrir \(a.nome)")
+                .contextMenu { menuAnexo(a) }
             }
         }
+    }
+
+    @ViewBuilder private func menuAnexo(_ a: Detalhe.Anexo) -> some View {
+        if let u = a.url { MenuContexto(item: .init(tipo: "arquivo", ref: u, titulo: a.nome, origem: d?.titulo, pid: d?.pid)) }
     }
 
     private func comentarios(_ lista: [Detalhe.Comentario]) -> some View {

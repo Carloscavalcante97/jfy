@@ -45,8 +45,8 @@ enum JFY {
 extension JFY {
     /// Roda um comando do app e decodifica o JSON da saída. O segundo valor é a mensagem para mostrar: o erro
     /// (stderr do jfy, ex.: o Journify recusou) ou um aviso que veio junto com o resultado.
-    static func ler<T: Decodable>(_ args: [String]) async -> (T?, String?) {
-        let r = await rodar(args)
+    static func ler<T: Decodable>(_ args: [String], entrada: String? = nil) async -> (T?, String?) {
+        let r = await rodar(args, entrada: entrada)
         let msg = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
         guard r.status == 0 else { return (nil, msg.isEmpty ? "jfy \(args[0]) falhou (código \(r.status))" : msg) }
         let d = JSONDecoder()
@@ -91,7 +91,7 @@ extension Color {
 }
 
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", projetos = "Projetos", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
+    case terminal = "jfy", projetos = "Projetos", contexto = "Contexto", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
          portas = "Portas", uso = "Uso da IA",
          chat = "Chat", notificacoes = "Notificações", temas = "Temas", configuracoes = "Configurações", creditos = "Créditos"
     var id: Self { self }
@@ -99,6 +99,7 @@ enum Tela: String, CaseIterable, Identifiable {
         switch self {
         case .terminal: "terminal"
         case .projetos: "folder"
+        case .contexto: "tray.full"
         case .github: "arrow.triangle.branch"
         case .horas: "clock"
         case .reunioes: "calendar"
@@ -224,6 +225,7 @@ struct Principal: View {
     @ObservedObject var portas: PortasAbertas
     @ObservedObject var nav: Navegacao
     @ObservedObject var abas: AbasTmux
+    @ObservedObject private var cesta = Cesta.shared
     @ObservedObject var limites: LimitesIA
     private var tela: Tela? { nav.tela }
     @State private var telaCheia = false
@@ -243,7 +245,8 @@ struct Principal: View {
                             .foregroundStyle(marcada ? Souv.destaque : Souv.texto2)
                         Text(t.rawValue).foregroundStyle(Souv.texto).fontWeight(marcada ? .medium : .regular).lineLimit(1)
                         Spacer(minLength: 0)
-                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
+                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count
+                             : t == .contexto ? cesta.itens.count : 0)
                         if t == .terminal, !abas.itens.isEmpty {
                             Spacer(minLength: 0)
                             // recolhida, a bolinha do sino continua aparecendo na linha do jfy
@@ -279,6 +282,7 @@ struct Principal: View {
                 Souv.fundo.ignoresSafeArea()
                 mostrar(.terminal) { TerminalTela(host: terminal) }
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
+                mostrar(.contexto) { ContextoTela(ativa: tela == .contexto, irParaJFY: irParaJFY, abas: abas) }
                 mostrar(.github) { GithubTela(ativa: tela == .github, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: irParaJFY) }
                 mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, nav: nav, irParaJFY: irParaJFY) }

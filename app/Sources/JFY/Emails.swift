@@ -254,6 +254,7 @@ struct EmailsTela: View {
                     HStack {
                         Button(e.lido ? "Marcar como não lido" : "Marcar como lido") { agir(["--email-acao", e.id, e.lido ? "nao_lido" : "lido"]) }
                         if let u = URL(string: e.link) { Link("Abrir no Gmail", destination: u) }
+                        BotaoContexto(item: .init(tipo: "email", ref: e.id, titulo: e.assunto, origem: e.de))
                     }
                     if !e.anexos.isEmpty {
                         Label("Anexos: \(e.anexos.joined(separator: ", "))", systemImage: "paperclip").font(.callout).foregroundStyle(.secondary)

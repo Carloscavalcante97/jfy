@@ -654,6 +654,7 @@ struct PRDetalhe: View {
                 HStack {
                     Text("\(repo) #\(n)").foregroundStyle(.secondary)
                     Spacer()
+                    BotaoContexto(item: .init(tipo: "pr", ref: "\(repo)#\(n)", titulo: d.titulo, origem: repo))
                     Link(destination: URL(string: d.url)!) { Label("Abrir no GitHub", systemImage: "arrow.up.right.square") }
                 }
                 .font(.callout)

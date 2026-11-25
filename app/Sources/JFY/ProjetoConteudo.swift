@@ -125,6 +125,7 @@ private struct DocumentosProjeto: View {
                             }
                         }
                         .linhaSouv(aberto == d.id) { aberto = d.id }
+                        .contextMenu { if !d.sensivel { MenuContexto(item: .init(tipo: "documento", ref: d.id, titulo: d.titulo, pid: pid)) } }
                     }
                     .listaSouv()
                 }
@@ -151,7 +152,11 @@ private struct DocumentosProjeto: View {
             } else if let conteudo {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text(conteudo.titulo).font(Souv.titulo(24)).foregroundStyle(Souv.texto)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(conteudo.titulo).font(Souv.titulo(24)).foregroundStyle(Souv.texto)
+                            Spacer()
+                            if !d.sensivel { BotaoContexto(item: .init(tipo: "documento", ref: d.id, titulo: d.titulo, pid: pid)) }
+                        }
                         Text("Atualizado \(relativo(d.atualizado))").font(.caption).foregroundStyle(Souv.texto2)
                         TextoJournify(texto: conteudo.texto)
                     }
@@ -225,7 +230,11 @@ private struct ReunioesProjeto: View {
                         if let detalhe {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 12) {
-                                    Text(detalhe.titulo).font(Souv.titulo(24)).foregroundStyle(Souv.texto)
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(detalhe.titulo).font(Souv.titulo(24)).foregroundStyle(Souv.texto)
+                                        Spacer()
+                                        if let a = aberta { BotaoContexto(item: .init(tipo: "reuniao", ref: a, titulo: detalhe.titulo, pid: pid)) }
+                                    }
                                     if let d = dataISO(detalhe.data) {
                                         Text(d.formatted(date: .complete, time: .shortened)).foregroundStyle(Souv.texto2)
                                     }
@@ -345,6 +354,7 @@ private struct ArquivosProjeto: View {
         .contextMenu {
             Button("Abrir o arquivo") { abrir(a) }
             Button("Abrir a task") { abrirTask(a.task) }
+            if let u = a.url { MenuContexto(item: .init(tipo: "arquivo", ref: u, titulo: a.nome, origem: a.taskTitulo, pid: pid)) }
             if let u = a.url { Button("Copiar o link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(u, forType: .string) } }
         }
     }
