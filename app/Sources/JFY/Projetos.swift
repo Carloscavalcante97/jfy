@@ -58,6 +58,11 @@ struct ProjetosTela: View {
             if !deFora { task = nil }
             deFora = false
         }
+        .onChange(of: nav.abrirProjeto) {
+            guard let p = nav.abrirProjeto, dados != nil else { return }  // sem dados ainda: o carregarProjetos abre
+            projeto = p
+            nav.abrirProjeto = nil
+        }
         .onChange(of: nav.abrirTask) {
             guard let ref = nav.abrirTask else { return }
             deFora = projeto != ref.pid
@@ -102,6 +107,14 @@ struct ProjetosTela: View {
             }
             Spacer()
             if p.tasks > 0 { Text("\(p.tasks)").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
+            let fav = nav.favoritos.contains { $0.id == p.id }
+            Button {
+                if !nav.alternarFavorito(.init(id: p.id, nome: p.nome ?? "sem nome", cor: p.cor)) {
+                    aviso = "Até \(Navegacao.maxFavoritos) favoritos: tire a estrela de um antes."
+                }
+            } label: { Image(systemName: fav ? "star.fill" : "star").foregroundStyle(fav ? Color.yellow : .secondary) }
+            .buttonStyle(.borderless)
+            .help(fav ? "Tirar dos favoritos da barra lateral" : "Favoritar: aparece na barra lateral (até \(Navegacao.maxFavoritos))")
         }
         .tag(p.id)
     }
@@ -170,9 +183,19 @@ struct ProjetosTela: View {
     // ---------- jfy ----------
     private func carregarProjetos() async {
         let (d, msg): (Projetos?, String?) = await JFY.ler(["--projetos-json"])
-        if let d { dados = d }
+        if let d {
+            dados = d
+            // favorito renomeado no jfy: a barra lateral acompanha o nome e a cor
+            let novos = nav.favoritos.map { f in d.projetos.first { $0.id == f.id }.map { .init(id: f.id, nome: $0.nome ?? f.nome, cor: $0.cor) } ?? f }
+            if novos != nav.favoritos { nav.favoritos = novos }
+        }
         aviso = msg
-        if projeto == nil { projeto = d?.foco.isEmpty == false ? Self.foco : d?.projetos.first?.id }
+        if let p = nav.abrirProjeto {  // veio de um favorito da barra lateral
+            projeto = p
+            nav.abrirProjeto = nil
+        } else if projeto == nil {
+            projeto = d?.foco.isEmpty == false ? Self.foco : d?.projetos.first?.id
+        }
     }
 
     private func carregarTasks() async {

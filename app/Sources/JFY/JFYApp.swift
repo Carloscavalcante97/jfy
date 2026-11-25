@@ -115,9 +115,33 @@ final class Navegacao: ObservableObject {
     struct TaskRef: Equatable {
         let pid, tid: String
     }
+    /// Projeto favorito: aparece na barra lateral, embaixo de Projetos.
+    struct Favorito: Codable, Equatable, Identifiable {
+        let id, nome: String
+        let cor: String?
+    }
+    static let maxFavoritos = 4
+
     @Published var tela: Tela? = .terminal
     @Published var abrirTask: TaskRef?
     @Published var abrirPR: String?  // "dono/repo#n"
+    @Published var abrirProjeto: String?
+    @Published var favoritos: [Favorito] = (try? JSONDecoder().decode([Favorito].self,
+        from: UserDefaults.standard.data(forKey: "favoritos") ?? Data())) ?? [] {
+        didSet { UserDefaults.standard.set(try? JSONEncoder().encode(favoritos), forKey: "favoritos") }
+    }
+
+    /// Marca ou desmarca. Devolve false quando já há 4 e este não é um deles.
+    func alternarFavorito(_ f: Favorito) -> Bool {
+        if let i = favoritos.firstIndex(where: { $0.id == f.id }) {
+            favoritos.remove(at: i)
+        } else if favoritos.count < Self.maxFavoritos {
+            favoritos.append(f)
+        } else {
+            return false
+        }
+        return true
+    }
 }
 
 @main
@@ -159,6 +183,7 @@ struct Principal: View {
                     Label(t.rawValue, systemImage: t.icone).tag(t)
                         .badge(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count : 0)
                     if t == .terminal { abasDoJFY }
+                    if t == .projetos { favoritosDaBarra }
                 }
             }
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
@@ -194,6 +219,26 @@ struct Principal: View {
     }
 
     private func irParaJFY() { nav.tela = .terminal }
+
+    /// Os projetos favoritos (até 4, marcados com a estrela na aba Projetos), embaixo de Projetos: o clique abre o projeto.
+    @ViewBuilder private var favoritosDaBarra: some View {
+        ForEach(nav.favoritos) { f in
+            Button {
+                nav.abrirProjeto = f.id
+                nav.tela = .projetos
+            } label: {
+                HStack(spacing: 6) {
+                    Circle().fill(Color(hex: f.cor)).frame(width: 8, height: 8).frame(width: 14)
+                    Text(f.nome).lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.callout)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 20)
+        }
+    }
 
     /// As abas abertas no jfy (o menu e as tasks), embaixo de "jfy": o clique leva o terminal até ela. A bolinha
     /// vermelha é o Claude daquela aba pedindo atenção (o sino do tmux).
