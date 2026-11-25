@@ -7,7 +7,7 @@ final class Notificacoes: ObservableObject {
     struct Item: Decodable, Identifiable {
         let ts: Double
         let titulo, texto: String
-        let abrir, executar: String?
+        let abrir, executar, app: String?
         var id: Double { ts }
         var tipo: (icone: String, nome: String) {
             titulo.hasPrefix("Reunião") ? ("calendar", "reunião") : titulo.hasPrefix("Email") ? ("envelope", "email")
@@ -108,7 +108,7 @@ struct NotificacoesTela: View {
     }
 
     private func linha(_ it: Notificacoes.Item) -> some View {
-        let nova = it.ts > destaqueAte, acao = it.abrir != nil || it.executar != nil
+        let nova = it.ts > destaqueAte, acao = it.abrir != nil || it.executar != nil || it.app != nil
         return Button { clicar(it) } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: it.tipo.icone).frame(width: 20).foregroundStyle(nova ? Color.accentColor : .secondary)
@@ -131,7 +131,9 @@ struct NotificacoesTela: View {
     /// O mesmo clique da notificação: abre o link (a chamada da reunião) ou roda o comando do jfy (ir para a aba do
     /// Claude, abrir os emails) e traz o terminal.
     private func clicar(_ it: Notificacoes.Item) {
-        if let a = it.abrir, let u = URL(string: a) {
+        if let app = it.app, let u = URL(string: "jfy://" + (app.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? app)) {
+            NSWorkspace.shared.open(u)  // a aba certa do app, como na notificação
+        } else if let a = it.abrir, let u = URL(string: a) {
             NSWorkspace.shared.open(u)
         } else if let cmd = it.executar {
             let p = Process()

@@ -110,6 +110,14 @@ final class AbasTmux: ObservableObject {
         }
     }
 
+    /// Vai para uma janela (@n) ou um painel (%n) do tmux do jfy: o destino das notificações do Claude.
+    func irPara(_ alvo: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = Self.tmux(["select-window", "-t", alvo])
+            DispatchQueue.main.async { self.ler() }
+        }
+    }
+
     private static func tmux(_ args: [String]) -> String {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")

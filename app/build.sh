@@ -37,6 +37,10 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>NSHighResolutionCapable</key><true/>
   <key>ATSApplicationFontsPath</key><string>.</string>
   <key>JFYScript</key><string>$REPO/jfy</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>dev.jfy.mac</string>
+    <key>CFBundleURLSchemes</key><array><string>jfy</string></array>
+  </dict></array>
 </dict></plist>
 EOF
 

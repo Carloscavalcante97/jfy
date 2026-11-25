@@ -6,6 +6,7 @@ import SwiftUI
 /// --evento-apagar, --reuniao-ajuste, --reuniao-preparar).
 struct ReunioesTela: View {
     let ativa: Bool
+    @ObservedObject var nav: Navegacao
     let irParaJFY: () -> Void
 
     struct Evento: Decodable, Identifiable, Equatable {
@@ -77,6 +78,17 @@ struct ReunioesTela: View {
             }
         }
         .task(id: "\(ativa)|\(intervalo.0)|\(intervalo.1)") { if ativa { await carregar() } }
+        .task(id: nav.abrirEvento) {  // o clique na notificação de evento adicionado ou remarcado
+            guard let id = nav.abrirEvento else { return }
+            nav.abrirEvento = nil
+            let (e, msg): (Evento?, String?) = await JFY.ler(["--evento-json", id])
+            if let e {
+                ref = e.inicio
+                aberto = e
+            } else {
+                aviso = msg
+            }
+        }
         .sheet(item: $aberto) { e in
             EventoDetalhe(evento: e, projetos: agenda?.projetos ?? [], fechar: { aberto = nil },
                           editar: { aberto = nil; formulario = FormEvento(e) },

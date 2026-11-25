@@ -464,13 +464,20 @@ def imagem_tema():
     return arq
 
 
-def notificar(titulo, texto, abrir=None, executar=None):
+APP_MAC = next((x for x in ("/Applications/jfy.app", os.path.expanduser("~/Applications/jfy.app")) if os.path.isdir(x)), None)
+
+
+def notificar(titulo, texto, abrir=None, executar=None, app=None):
     """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
     (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, ou sem permissão, a do osascript (o clique abre o Editor de Scripts).
-    Cada aviso também vai para o histórico (NOTIFICACOES), com o mesmo clique, para a aba Notificações do app."""
+    Cada aviso também vai para o histórico (NOTIFICACOES), com o mesmo clique, para a aba Notificações do app.
+    `app` ("email/<id>", "pr/<dono/repo#n>", "evento/<id>", "aba/<janela>", "horas"…): com o jfy.app instalado, o clique
+    abre o app já na aba certa (jfy://…); sem ele, vale o `executar` (ou nada)."""
+    if app and APP_MAC and not abrir:
+        abrir, executar = "jfy://" + urllib.parse.quote(app, safe="/"), None
     try:  # ponytail: cresce ~200 bytes por aviso; o app mostra só os 300 últimos e tem o botão Limpar
         with open(NOTIFICACOES, "a") as f:
-            f.write(json.dumps({"ts": time.time(), "titulo": titulo, "texto": texto, "abrir": abrir, "executar": executar},
+            f.write(json.dumps({"ts": time.time(), "titulo": titulo, "texto": texto, "abrir": abrir, "executar": executar, "app": app},
                                ensure_ascii=False) + "\n")
     except OSError:
         pass  # sem histórico, o aviso sai do mesmo jeito
@@ -755,7 +762,7 @@ def email_barra():
                 cliente = "$(" + cmd_tmux("list-clients", "-F", "#{client_tty}") + " | head -1)"
                 notificar("Email novo", st["novo"], executar=cmd_tmux("display-popup", "-E", "-w", "90%", "-h", "85%",
                                                                       "-T", " jfy: emails ", SELF + " --email")
-                          .replace("display-popup", f'display-popup -c "{cliente}"', 1))
+                          .replace("display-popup", f'display-popup -c "{cliente}"', 1), app=f"email/{novos[0]}")
         except Exception:
             st["erro"] = True
         json.dump(st, open(EMAIL, "w"))
@@ -925,14 +932,18 @@ def relogio():
     linha e não chama de novo enquanto ele vive, então não sobe um Python por segundo. Sai quando o jfy muda (o tmux
     sobe o novo no próximo redesenho, até 15s) e quando o tmux fecha. Avisa uma vez por dia quando fecha a jornada."""
     global TEMA
-    versao = os.path.getmtime(SELF)
+    versao, vigia = os.path.getmtime(SELF), 0
     while os.path.getmtime(SELF) == versao:
+        if time.time() - vigia > 120:  # PRs e agenda: em outro processo, para a barra não travar na rede
+            vigia = time.time()
+            subprocess.Popen([SELF, "--vigiar"], start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "vigiar.log"), "a"))
         TEMA = TEMAS.get(load().get("tema"), {})  # tema trocado no menu vale aqui sem reiniciar
         m, rodando = cronometro()
         marca, hoje = os.path.join(RUN_DIR, "jornada-avisada"), date.today().isoformat()
         if m >= JORNADA and (not os.path.exists(marca) or open(marca).read() != hoje):
             open(marca, "w").write(hoje)
-            notificar("jfy", f"Jornada de {JORNADA // 60}h fechada: {fmt_min(m)} hoje.")
+            notificar("jfy", f"Jornada de {JORNADA // 60}h fechada: {fmt_min(m)} hoje.", app="horas")
         if not m and not rodando:
             jornada = f"#[fg=colour244]{ic('jornada')} jornada não começou "
         else:
@@ -940,6 +951,80 @@ def relogio():
             jornada = f"#[fg=colour{cor},bold]{icone} {fmt_min(m)} / {JORNADA // 60}h#[default] "
         print(tematizar(proxima_reuniao() + email_barra() + barra_ia() + jornada), flush=True)
         time.sleep(1)
+
+
+VIGIAS = os.path.join(HOME, "vigias.json")  # o que o vigiar() já viu: PRs pedindo revisão e a agenda dos próximos dias
+
+
+def vigiar():
+    """De 2 em 2 min (o relógio da barra chama, em segundo plano): PR novo pedindo a sua revisão e evento adicionado,
+    remarcado ou cancelado por outra pessoa viram notificação, e o clique abre o app na aba certa. A primeira vez só
+    guarda o estado (não avisa o que já existia). Uma trava evita aviso em dobro com dois terminais abertos."""
+    trava = os.path.join(RUN_DIR, "vigiar.trava")
+    try:
+        os.close(os.open(trava, os.O_CREAT | os.O_EXCL))
+    except FileExistsError:
+        if time.time() - os.path.getmtime(trava) < 300:
+            return
+        os.utime(trava)  # trava largada por um vigia que morreu
+    try:
+        st = json.load(open(VIGIAS)) if os.path.exists(VIGIAS) else {}
+        for vigia in (vigiar_prs, vigiar_agenda):
+            try:
+                vigia(st)
+            except Exception as e:  # sem rede, sem gh, sem Google: tenta de novo na próxima
+                print(f"{datetime.now():%d/%m %H:%M} {vigia.__name__}: {e}", file=sys.stderr)
+        json.dump(st, open(VIGIAS, "w"))
+    finally:
+        os.remove(trava)
+
+
+def vigiar_prs(st):
+    if not shutil.which("gh") or not contas_gh()[0]:
+        return
+    q = 'query { search(type: ISSUE, query: "is:pr is:open review-requested:@me", first: 50) { nodes { ... on PullRequest { number title repository { nameWithOwner } author { login } } } } }'
+    nos = [n for n in gh("api", "graphql", "-f", "query=" + q)["data"]["search"]["nodes"] if n]
+    agora = {f"{n['repository']['nameWithOwner']}#{n['number']}": n for n in nos}
+    if "prs" in st:
+        for k in [k for k in agora if k not in st["prs"]][:3]:
+            n = agora[k]
+            notificar("PR pede sua revisão", f"{n['title']} · {k} · de {(n.get('author') or {}).get('login', '?')}", app=f"pr/{k}")
+    st["prs"] = sorted(agora)
+
+
+def vigiar_agenda(st):
+    if not load().get("google"):
+        return
+    agora = time.time()
+    ini = datetime.now().astimezone()
+    q = {"timeMin": ini.isoformat(), "timeMax": (ini + timedelta(days=14)).isoformat(), "singleEvents": "true", "maxResults": 500}
+    itens = http_json(f"{CAL}?{urllib.parse.urlencode(q)}", token=google_token()).get("items", [])
+    ts = lambda x: (datetime.fromisoformat(x["dateTime"].replace("Z", "+00:00")).timestamp() if "dateTime" in x
+                    else datetime.combine(date.fromisoformat(x["date"]), datetime.min.time()).astimezone().timestamp())
+    criado = lambda e: datetime.fromisoformat(e.get("created", "1970-01-01T00:00:00Z").replace("Z", "+00:00")).timestamp()
+    atual = {e["id"]: [ts(e["start"]), e.get("summary") or "(sem título)", bool((e.get("organizer") or {}).get("self"))]
+             for e in itens if e.get("status") != "cancelled"}
+    quando = lambda t: ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][datetime.fromtimestamp(t).weekday()] + datetime.fromtimestamp(t).strftime(" %d/%m %H:%M")
+    antes, visto = st.get("agenda"), st.get("agenda_em", 0)
+    if antes is not None:
+        avisos = []
+        for i, (t, titulo, meu) in atual.items():
+            e = next(x for x in itens if x["id"] == i)
+            if i not in antes and not meu and criado(e) > visto - 60:  # novo de verdade, não só entrou na janela de 14 dias
+                avisos.append(("Evento adicionado na sua agenda", f"{titulo} · {quando(t)}", f"evento/{i}"))
+            elif i in antes and abs(antes[i][0] - t) > 60 and not meu:
+                avisos.append(("Evento remarcado", f"{titulo} · de {quando(antes[i][0])} para {quando(t)}", f"evento/{i}"))
+        for i, (t, titulo, meu) in antes.items():
+            if i not in atual and t > agora and not meu:
+                avisos.append(("Evento cancelado", f"{titulo} · era {quando(t)}", "agenda"))
+        for titulo, texto, app in avisos[:5]:
+            notificar(titulo, texto, app=app)
+    st["agenda"], st["agenda_em"] = atual, agora
+
+
+def evento_json(eid):
+    """Um evento só (o clique na notificação de evento abre ele na aba Agenda)."""
+    return evento_app(http_json(f"{CAL}/{urllib.parse.quote(eid)}", token=google_token()), load())
 
 
 def resumo_dia():
@@ -956,7 +1041,7 @@ def notificar_dia():
     except Exception as e:
         return notificar("jfy", f"Não consegui montar o resumo do dia: {e}")
     limpo = [" ".join(re.sub(r"\033\[[0-9;]*m", "", l).split()) for l in linhas]
-    notificar("jfy: " + titulo, "\n".join(limpo[:4]) or "Sem reunião nem prazo hoje.")
+    notificar("jfy: " + titulo, "\n".join(limpo[:4]) or "Sem reunião nem prazo hoje.", app="agenda")
 
 
 def entrar():
@@ -1023,7 +1108,7 @@ def avisar():
     ir = (" ".join(shlex.quote(x) for x in [shutil.which("tmux") or "tmux", "-S", sock, "select-window", "-t", pane])
           if pane and sock else None)  # clique na notificação: terminal na frente, já na aba deste Claude
     notificar(f"{titulo} · {onde}", " ".join((d.get("message") or d.get("last_assistant_message") or "").split())[:140] or "pronto",
-              executar=ir)
+              executar=ir, app=f"aba/{pane}" if pane else None)
 
 
 # ---------- horas (minhas-horas do Journify) ----------
@@ -1296,6 +1381,7 @@ def lancar_horas(cfg, dia):
 - Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
 - No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}."""
     subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
+    notificar("Lançamento de horas terminou", f"{dia.strftime('%d/%m')}: confira o dia no Journify", app="horas")
 
 
 # ---------- portas abertas (tela o e barra de cima do Mac) ----------
@@ -2774,10 +2860,15 @@ def fim(tid, minutos=None, novo=None, nada=False, modo="sessao", video=None, mot
         minutos = minutos_uteis(ini, agora)
     registrar_horas(ini, agora, minutos, modo, tid=tid)  # antes do Journify: o tempo foi trabalhado mesmo se ele falhar
     quando = datetime.now().strftime("%d/%m/%Y %H:%M")
-    mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
-    if novo:
-        mcp("atualizar_task", taskId=tid, statusId=novo,
-            **({"videoTesteUrl": video} if video else {"semVideoMotivo": motivo} if motivo else {}))
+    try:
+        mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
+        if novo:
+            mcp("atualizar_task", taskId=tid, statusId=novo,
+                **({"videoTesteUrl": video} if video else {"semVideoMotivo": motivo} if motivo else {}))
+    except Exception as e:  # o tempo já está no log do dia: só o Journify ficou sem
+        notificar("Erro ao registrar no Journify", f"{fmt_min(minutos)} ficaram nas horas do jfy, mas o Journify recusou: {e}"[:180], app="horas")
+        raise
+    notificar("Horas registradas", f"{fmt_min(minutos)} no Journify" + (f", status {novo.replace('_', ' ')}" if novo else ""), app="horas")
     if os.path.exists(arq):
         os.remove(arq)
     print(c(f"Journify atualizado: {fmt_min(minutos)}" + (f", status {novo}" if novo else ""), 78))
@@ -3369,7 +3460,7 @@ def main():
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
                 "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
-                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar,
+                "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--pr-revisar": pr_revisar,

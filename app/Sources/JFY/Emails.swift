@@ -25,6 +25,7 @@ final class CaixaEmail: ObservableObject {
 struct EmailsTela: View {
     @ObservedObject var caixa: CaixaEmail
     let ativa: Bool
+    @ObservedObject var nav: Navegacao
 
     struct Lista: Decodable {
         struct Item: Decodable, Identifiable, Hashable {
@@ -95,6 +96,12 @@ struct EmailsTela: View {
         }
         .task(id: ativa) { if ativa { await carregar() } }
         .task(id: selecao) { await abrir() }
+        .onChange(of: nav.abrirEmail) {  // o clique na notificação de email novo
+            guard let id = nav.abrirEmail else { return }
+            selecao = id
+            nav.abrirEmail = nil
+            Task { await carregar() }
+        }
         .onChange(of: caixa.naoLidos) { if ativa { Task { await carregar() } } }  // chegou email com a aba aberta
         .confirmationDialog("Marcar todos os não lidos da Principal como lidos no Gmail?", isPresented: $confirmarTodos) {
             Button("Marcar todos") { agir(["--emails-lidos"]) }

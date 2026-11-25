@@ -139,6 +139,29 @@ final class Navegacao: ObservableObject {
     @Published var abrirTask: TaskRef?
     @Published var abrirPR: String?  // "dono/repo#n"
     @Published var abrirProjeto: String?
+    @Published var abrirEmail: String?
+    @Published var abrirEvento: String?
+    @Published var abrirAba: String?  // janela do tmux do jfy (o clique na notificação do Claude)
+
+    /// jfy://<destino>, o clique nas notificações do jfy: email/<id>, pr/<dono>/<repo>#<n>, evento/<id>,
+    /// aba/<janela do tmux>, horas, agenda, emails, github, notificacoes.
+    func abrir(_ url: URL) {
+        guard url.scheme == "jfy", let destino = url.host else { return }
+        let resto = String(url.path.drop(while: { $0 == "/" }))  // o path já vem decodificado (%23 → #, %25 → %)
+        switch destino {
+        case "email": abrirEmail = resto; tela = .emails
+        case "pr": abrirPR = resto; tela = .github
+        case "evento": abrirEvento = resto; tela = .reunioes
+        case "aba": abrirAba = resto; tela = .terminal
+        case "horas": tela = .horas
+        case "agenda": tela = .reunioes
+        case "emails": tela = .emails
+        case "github": tela = .github
+        case "notificacoes": tela = .notificacoes
+        default: tela = .terminal
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
     @Published var favoritos: [Favorito] = (try? JSONDecoder().decode([Favorito].self,
         from: UserDefaults.standard.data(forKey: "favoritos") ?? Data())) ?? [] {
         didSet { UserDefaults.standard.set(try? JSONEncoder().encode(favoritos), forKey: "favoritos") }
@@ -211,8 +234,8 @@ struct Principal: View {
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.github) { GithubTela(ativa: tela == .github, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: irParaJFY) }
-                mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: irParaJFY) }
-                mostrar(.emails) { EmailsTela(caixa: caixa, ativa: tela == .emails) }
+                mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, nav: nav, irParaJFY: irParaJFY) }
+                mostrar(.emails) { EmailsTela(caixa: caixa, ativa: tela == .emails, nav: nav) }
                 mostrar(.portas) { PortasTela(portas: portas, ativa: tela == .portas) }
                 mostrar(.uso) { UsoTela() }
                 mostrar(.chat) { ChatTela(ativa: tela == .chat) }
@@ -223,6 +246,12 @@ struct Principal: View {
             }
         }
         .toolbar { ToolbarItem(placement: .principal) { BarraUsoIA(limites: limites) } }  // em qualquer aba
+        .onOpenURL { nav.abrir($0) }  // o clique nas notificações (jfy://…)
+        .onChange(of: nav.abrirAba) {
+            guard let alvo = nav.abrirAba else { return }
+            abas.irPara(alvo)
+            nav.abrirAba = nil
+        }
         .background { atalhos }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in telaCheia = true }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willExitFullScreenNotification)) { _ in telaCheia = false }
