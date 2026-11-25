@@ -143,7 +143,7 @@ struct ProjetosTela: View {
             Text(t.titulo).lineLimit(2)
             HStack(spacing: 6) {
                 if projeto == Self.foco { Circle().fill(Color(hex: t.cor)).frame(width: 6, height: 6); Text(t.projeto ?? "") }
-                StatusChip(status: t.status)
+                StatusChip(status: t.status, dias: t.dias)
                 if let p = t.prazoTxt, !p.isEmpty { Text(p).foregroundStyle((t.dias ?? 99) <= 0 ? .red : .secondary) }
                 if let pts = t.pontos { Text("\(pts.formatted()) pts") }
             }
@@ -200,6 +200,7 @@ struct TaskDetalhe: View {
         }
         let titulo, status, pid, url, descricao: String
         let prioridade, prazo, projeto, cor, epico: String?
+        let dias: Int?
         let pontos: Double?
         let configurado: Bool
         let statusApp, pedeVideo: [String]
@@ -278,7 +279,7 @@ struct TaskDetalhe: View {
                         if d.pedeVideo.contains(s) { video = ""; fechandoEm = s } else { mudar("status", s) }
                     }
                 }
-            } label: { StatusChip(status: d.status) }
+            } label: { StatusChip(status: d.status, dias: d.dias) }
             .menuStyle(.borderlessButton).fixedSize()
             Menu {
                 ForEach(["baixa", "media", "alta", "critica"], id: \.self) { p in Button(rotuloPrioridade(p)) { mudar("prioridade", p) } }
@@ -392,14 +393,38 @@ func rotuloPrioridade(_ p: String) -> String {
     ["media": "média", "critica": "crítica"][p] ?? p
 }
 
-/// Status com a cor do jfy (em progresso amarelo, bloqueado vermelho, fechado verde) e sempre com o nome escrito.
+/// Cor da bolinha de cada status: uma para cada, para bater o olho na lista.
+let CORES_STATUS: [String: Color] = [
+    "em_aberto": .gray,
+    "criando_escopo": .teal,
+    "priorizado": Color(red: 0.0, green: 0.3, blue: 1.0),  // azul bem forte
+    "em_progresso": .green,
+    "em_revisao": .yellow,
+    "em_teste": .purple,
+    "pendente_validacao": Color(red: 1.0, green: 0.48, blue: 0.78),  // rosa claro: longe do vermelho de atrasada
+    "bloqueado": .orange,
+    "finalizado_validacao": .brown,
+    "fechado": Color(claro: 0x3A3A3C, escuro: 0xC7C7CC),  // grafite: não some no fundo escuro
+]
+
+/// A bolinha do status, sempre com o nome escrito. Prazo vencido numa task ainda aberta pinta de vermelho e
+/// escreve "atrasada": atrasada não é um status do Journify, é o prazo.
 struct StatusChip: View {
     let status: String
+    var dias: Int?
+
     var body: some View {
-        let cor: Color = ["em_progresso": .yellow, "bloqueado": .red, "fechado": .green, "finalizado_validacao": .green][status] ?? .gray
+        let atrasada = (dias ?? 0) < 0 && !["fechado", "finalizado_validacao"].contains(status)
         HStack(spacing: 4) {
-            Circle().fill(cor).frame(width: 7, height: 7)
-            Text(rotulo(status))
+            Group {
+                if status == "em_aberto" && !atrasada {
+                    Circle().strokeBorder(Color.gray, lineWidth: 1.5)  // vazada: ainda não começou
+                } else {
+                    Circle().fill(atrasada ? .red : CORES_STATUS[status] ?? .gray)
+                }
+            }
+            .frame(width: 8, height: 8)
+            Text(rotulo(status) + (atrasada ? " · atrasada" : ""))
         }
     }
 }
