@@ -157,7 +157,7 @@ struct HorasTela: View {
             Button("Outro nome no Journify…") { textoOutro = ""; outro = PedidoOutro(item: it, campo: "p") }
         } label: {
             HStack(spacing: 6) {
-                Circle().fill(cor(it.cor)).frame(width: 8, height: 8)
+                Circle().fill(Color(hex: it.cor)).frame(width: 8, height: 8)
                 Text(it.projeto ?? "sem projeto").foregroundStyle(it.pid == nil ? Color.orange : .primary)
                 if it.palpite { Text("pelo título").font(.caption).foregroundStyle(.secondary) }
             }
@@ -220,8 +220,4 @@ struct HorasTela: View {
     // ---------- formatos ----------
     private func hm(_ m: Int) -> String { "\(m / 60):" + String(format: "%02d", m % 60) }
     private func fmt(_ m: Int) -> String { m >= 60 ? "\(m / 60)h " + String(format: "%02d", m % 60) + "min" : "\(m)min" }
-    private func cor(_ hex: String?) -> Color {
-        guard let hex, hex.count == 7, let v = UInt32(hex.dropFirst(), radix: 16) else { return .secondary }
-        return Color(red: Double(v >> 16 & 255) / 255, green: Double(v >> 8 & 255) / 255, blue: Double(v & 255) / 255)
-    }
 }

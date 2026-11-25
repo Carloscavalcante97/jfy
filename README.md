@@ -136,12 +136,16 @@ Com o extra do SwiftBar, o jfy ganha um ícone (a chama) ao lado do relógio do 
 
 ### App do Mac
 
-O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Na barra lateral (ou ⌘1 a ⌘4):
+O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Na barra lateral (ou ⌘1 a ⌘7). O jfy no terminal continua igual; o app é a interface de gestão em cima dele:
 
 - **jfy**: o menu de sempre, num terminal embutido que já vem com a JFY Mono (não precisa configurar fonte). As tasks continuam no tmux: fechar o app não encerra nenhuma, e abrir de novo volta para o mesmo lugar. Dá para usar o app e um terminal ao mesmo tempo. Com o app aberto, "Abrir o jfy" na barra de cima e o clique nas notificações trazem o app.
+- **Projetos**: os projetos (e o Foco: prazo perto ou crítica), as tasks nas mesmas seções da tela do projeto (só as suas, ou todas do projeto com as 30 encerradas mais recentes) e a task inteira: a descrição formatada com as imagens, os anexos (clique abre pelo link; nada é baixado), os comentários e um campo para comentar. Status, prioridade e prazo mudam por clique; mover para `fechado` ou `finalizado validação` pede o link do vídeo do teste ou o motivo, como o Journify exige. "Implementar (/pipeline)" e "Conversar com o Claude" abrem a mesma aba do `1` e do `2` e levam você ao terminal.
 - **Horas**: a mesma tabela do `h`, clicável: projeto e categoria por menu (ou um nome livre), horas e descrição editáveis (Enter salva; vazio volta para a regra), remover e restaurar, e a troca de dia. "Lançar no Journify…" abre o Claude numa aba do jfy para lançar pelo Chrome (esse passo usa tokens). Os ajustes são os mesmos do terminal: mudou num, aparece no outro.
+- **Reuniões**: as de hoje, com o projeto (menu, ou um nome livre) e o contexto que vão para as horas, o mesmo registro do `r`. "Entrar na chamada" e "Preparar com o Claude" (abre numa aba do jfy).
 - **Uso da IA**: quanto o Claude Code gastou neste Mac, lido das conversas em `~/.claude/projects` (hoje, 7 dias, 30 dias ou tudo). Mostra o custo em US$ pelo preço da API (na assinatura é o valor equivalente, não a conta), os tokens, as sessões e os limites de 5 h e semanal; o custo por dia de cada projeto (passe o mouse num dia para ver o detalhe); para onde foi o custo (leitura e escrita de cache, saída); e os rankings por projeto, task do Journify (clique abre a task), modelo, ferramenta e sessão, com o maior contexto de cada uma. `jfy --uso [dias]` dá o mesmo em JSON.
 - **Chat**: o chat do time do Journify (as conversas entre colaboradores), com a lista de conversas, as mensagens e o envio; busca mensagens novas a cada 5 s com a tela aberta. Ainda não está ligado: o MCP do Journify ainda não tem o chat. Quando tiver, é trocar o corpo das três funções `chat_conversas`, `chat_mensagens` e `chat_enviar` do `jfy` por chamadas ao MCP, devolvendo o formato descrito em cada uma; o app não muda. `jfy --chat [conversa [texto]]` dá o mesmo em JSON.
+
+- **Temas**: as cores e os ícones de cada tema; um clique troca, como o `t`.
 
 Para montar ou atualizar depois de um `git pull`: `./app/build.sh` (o `./install.sh` já faz isso se o app estiver instalado). A assinatura é local, vale para este Mac.
 

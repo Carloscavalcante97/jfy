@@ -1726,6 +1726,143 @@ def chat(*a):
     print(json.dumps(r, ensure_ascii=False))
 
 
+# ---------- app do Mac: projetos, tasks, reuniões e temas em JSON (a CLI continua igual) ----------
+STATUS_APP = ORDEM + ["fechado"]  # o menu de status da task no app
+# ponytail: o Journify pede o vídeo do teste (ou o motivo) nos status terminais; se pedir em outro, o erro dele aparece no app
+PEDE_VIDEO = {"fechado", "finalizado_validacao"}
+
+
+def cor_hex(p):
+    return "#%02x%02x%02x" % rgb256(cor_projeto(p))
+
+
+def resumo_task(cfg, t):
+    fim = t["statusId"] in PEDE_VIDEO
+    return {"id": t["id"], "titulo": t["title"], "status": t["statusId"], "prioridade": t.get("priority"),
+            "prazo": (t.get("dueDate") or "")[:10] or None, "dias": dias_prazo(t), "pontos": (t.get("estimate") or {}).get("value"),
+            "prazo_txt": re.sub(r"\x1b\[[0-9;]*m", "", tag_prazo(t)).strip(),
+            "etapa": "Encerradas" if fim else ETAPAS[etapa(t)].capitalize(), "etapa_n": 5 if fim else etapa(t),
+            "pid": t["projectId"], "projeto": cfg["projetos"].get(t["projectId"], {}).get("nome"), "cor": cor_hex(t["projectId"])}
+
+
+def projetos_json():
+    """Aba Projetos: os projetos (com task sua primeiro, depois os configurados sem task) e o foco de todos."""
+    cfg, tasks = load(), mcp("minhas_tasks")
+    n = lambda p: sum(x["projectId"] == p for x in tasks)
+    pids = sorted({x["projectId"] for x in tasks} | set(cfg["projetos"]),
+                  key=lambda p: (not n(p), cfg["projetos"].get(p, {}).get("nome", "~" + p).lower()))
+    return {"foco": [resumo_task(cfg, t) for t in foco(tasks)],
+            "projetos": [{"id": p, "nome": cfg["projetos"].get(p, {}).get("nome"), "cor": cor_hex(p), "tasks": n(p),
+                          "exemplo": None if p in cfg["projetos"] else next(x["title"] for x in tasks if x["projectId"] == p)}
+                         for p in pids]}
+
+
+def tasks_json(pid, todas=False):
+    """As tasks do projeto na ordem da tela do projeto: as suas abertas, ou todas (com as encerradas no fim)."""
+    cfg = load()
+    ts = mcp("listar_tasks_projeto", projetoId=pid) if todas else mcp("minhas_tasks", projetoId=pid)
+    if todas:  # ponytail: das encerradas, só as 30 mexidas por último; o resto fica no Journify
+        fim = sorted((t for t in ts if t["statusId"] in PEDE_VIDEO), key=lambda t: t.get("updatedAt") or "", reverse=True)
+        ts = [t for t in ts if t["statusId"] not in PEDE_VIDEO] + fim[:30]
+    linhas = [resumo_task(cfg, t) for t in ts]
+    ordem = {t["id"]: (urgencia(t) or 0, ORDEM.index(t["statusId"]) if t["statusId"] in ORDEM else len(ORDEM)) for t in ts}
+    return sorted(linhas, key=lambda x: (x["etapa_n"], *ordem[x["id"]]))
+
+
+def task_json(tid):
+    """Tela de task do app: a task inteira, a descrição em markdown, os anexos e os comentários."""
+    cfg, full = load(), mcp("obter_task", taskId=tid)
+    t, anexos = full["task"], full["task"].get("attachments") or []
+    return dict(resumo_task(cfg, t), epico=t.get("epic"), configurado=t["projectId"] in cfg["projetos"],
+                url=f"{cfg.get('journify', JOURNIFY)}/projects/{t['projectId']}?task={tid}",
+                descricao=doc_texto(t.get("description") or ""), status_app=STATUS_APP, pede_video=sorted(PEDE_VIDEO),
+                anexos=[{"n": i, "nome": a.get("name") or a.get("id") or f"anexo {i}", "url": a.get("url"),
+                         "tipo": a.get("contentType") or "", "imagem": (a.get("contentType") or "").startswith("image/")}
+                        for i, a in enumerate(anexos, 1)],
+                comentarios=[{"autor": x.get("authorName"), "texto": x.get("body") or "", "quando": x.get("createdAt")}
+                             for x in full.get("comments") or []])
+
+
+def task_mudar(tid, campo, valor, extra=""):
+    """O que a tela de task do app muda: status (extra = link do vídeo do teste ou o motivo de não ter), prioridade,
+    prazo (AAAA-MM-DD) ou comentario."""
+    if campo == "comentario":
+        return mcp("comentar_task", taskId=tid, texto=valor)
+    video = ({"videoTesteUrl": extra} if extra.startswith("http") else {"semVideoMotivo": extra}) if campo == "status" and extra else {}
+    mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
+
+
+def task_abrir(tid, modo):
+    """Os botões implementar (/pipeline) e conversar do app: a mesma aba do 1 e do 2 na tela da task."""
+    cfg, t = load(), mcp("obter_task", taskId=tid)["task"]
+    if t["projectId"] not in cfg["projetos"]:
+        sys.exit("Configure este projeto no jfy (escolha ele no menu) antes de abrir a task.")
+    abrir_aba(f"{cfg['projetos'][t['projectId']]['nome'][:12]}: {t['title'][:24]}", t["projectId"], "--run", tid,
+              "pipeline" if modo == "pipeline" else "livre")
+
+
+def reunioes_json():
+    """Aba Reuniões: as de hoje, com o projeto e o contexto que vão para as horas (o mesmo do r)."""
+    cfg, agora = load(), time.time()
+    if not cfg.get("google"):
+        sys.exit("Agenda não conectada: rode jfy --login no terminal.")
+    out = []
+    for i, f, t, link, *_ in eventos_hoje(forcar=True):
+        info, achado = reuniao_info(i, t) or {}, projetos_no_texto(cfg, t)
+        p = info.get("pid") or info.get("projeto") or (achado[0] if len(achado) == 1 else None)
+        out.append({"ini": i, "fim": f, "titulo": t, "link": link or None, "p": p, "projeto": nome_projeto(cfg, p) if p else None,
+                    "cor": cor_hex(p) if p else None, "contexto": info.get("contexto"), "palpite": bool(p) and not info,
+                    "estado": "foi" if f < agora else "agora" if i <= agora else "vem"})
+    return {"reunioes": out, "projetos": sorted(({"id": k, "nome": pr["nome"], "cor": cor_hex(k)} for k, pr in cfg["projetos"].items()), key=lambda x: x["nome"].lower())}
+
+
+def reuniao_ajuste(ini, titulo, p, contexto=""):
+    """Projeto (id do jfy ou nome livre) e contexto de uma reunião: o mesmo registro do r e das horas."""
+    cfg = load()
+    gravar_reuniao(float(ini), titulo, dict({"pid": p} if p in cfg["projetos"] else {"projeto": p}, **({"contexto": contexto} if contexto else {})))
+
+
+def reuniao_preparar(ini, titulo):
+    """O p + número das reuniões: prepara com o Claude numa aba. Usa o projeto que você deu (ou o palpite pelo título)."""
+    i = float(ini)
+    if not reuniao_info(i, titulo):
+        achado = projetos_no_texto(load(), titulo)
+        if len(achado) != 1:
+            sys.exit("Escolha o projeto da reunião antes de preparar.")
+        reuniao_ajuste(i, titulo, achado[0])
+    abrir_aba("reunião: " + titulo[:20], titulo, "--reuniao", repr(i))
+
+
+def temas_json():
+    """Aba Temas: as cores e os ícones de cada tema, como PNG (os mesmos do ícone da barra de cima)."""
+    atual, hexa = load().get("tema", "Padrão"), lambda n: "#%02x%02x%02x" % rgb256(n)
+    return [{"nome": n, "atual": n == atual, "cores": [hexa(t.get(k, k)) for k in (39, 78, 220, 214, 203, 244)],
+             "projetos": [hexa(x) for x in t.get("projetos", PALETA)],
+             "icones": [icone_png(v, t.get(39, 39)) for v in [t.get("icones", {}).get(k, ICONES[k]) for k in
+                        ("reuniao", "email", "jornada", "feito", "pausa")] + t.get("andador", [])[:1] if v in PIXEL]}
+            for n, t in TEMAS.items()]
+
+
+def aplicar_tema(nome):
+    """Troca o tema (t no menu ou a aba Temas do app): a barra muda na hora, abas abertas inclusive."""
+    global TEMA
+    cfg = load()  # relê: não sobrescreve o que outro jfy (ex.: --login) gravou
+    cfg["tema"] = nome
+    save(cfg)
+    TEMA = TEMAS[nome]
+    subprocess.run(TMUX + ["source-file", tmux_conf()], capture_output=True)
+
+
+def app(f, *a):
+    """Roda um comando do app: o resultado em JSON no stdout; erro do Journify vira a mensagem, sem traceback."""
+    try:
+        r = f(*a)
+    except (RuntimeError, urllib.error.URLError, OSError) as e:
+        sys.exit(str(e))
+    if r is not None:
+        print(json.dumps(r, ensure_ascii=False))
+
+
 # ---------- configuração de projeto ----------
 def escolher_pasta(inicio, sem_repo=False):
     """Pasta escolhida, None se voltou, "" se o projeto não tem repositório (só com sem_repo)."""
@@ -2141,7 +2278,6 @@ def abrir_aba(nome, pid_proj, *args):
 
 # ---------- menus ----------
 def tela_tema():
-    global TEMA
     nomes, atual = list(TEMAS), load().get("tema", "Padrão")
     amostra = lambda t: "".join(f"\033[38;5;{t.get(k, k)}m██" for k in (39, 78, 220, 214, 203, 244)) + "\033[0m"
     icones = lambda t: " ".join(ic(k, t) for k in ("reuniao", "email", "jornada", "feito", "pausa")) \
@@ -2149,11 +2285,7 @@ def tela_tema():
     op = menu("Tema", [f"{amostra(TEMAS[n])}  {n:<10} {icones(TEMAS[n])}" + (dim("  (atual)") if n == atual else "")
                        for n in nomes])
     if op.isdigit() and 1 <= int(op) <= len(nomes):
-        cfg = load()  # relê: não sobrescreve o que outro jfy (ex.: --login) gravou
-        cfg["tema"] = nomes[int(op) - 1]
-        save(cfg)
-        TEMA = TEMAS[cfg["tema"]]
-        subprocess.run(TMUX + ["source-file", tmux_conf()])  # barra muda na hora, abas abertas inclusive
+        aplicar_tema(nomes[int(op) - 1])
 
 
 def tela_reunioes(cfg):
@@ -2616,6 +2748,13 @@ def main():
         return primeiros_passos()
     if a[:1] == ["--login"]:  # Google: agenda e Gmail
         return login()
+    # abas do app (app/): JSON no stdout, erro como mensagem
+    comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
+                "--task-mudar": task_mudar, "--task-abrir": task_abrir, "--reunioes-json": reunioes_json,
+                "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
+                "--tema": aplicar_tema}
+    if a[:1] and a[0] in comandos:
+        return app(comandos[a[0]], *a[1:])
     if a[:1] == ["--horas-json"]:  # aba Horas do app: jfy --horas-json [AAAA-MM-DD]
         return print(json.dumps(horas_json(date.fromisoformat(a[1]) if a[1:] else date.today()), ensure_ascii=False))
     if a[:1] == ["--horas-ajuste"]:  # aba Horas do app: jfy --horas-ajuste <AAAA-MM-DD> <linha> <campo> [valor]
@@ -2921,6 +3060,22 @@ def selftest():
     assert [(x["nome"], x["respostas"]) for x in r["por_task"]] == [("T1234567890123456789", 2)], r["por_task"]
     assert abs(r["subagentes"]["subagentes"] - um) < 1e-12 and r["por_projeto"][0]["nome"] == "proj"
     assert r["ferramentas"] == [{"nome": "Read", "chamadas": 1, "resultado_tokens": 100}], r["ferramentas"]
+    # app: cada clique da tela de task vira a chamada certa do MCP; fechar leva o link do vídeo ou o motivo
+    feitas, mcp_real = [], globals()["mcp"]
+    globals()["mcp"] = lambda tool, **kw: feitas.append((tool, kw))
+    task_mudar("T", "status", "fechado", "https://loom.com/x")
+    task_mudar("T", "status", "fechado", "só backend")
+    task_mudar("T", "status", "em_progresso")
+    task_mudar("T", "prazo", "2026-12-01")
+    task_mudar("T", "comentario", "oi")
+    globals()["mcp"] = mcp_real
+    assert feitas == [("atualizar_task", {"taskId": "T", "statusId": "fechado", "videoTesteUrl": "https://loom.com/x"}),
+                      ("atualizar_task", {"taskId": "T", "statusId": "fechado", "semVideoMotivo": "só backend"}),
+                      ("atualizar_task", {"taskId": "T", "statusId": "em_progresso"}),
+                      ("atualizar_task", {"taskId": "T", "dueDate": "2026-12-01"}),
+                      ("comentar_task", {"taskId": "T", "texto": "oi"})], feitas
+    t = {"id": "T", "title": "x", "statusId": "fechado", "projectId": "p", "dueDate": "2000-01-01"}
+    assert resumo_task({"projetos": {}}, t)["etapa"] == "Encerradas"  # prazo vencido de task fechada não é urgente
     # chat: sem argumento lista as conversas, com a conversa lista as mensagens, com o texto envia
     reais = {k: globals()[k] for k in ("chat_conversas", "chat_mensagens", "chat_enviar")}
     globals().update(chat_conversas=lambda: "c", chat_mensagens=lambda cid: "m" + cid, chat_enviar=lambda cid, t: "e" + cid + t)

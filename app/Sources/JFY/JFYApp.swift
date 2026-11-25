@@ -35,15 +35,54 @@ enum JFY {
     }
 }
 
+extension JFY {
+    /// Roda um comando do app e decodifica o JSON da saída. O segundo valor é a mensagem para mostrar: o erro
+    /// (stderr do jfy, ex.: o Journify recusou) ou um aviso que veio junto com o resultado.
+    static func ler<T: Decodable>(_ args: [String]) async -> (T?, String?) {
+        let r = await rodar(args)
+        let msg = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard r.status == 0 else { return (nil, msg.isEmpty ? "jfy \(args[0]) falhou (código \(r.status))" : msg) }
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        do {
+            return (try d.decode(T.self, from: Data(r.saida.utf8)), msg.isEmpty ? nil : msg)
+        } catch {
+            return (nil, "Não entendi a resposta do jfy \(args[0]): \(error)")
+        }
+    }
+
+    /// Roda um comando que só muda algo. Devolve nil se deu certo, senão a mensagem de erro.
+    static func fazer(_ args: [String]) async -> String? {
+        let r = await rodar(args)
+        let msg = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
+        return r.status == 0 ? nil : msg.isEmpty ? "jfy \(args[0]) falhou (código \(r.status))" : msg
+    }
+}
+
+extension Color {
+    /// "#rrggbb" do jfy (a cor do projeto nas abas do tmux, a do tema); sem cor, o cinza secundário.
+    init(hex: String?) {
+        guard let hex, hex.count == 7, let v = UInt32(hex.dropFirst(), radix: 16) else {
+            self = .secondary
+            return
+        }
+        self.init(red: Double(v >> 16 & 255) / 255, green: Double(v >> 8 & 255) / 255, blue: Double(v & 255) / 255)
+    }
+}
+
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", horas = "Horas", uso = "Uso da IA", chat = "Chat"
+    case terminal = "jfy", projetos = "Projetos", horas = "Horas", reunioes = "Reuniões", uso = "Uso da IA",
+         chat = "Chat", temas = "Temas"
     var id: Self { self }
     var icone: String {
         switch self {
         case .terminal: "terminal"
+        case .projetos: "folder"
         case .horas: "clock"
+        case .reunioes: "calendar"
         case .uso: "chart.bar.xaxis"
         case .chat: "bubble.left.and.bubble.right"
+        case .temas: "paintpalette"
         }
     }
 }
@@ -77,9 +116,12 @@ struct Principal: View {
             // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
                 mostrar(.terminal) { TerminalTela(host: terminal) }
+                mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, irParaJFY: { tela = .terminal }) }
                 mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: { tela = .terminal }) }
+                mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, irParaJFY: { tela = .terminal }) }
                 mostrar(.uso) { UsoTela() }
                 mostrar(.chat) { ChatTela(ativa: tela == .chat) }
+                mostrar(.temas) { TemasTela(ativa: tela == .temas) }
             }
         }
         .background { atalhos }
@@ -93,7 +135,7 @@ struct Principal: View {
         return conteudo().opacity(ativa ? 1 : 0).allowsHitTesting(ativa).accessibilityHidden(!ativa)
     }
 
-    /// ⌘1 jfy, ⌘2 horas, ⌘3 uso da IA, ⌘4 chat
+    /// ⌘1 a ⌘7, na ordem da barra lateral
     private var atalhos: some View {
         ForEach(Array(Tela.allCases.enumerated()), id: \.element) { i, t in
             Button("") { tela = t }.keyboardShortcut(KeyEquivalent(Character("\(i + 1)")), modifiers: .command).hidden()
