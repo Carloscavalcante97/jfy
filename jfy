@@ -14,7 +14,7 @@ DIA = os.path.join(HOME, "dia.json")  # cronômetro da jornada de hoje
 USO = os.path.join(HOME, "claude-status.json")  # gravado pelo statusline do Claude Code (install.sh)
 AGENDA = os.path.join(HOME, "agenda.json")  # cache das reuniões de hoje
 NOTIFICACOES = os.path.join(HOME, "notificacoes.jsonl")  # tudo que o notificar() avisou: a aba Notificações do app lê
-REUNIOES = os.path.join(HOME, "reunioes.json")  # projeto e contexto que você deu a cada reunião (r ou h): base das horas
+REUNIOES = os.path.join(HOME, "reunioes.json")  # projeto e contexto que você deu a cada reunião (app: Reuniões ou Horas): base das horas
 EMAIL = os.path.join(HOME, "email.json")  # estado da caixa: não lidos, último uid visto, email que acabou de chegar
 SEM_REPO = os.path.join(HOME, "sem-repo")  # <id>/: pasta do projeto sem repositório (estudo, teste), com o handoff.md
 HORAS_DIR = os.path.join(HOME, "horas")  # AAAA-MM-DD.jsonl: cada trabalho medido (task, terminal livre, reunião)
@@ -955,8 +955,7 @@ def atalhos():
                                               ("clique no ✉", "lê os emails num popup"), ("clique no 📅", "entra na chamada"),
                                               ("d", "sai deixando as tasks rodando (jfy volta)"), ("c", "esta lista")]),
         ("Menu principal", [("número", "abre a task do foco ou o projeto"), ("l", "terminal livre"),
-                            ("r", "reuniões de hoje: projeto e contexto para as horas (p + número prepara com o Claude)"), ("h", "horas de hoje: número edita, - + troca o dia, l lança"),
-                            ("o", "portas abertas: o que é cada uma, de que projeto, e encerrar"), ("j", "abre o Journify"), ("t", "tema"), ("0", "sair")]),
+                            ("o", "portas abertas: o que é cada uma, de que projeto, e encerrar"), ("j", "abre o Journify"), ("0", "sair")]),
         ("Projeto", [("número", "abre a task"), ("s", "sessão: várias tasks num chat só"), ("l", "terminal livre no repo"),
                      ("c", "trocar os repositórios"), ("w", "abre o projeto no Journify")]),
         ("Task", [("1", "implementar (/pipeline)"), ("2", "conversar com o Claude (estudo, análise, documento)"),
@@ -965,7 +964,8 @@ def atalhos():
                   ("/exit", "no Claude: encerra e registra o tempo")]),
         ("No terminal", [("jfy", "abre ou volta para o jfy"), ("jfy --comecar", "primeiros passos de novo"),
                          ("jfy --hoje", "reuniões e foco de hoje"), ("jfy --portas", "portas abertas"),
-                         ("jfy --horas -1", "horas de ontem (ou 20/11)"), ("jfy --login", "conecta agenda e Gmail")]),
+                         ("jfy --login", "conecta agenda e Gmail")]),
+        ("No app jfy (jfy.app)", [("", "horas, reuniões, temas, notificações, uso da IA e a gestão das tasks por clique")]),
     ]
     for titulo, itens in secoes:
         print(c(titulo, 255, True))
@@ -1056,7 +1056,7 @@ def horas_do_dia(dia):
         if i >= time.time():  # ainda não aconteceu
             continue
         info = reuniao_info(i, titulo)
-        if info:  # você disse o projeto (r ou h): vale isso
+        if info:  # você disse o projeto (no app): vale isso
             k = (info.get("pid") or info.get("projeto"), CATEGORIA["reuniao"], info.get("contexto") or titulo)
         else:  # palpite pelo apelido no título
             achado = projetos_no_texto(cfg, titulo)
@@ -1092,44 +1092,6 @@ def nome_projeto(cfg, info_ou_pid):
     """Apelido do jfy, o nome livre que você digitou, ou '?'."""
     p = info_ou_pid if isinstance(info_ou_pid, str) or info_ou_pid is None else info_ou_pid.get("pid") or info_ou_pid.get("projeto")
     return cfg["projetos"].get(p, {}).get("nome", p) if p else "?"
-
-
-def escolher_projeto(cfg, titulo, palpite=None):
-    """Menu dos projetos do jfy. Enter aceita o palpite; texto livre = nome do projeto no Journify (ex.: Souv).
-    Devolve {"pid"} ou {"projeto"}, ou None se voltou."""
-    pids = sorted(cfg["projetos"], key=lambda p: cfg["projetos"][p]["nome"])
-    op = menu(titulo, [c(cfg["projetos"][p]["nome"], cor_projeto(p)) + (dim("  ← enter") if p == palpite else "") for p in pids],
-              [("número", "escolhe")] + ([("enter", nome_projeto(cfg, palpite))] if palpite else [])
-              + [("ou escreva", "o nome do projeto no Journify (ex.: Souv)")])
-    if op == "0" or (not op and not palpite):
-        return None
-    return ({"pid": pids[int(op) - 1]} if op.isdigit() and 1 <= int(op) <= len(pids)
-            else {"projeto": op} if op and not op.isdigit()
-            else {"pid": palpite} if palpite in cfg["projetos"] else {"projeto": palpite})
-
-
-def classificar_reuniao(cfg, ini, titulo):
-    """Projeto e contexto de uma reunião, só gravados (sem Claude). O apelido no título é só o palpite do Enter.
-    Devolve o registro, ou None se voltou."""
-    atual = reuniao_info(ini, titulo) or {}
-    achado = projetos_no_texto(cfg, titulo)
-    palpite = atual.get("pid") or atual.get("projeto") or (achado[0] if len(achado) == 1 else None)
-    hora = datetime.fromtimestamp(ini).strftime("%d/%m %H:%M")
-    reg = escolher_projeto(cfg, f"Projeto da reunião {hora} \"{titulo}\"", palpite)
-    if reg is None:
-        return None
-    ctx = ask(f"Contexto, vira a descrição nas horas [{atual.get('contexto') or titulo}]: ", atual.get("contexto", ""))
-    if ctx:
-        reg["contexto"] = ctx
-    gravar_reuniao(ini, titulo, reg)
-    return reg
-
-
-def rotulo_reuniao(cfg, info):
-    if not info:
-        return dim("sem projeto")
-    p = info.get("pid") or info.get("projeto")
-    return c(nome_projeto(cfg, info), cor_projeto(p)) + (dim(" · " + info["contexto"]) if info.get("contexto") else "")
 
 
 def reunioes_do_dia(dia):
@@ -1187,7 +1149,7 @@ def itens_horas(cfg, dia):
 
 def aplicar_ajuste(cfg, dia, it, campo, valor):
     """Muda uma linha das horas, só nesse dia: p (id do jfy ou nome livre), cat, min ("" volta para a regra), desc,
-    fora ("1" remove, "" restaura). Reunião: projeto e descrição vão para o reunioes.json, o mesmo do r."""
+    fora ("1" remove, "" restaura). Reunião: projeto e descrição vão para o reunioes.json, o mesmo da aba Reuniões."""
     r = it["reuniao"]
     if campo == "p" and r:
         ctx = (reuniao_info(*r[:2]) or {}).get("contexto")
@@ -1201,89 +1163,6 @@ def aplicar_ajuste(cfg, dia, it, campo, valor):
         gravar_ajuste(dia, it["kid"], fora=bool(valor))
     elif campo in ("p", "cat", "desc"):
         gravar_ajuste(dia, it["kid"], **{campo: valor or None})  # vazio volta para o medido
-
-
-def editar_linha_horas(cfg, dia, it):
-    """Muda uma linha (só nesse dia), pelo menu do terminal."""
-    if it["fora"]:  # removida: o número restaura
-        return aplicar_ajuste(cfg, dia, it, "fora", "")
-    limpar()
-    print(c(" Editar lançamento ", 39, True) + f"  {dia.strftime('%d/%m/%Y')}\n")
-    print(f" {c(nome_projeto(cfg, it['p']), cor_projeto(it['p']) if it['p'] else 214, True)} · {it['cat']} · "
-          f"{c(hm(it['lanc']), 78, True)} · {it['desc']}\n")
-    op = escolha(" " + acoes_txt([("p", "projeto"), ("c", "categoria"), ("h", "horas"), ("d", "descrição"),
-                                  ("x", "remover")]) + "\n" + seta(), "pchdx")
-    if op == "p":
-        reg = escolher_projeto(cfg, f"Projeto de \"{it['desc']}\"", it["p"])
-        if reg:
-            aplicar_ajuste(cfg, dia, it, "p", reg.get("pid") or reg.get("projeto"))
-    elif op == "c":
-        cats = list(dict.fromkeys(CATEGORIA.values()))
-        o = menu("Categoria", cats, [("número", "escolhe"), ("ou escreva", "outra")])
-        cat = cats[int(o) - 1] if o.isdigit() and 1 <= int(o) <= len(cats) else o if o and not o.isdigit() else None
-        if cat:
-            aplicar_ajuste(cfg, dia, it, "cat", cat)
-    elif op == "h":
-        aplicar_ajuste(cfg, dia, it, "min", ask("  Horas (80, 1h20, 1:20) [enter = volta para a regra]: "))
-    elif op == "d":
-        d = ask(f"  Descrição [{it['desc']}]: ")
-        if d:
-            aplicar_ajuste(cfg, dia, it, "desc", d)
-    elif op == "x":
-        aplicar_ajuste(cfg, dia, it, "fora", "1")
-
-
-def tela_horas(dia=None):
-    """jfy --horas [data] (ou h no menu): o que vai para o minhas-horas, uma linha por lançamento. Abre em hoje;
-    o número edita a linha, - e + trocam o dia, l chama o Claude para lançar pelo Chrome."""
-    cfg, dia = load(), dia or date.today()
-    nome, regra = lambda p: nome_projeto(cfg, p), cfg.get("horas", {})
-    while True:
-        itens, medido, pela_regra = itens_horas(cfg, dia)
-        vivos = [it for it in itens if not it["fora"]]
-        total, larg = sum(it["lanc"] for it in vivos), min(shutil.get_terminal_size().columns or 100, 110)
-        cab = f" Horas · {['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'][dia.weekday()]} {dia.strftime('%d/%m/%Y')} "
-        limpar()
-        print(c(cab, 39, True) + " " * max(2, larg - len(cab) - 16) + "lançar " + c(fmt_min(total), 78, True))
-        traco = dim(" " + "─" * (larg - 2))
-        print(traco)
-        if not itens:
-            print(dim("\n Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.\n"))
-        else:
-            print(dim(f"     {'projeto':<12} {'categoria':<17} {'horas':>5}  descrição"))
-        for n, it in enumerate(itens, 1):
-            desc = it["desc"] + (" (projeto pelo título)" if it["reuniao"] and it["reuniao"][2] and it["p"] else "")
-            desc, cat = desc[:max(12, larg - 46)], it["cat"][:17].ljust(17)
-            if it["fora"]:
-                print(dim(f" {n:>2}  {nome(it['p'])[:12]:<12} {cat} {'—':>5}  {desc}  · removida, o número restaura"))
-                continue
-            print(f" {c(f'{n:>2}', 39, True)}  {c(nome(it['p'])[:12].ljust(12), cor_projeto(it['p']) if it['p'] else 214)} {cat} "
-                  f"{c(hm(it['lanc']).rjust(5), 78, True)}  {desc}" + (dim("  · horas à mão") if it["fixo"] is not None else ""))
-        print(traco)
-        if itens:
-            fator = f"×{regra.get('fator', 1)}".replace(".", ",")
-            print(dim(f" medido {fmt_min(medido)} · fator {fator} → {fmt_min(pela_regra)}")
-                  + (dim(f" · com seus ajustes: {fmt_min(total)}") if total != pela_regra else ""))
-            sem = sum(1 for it in vivos if not it["p"])
-            if sem:
-                print(c(f" ⚠ {sem} linha(s) sem projeto: edite pelo número ou o Claude pergunta ao lançar", 214))
-        prox = dia < date.today()
-        op = escolha("\n " + acoes_txt(([("número", "edita")] if itens else []) + ([("l", "lança (Claude no Chrome)")] if vivos else [])
-                                      + [("-", "dia anterior")] + ([("+", "próximo dia")] if prox else [])
-                                      + [("d", "outra data")], "0 fecha") + "\n" + seta(), "l-+d", len(itens))
-        d = ler_data(ask("  Data (20/11, -1 = ontem): "), futuro=False) if op == "d" else None
-        if op == "0":
-            return
-        if op == "-":
-            dia -= timedelta(days=1)
-        elif op == "+" and prox:
-            dia += timedelta(days=1)
-        elif d and date.fromisoformat(d) <= date.today():
-            dia = date.fromisoformat(d)
-        elif op.isdigit() and 1 <= int(op) <= len(itens):
-            editar_linha_horas(cfg, dia, itens[int(op) - 1])
-        elif op == "l" and vivos:
-            return lancar_horas(cfg, dia)
 
 
 def horas_json(dia):
@@ -1305,7 +1184,7 @@ def horas_json(dia):
 
 
 def lancar_horas(cfg, dia):
-    """Abre o Claude para lançar as horas do dia no minhas-horas pelo Chrome (l na tela de horas, ou o app)."""
+    """Abre o Claude para lançar as horas do dia no minhas-horas pelo Chrome ("Lançar no Journify" da aba Horas)."""
     nome = lambda p: nome_projeto(cfg, p)
     vivos = [it for it in itens_horas(cfg, dia)[0] if not it["fora"]]
     total = sum(it["lanc"] for it in vivos)
@@ -1810,7 +1689,7 @@ def task_abrir(tid, modo):
 
 
 def reunioes_json():
-    """Aba Reuniões: as de hoje, com o projeto e o contexto que vão para as horas (o mesmo do r)."""
+    """Aba Reuniões: as de hoje, com o projeto e o contexto que vão para as horas."""
     cfg, agora = load(), time.time()
     if not cfg.get("google"):
         sys.exit("Agenda não conectada: rode jfy --login no terminal.")
@@ -1825,7 +1704,7 @@ def reunioes_json():
 
 
 def reuniao_ajuste(ini, titulo, p, contexto=""):
-    """Projeto (id do jfy ou nome livre) e contexto de uma reunião: o mesmo registro do r e das horas."""
+    """Projeto (id do jfy ou nome livre) e contexto de uma reunião: o mesmo registro das horas."""
     cfg = load()
     gravar_reuniao(float(ini), titulo, dict({"pid": p} if p in cfg["projetos"] else {"projeto": p}, **({"contexto": contexto} if contexto else {})))
 
@@ -1852,7 +1731,7 @@ def temas_json():
 
 
 def aplicar_tema(nome):
-    """Troca o tema (t no menu ou a aba Temas do app): a barra muda na hora, abas abertas inclusive."""
+    """Troca o tema (a aba Temas do app): a barra do tmux muda na hora, abas abertas inclusive."""
     global TEMA
     cfg = load()  # relê: não sobrescreve o que outro jfy (ex.: --login) gravou
     cfg["tema"] = nome
@@ -2285,37 +2164,6 @@ def abrir_aba(nome, pid_proj, *args):
 
 
 # ---------- menus ----------
-def tela_tema():
-    nomes, atual = list(TEMAS), load().get("tema", "Padrão")
-    amostra = lambda t: "".join(f"\033[38;5;{t.get(k, k)}m██" for k in (39, 78, 220, 214, 203, 244)) + "\033[0m"
-    icones = lambda t: " ".join(ic(k, t) for k in ("reuniao", "email", "jornada", "feito", "pausa")) \
-        + "  " + ic("cheio", t) * 3 + andador(t) + ic("vazio", t) * 2
-    op = menu("Tema", [f"{amostra(TEMAS[n])}  {n:<10} {icones(TEMAS[n])}" + (dim("  (atual)") if n == atual else "")
-                       for n in nomes])
-    if op.isdigit() and 1 <= int(op) <= len(nomes):
-        aplicar_tema(nomes[int(op) - 1])
-
-
-def tela_reunioes(cfg):
-    if not cfg.get("google"):
-        return ask(c("Agenda não conectada: rode jfy --login. Enter para voltar.", 214))
-    evs, agora = eventos_hoje(forcar=True), time.time()
-    quando = lambda i, f: dim("  já foi") if f < agora else c("  agora", 203, True) if i <= agora else dim(f"  em {fmt_min(int((i - agora) // 60))}")
-    while True:  # número: só grava projeto e contexto (base das horas); p + número: preparação com o Claude, opcional
-        op = menu("Reuniões de hoje: projeto e contexto para as horas",
-                  [f"{c(datetime.fromtimestamp(i).strftime('%H:%M'), 39, True)}  {t}{quando(i, f)}  "
-                   + rotulo_reuniao(cfg, reuniao_info(i, t)) for i, f, t, *_ in evs] or [(dim("nenhuma reunião hoje"),)],
-                  [("número", "projeto e contexto"), ("p + número", "prepara com o Claude")], prefixos={"p": len(evs)})
-        n = op[1:] if op.startswith("p") else op
-        if not (evs and n.isdigit() and 1 <= int(n) <= len(evs)):
-            return
-        i, _, t, *_ = evs[int(n) - 1]
-        if not op.startswith("p"):
-            classificar_reuniao(cfg, i, t)
-        elif reuniao_info(i, t) or classificar_reuniao(cfg, i, t):  # a preparação usa o projeto que você deu
-            return abrir_aba("reunião: " + t[:20], t, "--reuniao", repr(i))
-
-
 def blocos_task(cfg, t, full, largura):
     """Topo (projeto, título, indicadores) e rodapé (anexos, comentários) da task, em linhas."""
     pid, tk = t["projectId"], full["task"]
@@ -2481,8 +2329,7 @@ def principal():
             abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
             dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
             op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
-                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("o", "portas"), ("j", "Journify"), ("t", "tema"),
-                       ("enter", "atualiza")], "sai", teclas="lrhojt")
+                      [("l", "terminal livre"), ("o", "portas"), ("j", "Journify"), ("enter", "atualiza")], "sai", teclas="loj")
             if op == "":  # Enter não sai mais: atualiza as tasks
                 buscado = 0
                 continue
@@ -2491,16 +2338,10 @@ def principal():
                     subprocess.run(TMUX + ["detach-client"])
                     continue
                 return
-            if op == "t":
-                tela_tema()
             if op == "o":
                 tela_portas()
             if op == "j":
                 subprocess.run(["open", cfg.get("journify", JOURNIFY)])
-            if op == "r":
-                tela_reunioes(cfg)
-            if op == "h":
-                abrir_aba("horas", "horas", "--horas")
             if op == "l":
                 pasta = escolher_pasta(ultima_pasta(cfg))
                 if pasta:
@@ -2624,10 +2465,6 @@ def guia_projetos(cfg):
     return ok_projetos()
 
 
-def ok_tema():
-    return "tema" in load()
-
-
 def usar_fonte():
     """Instala a JFY Mono (se faltar) e põe ela no terminal de onde o jfy foi aberto: Terminal do macOS na hora,
     Warp no settings.toml (vale depois de reabrir). Outro terminal: só a instrução. Devolve a mensagem."""
@@ -2664,18 +2501,21 @@ def usar_fonte():
     return 'Escolha "JFY Mono" como fonte nas preferências do seu terminal e reabra ele.'
 
 
-def guia_tema(cfg):
-    print(" Os temas usam a fonte " + c("JFY Mono", 255, True) + ". " + usar_fonte() + "\n")
-    ask(dim(" Enter para escolher o tema."))
-    tela_tema()
-    return ok_tema()
+def ok_fonte():
+    return os.path.exists(os.path.expanduser("~/Library/Fonts/JFYMono.ttf"))
+
+
+def guia_fonte(cfg):
+    print(" Os ícones do jfy usam a fonte " + c("JFY Mono", 255, True) + ". " + usar_fonte() + "\n")
+    ask(dim(" Enter para continuar. O tema (cores e ícones) se escolhe no app jfy."))
+    return ok_fonte()
 
 
 PASSOS = [("Journify", "suas tasks e projetos", ok_journify, guia_journify),
           ("Notificações", "o clique leva para a aba do Claude", ok_notificacoes, guia_notificacoes),
           ("Agenda e Gmail", "próxima reunião e emails na barra", ok_google, guia_google),
           ("Seus projetos", "a pasta de cada projeto", ok_projetos, guia_projetos),
-          ("Tema e fonte", "cores e ícones do jfy", ok_tema, guia_tema)]
+          ("Fonte", "JFY Mono: os ícones do jfy no terminal", ok_fonte, guia_fonte)]
 
 
 def primeiros_passos():
@@ -2773,11 +2613,6 @@ def main():
         if os.environ.get("TMUX"):
             return lancar_horas(load(), date.fromisoformat(a[1]))
         return abrir_aba("horas " + date.fromisoformat(a[1]).strftime("%d/%m"), "horas", "--horas-lancar", a[1])
-    if a[:1] == ["--horas"]:  # jfy --horas [data]: tabela para o minhas-horas
-        d = ler_data(a[1], futuro=False) if a[1:] else None
-        if a[1:] and not d:
-            return print(c(f"Data inválida: {a[1]}", 203))
-        return tela_horas(date.fromisoformat(d) if d else None)  # sem data: hoje
     if a[:1] == ["--reuniao"]:
         return preparar(a[1])
     if a[:1] == ["--fechar"]:  # fechamento de uma task em segundo plano
@@ -3002,7 +2837,7 @@ def selftest():
     st = json.load(open(EMAIL)); st.update(checado=0, chegou=0); json.dump(st, open(EMAIL, "w"))
     assert "erro" in email_barra() and time.time() - json.load(open(EMAIL))["checado"] < 5
     os.remove(EMAIL)
-    # reuniões: o que você deu (r ou h) vale sobre o palpite pelo título; nome livre vira o projeto da linha
+    # reuniões: o que você deu (no app) vale sobre o palpite pelo título; nome livre vira o projeto da linha
     global REUNIOES, reunioes_do_dia
     REUNIOES, agora = os.path.join(RUN_DIR, "teste-reunioes.json"), time.time()
     load = lambda: {"projetos": {"a": {"nome": "alpha"}, "r": {"nome": "rpa alpha"}}, "google": {"client_id": "x"}}
@@ -3033,7 +2868,7 @@ def selftest():
     aplicar_ajuste(cfg_h, hoje, decal, "min", "")
     aplicar_ajuste(cfg_h, hoje, decal, "cat", "")
     assert json.load(open(ajustes_arq(hoje))) == {} and [x["lanc"] for x in itens_horas(cfg_h, hoje)[0]] == [30, 10]
-    # reunião: projeto e descrição vão para o reunioes.json (o mesmo do r), um sem apagar o outro
+    # reunião: projeto e descrição vão para o reunioes.json (o mesmo da aba Reuniões), um sem apagar o outro
     aplicar_ajuste(cfg_h, hoje, entrega, "desc", "entrega do lote 3")
     aplicar_ajuste(cfg_h, hoje, itens_horas(cfg_h, hoje)[0][0], "p", "a")
     assert reuniao_info(agora - 7200, "Entrega Alpha Plast") == {"pid": "a", "contexto": "entrega do lote 3"}

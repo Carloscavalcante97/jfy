@@ -40,21 +40,20 @@ Na primeira vez, antes do menu, o jfy te guia por **primeiros passos**, um de ca
 2. **Notificações**: manda uma notificação de teste. Se o macOS bloquear, abre Ajustes do Sistema > Notificações para você ligar o **terminal-notifier** e testa de novo.
 3. **Agenda e Gmail**: login do Google (só leitura). O jfy abre o JSON do app no Drive da empresa: baixe e arraste o arquivo para o terminal.
 4. **Seus projetos**: para cada projeto com task sua, escolha a pasta do repositório.
-5. **Tema e fonte**: o jfy instala a fonte JFY Mono, se faltar; escolha ela no terminal e um tema.
+5. **Fonte**: o jfy instala a fonte JFY Mono, se faltar, e põe ela no terminal (os ícones do jfy precisam dela). O tema se escolhe no [app](#app-do-mac).
 
 `Enter` faz o passo, `p` pula e `0` deixa para depois. Para voltar a eles quando quiser: `jfy --comecar`.
 
 ## Como usar
 
-Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou mais opções, o `1` espera um instante pelo segundo dígito), e letras (`l`, `r`, `h`, `t`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
+Nos menus, a tecla certa já basta, sem Enter: o número abre o item (com 10 ou mais opções, o `1` espera um instante pelo segundo dígito), e letras (`l`, `o`, `j`, `s`, `p`, `w`...) e o `0` (volta) valem na hora, sem Enter. No menu principal e na tela do projeto, Enter atualiza as tasks (as duas guardam a lista por 1 min, para voltar de uma task sem esperar o Journify). Toda tela termina com a mesma linha de ações: a tecla em destaque e o que ela faz, e o `0` no fim.
 
 **Menu principal**: três seções. **Foco**: tasks de todos os projetos com prazo vencido ou nos próximos 7 dias e as de prioridade crítica, da mais urgente para a menos; o número abre a task direto. **Projetos**: os que têm tasks suas, com a contagem. **Sem task**: os configurados sem task aberta (manutenção: terminal livre ou sessão quando surgir algo). O repositório de cada projeto aparece no `c` da tela do projeto.
 - `j` abre o Journify no navegador.
 - `jfy --hoje` imprime as reuniões de hoje e o foco, sem abrir o menu.
 - Na primeira vez em cada projeto, o jfy pede a pasta do repositório (navegador de pastas: número entra, `..` sobe, `s` escolhe, ou cole o caminho) e um nome. Projeto com mais de um repositório (front e back, por exemplo): responda `s` em "Mais um repositório" e escolha o próximo. Na hora da task, o jfy pergunta quais ela usa (número = só esse, Enter = todos); o Claude abre no primeiro e enxerga os outros, e a branch da task é criada em cada um. Projeto sem repositório (só estudo ou teste): `n` no navegador de pastas e dê um nome, que aparece no lugar do id; o Claude abre numa pasta só dele, `~/.jfy/sem-repo/<id>`, onde fica o `handoff.md`.
 - `l` abre um **terminal livre**: Claude com `--dangerously-skip-permissions` numa pasta que você escolhe, sem task.
-- `r` **reuniões de hoje**: escolha uma pelo número e diga o projeto (Enter aceita o palpite pelo título; ou escreva o nome do projeto no Journify, como `Souv`, se ele não estiver no jfy) e, se quiser, uma linha de contexto (ex.: "alinhamento de infra das duas Plastamps"). O jfy só grava: nada de Claude, nada de task. Nas horas, a reunião vai para esse projeto com o contexto como descrição. `p` + número abre a preparação com o Claude (opcional): o que avançou, o que espera alguém, bloqueios e perguntas.
-- `h` **horas**: abre a tabela de hoje para o [minhas-horas](https://journify.souv.tech/minhas-horas), uma linha por lançamento (veja [Horas](#horas)). `l` chama o Claude para lançar pelo Chrome. Também dá para rodar `jfy --horas -1` (ontem) ou `jfy --horas 20/11`.
+- Reuniões, horas e tema ficam no [app do Mac](#app-do-mac) (abas Reuniões, Horas e Temas). O terminal fica com as tasks, as sessões do Claude e as portas.
 
 **Tela do projeto**: suas tasks em seções, na ordem do que pede ação sua primeiro: **Urgente** (prazo vencido, nos próximos 7 dias ou crítica; mostra o status no fim da linha), **Em andamento**, **A fazer**, **Esperando alguém** (revisão, teste ou validação) e **Bloqueadas**. Seção vazia não aparece.
 - Número abre a task. A tela cabe no terminal, nesta ordem: projeto e título; status, prioridade, pontos e prazo (avisa se passar de 8 pontos, o teto do fluxo); **O que fazer** (o começo da descrição, já limpa: sem markdown cru, e cada imagem vira `▣ imagem a3`, o número do anexo); anexos (imagens agrupadas, documentos pelo nome); o último comentário; e as ações:
@@ -103,7 +102,7 @@ O uso da IA vem do statusline do Claude Code (o `install.sh` faz ele gravar uma 
 
 ### Temas
 
-`t` no menu principal escolhe o tema: **Padrão**, **Dracula**, **Monokai**, **Cyberpunk**, **Élfico** (dourado e prata sobre verde-floresta), **Anão** (ouro e forja sobre bronze), **Mordor** (fogo e cinzas sobre preto), **GTA** (neon de fim de tarde e verde-dinheiro sobre roxo) ou **Aço** (azul-metálico e prata sobre azul-marinho). Muda as cores do menu e da barra na hora, sem reiniciar, e cada tema tem seus ícones em pixel art e seu desenho na barra de uso da IA. Quase todos têm também alguém andando e empurrando a barra: vampiro (Dracula), corredor com rastro de velocidade (Cyberpunk), elfo arqueiro (Élfico), anão de machado (Anão), viatura com giroflex (GTA), lorde de armadura (Mordor) e robô de quatro patas (Aço). Para isso a barra da direita é um `jfy --relogio` que fica rodando e manda uma linha por segundo; quando o `jfy` muda, ele sai e o tmux sobe o novo em até 15s. Cada pessoa tem o seu, salvo em `~/.jfy/config.json`.
+A aba Temas do [app](#app-do-mac) escolhe o tema: **Padrão**, **Dracula**, **Monokai**, **Cyberpunk**, **Élfico** (dourado e prata sobre verde-floresta), **Anão** (ouro e forja sobre bronze), **Mordor** (fogo e cinzas sobre preto), **GTA** (neon de fim de tarde e verde-dinheiro sobre roxo) ou **Aço** (azul-metálico e prata sobre azul-marinho). Muda as cores do menu e da barra na hora, sem reiniciar, e cada tema tem seus ícones em pixel art e seu desenho na barra de uso da IA. Quase todos têm também alguém andando e empurrando a barra: vampiro (Dracula), corredor com rastro de velocidade (Cyberpunk), elfo arqueiro (Élfico), anão de machado (Anão), viatura com giroflex (GTA), lorde de armadura (Mordor) e robô de quatro patas (Aço). Para isso a barra da direita é um `jfy --relogio` que fica rodando e manda uma linha por segundo; quando o `jfy` muda, ele sai e o tmux sobe o novo em até 15s. Cada pessoa tem o seu, salvo em `~/.jfy/config.json`.
 
 | Tema | Reunião | Email | Jornada | 8h fechadas | Pausa | Barra da IA |
 |---|---|---|---|---|---|---|
@@ -140,13 +139,13 @@ O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Na
 
 - **jfy**: o menu de sempre, num terminal embutido que já vem com a JFY Mono (não precisa configurar fonte). As tasks continuam no tmux: fechar o app não encerra nenhuma, e abrir de novo volta para o mesmo lugar. Dá para usar o app e um terminal ao mesmo tempo. Com o app aberto, "Abrir o jfy" na barra de cima e o clique nas notificações trazem o app.
 - **Projetos**: os projetos (e o Foco: prazo perto ou crítica), as tasks nas mesmas seções da tela do projeto (só as suas, ou todas do projeto com as 30 encerradas mais recentes) e a task inteira: a descrição formatada com as imagens, os anexos (clique abre pelo link; nada é baixado), os comentários e um campo para comentar. Status, prioridade e prazo mudam por clique; mover para `fechado` ou `finalizado validação` pede o link do vídeo do teste ou o motivo, como o Journify exige. "Implementar (/pipeline)" e "Conversar com o Claude" abrem a mesma aba do `1` e do `2` e levam você ao terminal.
-- **Horas**: a mesma tabela do `h`, clicável: projeto e categoria por menu (ou um nome livre), horas e descrição editáveis (Enter salva; vazio volta para a regra), remover e restaurar, e a troca de dia. "Lançar no Journify…" abre o Claude numa aba do jfy para lançar pelo Chrome (esse passo usa tokens). Os ajustes são os mesmos do terminal: mudou num, aparece no outro.
-- **Reuniões**: as de hoje, com o projeto (menu, ou um nome livre) e o contexto que vão para as horas, o mesmo registro do `r`. "Entrar na chamada" e "Preparar com o Claude" (abre numa aba do jfy).
+- **Horas**: a tabela do que vai para o [minhas-horas](https://journify.souv.tech/minhas-horas) (veja [Horas](#horas)): projeto e categoria por menu (ou um nome livre), horas e descrição editáveis (Enter salva; vazio volta para a regra), remover e restaurar, e a troca de dia. "Lançar no Journify…" abre o Claude numa aba do jfy para lançar pelo Chrome (esse passo usa tokens).
+- **Reuniões**: as de hoje, com o projeto (menu, ou um nome livre) e o contexto que vão para as horas (o contexto vira a descrição; o jfy só grava, sem Claude). "Entrar na chamada" e "Preparar com o Claude" (abre numa aba do jfy).
 - **Uso da IA**: quanto o Claude Code gastou neste Mac, lido das conversas em `~/.claude/projects` (hoje, 7 dias, 30 dias ou tudo). Mostra o custo em US$ pelo preço da API (na assinatura é o valor equivalente, não a conta), os tokens, as sessões e os limites de 5 h e semanal; o custo por dia de cada projeto (passe o mouse num dia para ver o detalhe); para onde foi o custo (leitura e escrita de cache, saída); e os rankings por projeto, task do Journify (clique abre a task), modelo, ferramenta e sessão, com o maior contexto de cada uma. `jfy --uso [dias]` dá o mesmo em JSON.
 - **Chat**: o chat do time do Journify (as conversas entre colaboradores), com a lista de conversas, as mensagens e o envio; busca mensagens novas a cada 5 s com a tela aberta. Ainda não está ligado: o MCP do Journify ainda não tem o chat. Quando tiver, é trocar o corpo das três funções `chat_conversas`, `chat_mensagens` e `chat_enviar` do `jfy` por chamadas ao MCP, devolvendo o formato descrito em cada uma; o app não muda. `jfy --chat [conversa [texto]]` dá o mesmo em JSON.
 
 - **Notificações**: o histórico do que o jfy avisou (reunião, email, o Claude, a jornada, o resumo das 7h), por dia, com o número de novas na barra lateral. O clique faz o mesmo que na notificação: entra na chamada, abre os emails ou vai para a aba do Claude. Fica em `~/.jfy/notificacoes.jsonl`; "Limpar" apaga.
-- **Temas**: as cores e os ícones de cada tema; um clique troca, como o `t`.
+- **Temas**: as cores e os ícones de cada tema (veja [Temas](#temas)); um clique troca.
 
 Para montar ou atualizar depois de um `git pull`: `./app/build.sh` (o `./install.sh` já faz isso se o app estiver instalado). A assinatura é local, vale para este Mac.
 
@@ -162,19 +161,11 @@ Para a aba também ficar vermelha, no Claude rode `/config` e ponha **Notificati
 
 ### Horas
 
-O jfy anota cada trabalho do dia em `~/.jfy/horas/AAAA-MM-DD.jsonl`: tasks (no `/exit` ou no `--fim` da sessão), terminal livre e preparação de reunião. As reuniões vêm da agenda, com o projeto e o contexto que você deu no `r` (sem isso, o projeto sai do apelido no título, marcado "projeto pelo título"). Sessões do Claude abertas fora do jfy não entram.
+O jfy anota cada trabalho do dia em `~/.jfy/horas/AAAA-MM-DD.jsonl`: tasks (no `/exit` ou no `--fim` da sessão), terminal livre e preparação de reunião. As reuniões vêm da agenda, com o projeto e o contexto que você deu na aba Reuniões ou Horas do app (sem isso, o projeto sai do apelido no título, marcado "projeto pelo título"). Sessões do Claude abertas fora do jfy não entram.
 
-A tabela do `h` mostra só o que vai para o Journify: uma linha por lançamento, com projeto, categoria, horas e descrição, e o total no topo. O medido e a regra ficam no rodapé.
+A aba Horas do app mostra só o que vai para o Journify: uma linha por lançamento, com projeto, categoria, horas e descrição, e o total no topo; o medido e a regra ficam ao lado. Cada mudança vale só para aquele dia; numa reunião, projeto e descrição vão para o mesmo registro da aba Reuniões.
 
-| Na tabela | Faz |
-|---|---|
-| número | edita a linha: `p` projeto, `c` categoria, `h` horas, `d` descrição, `x` remove. Vale só para aquele dia. Numa reunião, projeto e descrição ficam iguais aos do `r` |
-| número de uma linha removida | restaura |
-| `-` / `+` | dia anterior / próximo |
-| `d` | vai para outra data (`20/11`, `-1` = ontem) |
-| `l` | o Claude lança pelo Chrome |
-
-Hora mudada à mão (`h`) substitui a da regra só naquela linha, e as outras não mudam. A linha fica marcada como "horas à mão" e, com `h` e Enter vazio, volta para a regra.
+Hora mudada à mão substitui a da regra só naquela linha, e as outras não mudam. A linha fica marcada com a mão e, apagando as horas e dando Enter, volta para a regra.
 
 Por padrão o jfy lança o medido, arredondado para múltiplos de 5 min. Se o seu gestor combinou um fator para cobrir o que o cronômetro não vê (entender a task, ler, conversar), ponha em `~/.jfy/config.json`:
 
@@ -182,7 +173,7 @@ Por padrão o jfy lança o medido, arredondado para múltiplos de 5 min. Se o se
 "horas": {"fator": 1.2}
 ```
 
-O fator multiplica só as linhas de trabalho; reunião fica com a duração da agenda. Ele aparece no rodapé da tabela, junto do medido. Sessões do Claude abertas fora do jfy não entram no log.
+O fator multiplica só as linhas de trabalho; reunião fica com a duração da agenda. Ele aparece no topo da tabela, junto do medido. Sessões do Claude abertas fora do jfy não entram no log.
 
 ### Ao encerrar uma task (`/exit`)
 
