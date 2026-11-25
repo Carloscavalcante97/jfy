@@ -77,7 +77,7 @@ struct Principal: View {
             ZStack {
                 mostrar(.terminal) { TerminalTela(host: terminal) }
                 mostrar(.uso) { UsoTela() }
-                mostrar(.chat) { ChatTela() }
+                mostrar(.chat) { ChatTela(ativa: tela == .chat) }
             }
         }
         .background { atalhos }

@@ -69,7 +69,7 @@ extension Color {
 }
 
 /// Ordem fixa: a cor segue o projeto pela posição no ranking do período, e os 6 primeiros têm cor própria.
-private let SERIES: [Color] = [
+let SERIES: [Color] = [
     Color(claro: 0x257DE0, escuro: 0x338CED), Color(claro: 0xF47230, escuro: 0xE76624),
     Color(claro: 0x00B894, escuro: 0x00A888), Color(claro: 0xF2A600, escuro: 0xD28E05),
     Color(claro: 0xEE7FAC, escuro: 0xE24D8B), Color(claro: 0x008A17, escuro: 0x0AAC23),

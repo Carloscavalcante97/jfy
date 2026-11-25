@@ -1665,18 +1665,31 @@ def uso(dias=None):
     }
 
 
-CHAT_MCP = None  # nome da ferramenta de chat no MCP do Journify, quando ela sair
+# Chat do time (as conversas entre colaboradores do Journify) na tela de chat do app. O app só fala com as três
+# funções abaixo, em JSON. ponytail: o MCP do Journify ainda não tem o chat; quando tiver, troque o corpo de cada
+# uma por um mcp(...) que devolva o formato da docstring. O app não muda.
+CHAT_FORA = "O chat do Journify ainda não está no MCP. Quando estiver, ele aparece aqui."
 
 
-def chat(texto=None):
-    """Envio da tela de chat do app. Sem texto: só diz se está conectado (código de saída 0 = sim).
-    ponytail: o chat do Journify ainda não saiu. Quando sair, ponha o nome em CHAT_MCP e ajuste o mcp(...) abaixo
-    aos argumentos e à resposta da ferramenta; o app não muda."""
-    if not CHAT_MCP:
-        sys.exit("O chat do Journify ainda não está conectado.")
-    if texto is not None:
-        r = mcp(CHAT_MCP, mensagem=texto)
-        print(r if isinstance(r, str) else r.get("resposta") or json.dumps(r, ensure_ascii=False))
+def chat_conversas():
+    """[{id, nome, tipo ("canal" ou "direta"), nao_lidas, ultima: {autor, texto, quando} ou None}], a mais recente primeiro."""
+    sys.exit(CHAT_FORA)
+
+
+def chat_mensagens(cid):
+    """[{id, autor, texto, quando (ISO 8601), minha (bool)}] da conversa, da mais antiga para a mais nova."""
+    sys.exit(CHAT_FORA)
+
+
+def chat_enviar(cid, texto):
+    """A mensagem enviada, no formato de chat_mensagens."""
+    sys.exit(CHAT_FORA)
+
+
+def chat(*a):
+    """jfy --chat: conversas · jfy --chat <conversa>: mensagens · jfy --chat <conversa> <texto>: envia."""
+    r = chat_enviar(*a) if len(a) == 2 else chat_mensagens(a[0]) if a else chat_conversas()
+    print(json.dumps(r, ensure_ascii=False))
 
 
 # ---------- configuração de projeto ----------
@@ -2588,8 +2601,8 @@ def main():
         return avisar()
     if a[:1] == ["--uso"]:  # tela de uso da IA do app: jfy --uso [dias], JSON
         return print(json.dumps(uso(int(a[1]) if a[1:] else None), ensure_ascii=False))
-    if a[:1] == ["--chat"]:  # tela de chat do app: jfy --chat [texto]
-        return chat(*a[1:2])
+    if a[:1] == ["--chat"]:  # tela de chat do app: jfy --chat [conversa [texto]]
+        return chat(*a[1:3])
     if a[:1] == ["--icone"]:  # app/build.sh: a chama do jfy num PNG de ~1024 px, base do ícone do JFY.app
         d = desenho("chama")
         return png(a[1], d, rgb256(202), escala=1024 // (max(len(d), *map(len, d)) + 2))
@@ -2854,6 +2867,15 @@ def selftest():
     assert [(x["nome"], x["respostas"]) for x in r["por_task"]] == [("T1234567890123456789", 2)], r["por_task"]
     assert abs(r["subagentes"]["subagentes"] - um) < 1e-12 and r["por_projeto"][0]["nome"] == "proj"
     assert r["ferramentas"] == [{"nome": "Read", "chamadas": 1, "resultado_tokens": 100}], r["ferramentas"]
+    # chat: sem argumento lista as conversas, com a conversa lista as mensagens, com o texto envia
+    reais = {k: globals()[k] for k in ("chat_conversas", "chat_mensagens", "chat_enviar")}
+    globals().update(chat_conversas=lambda: "c", chat_mensagens=lambda cid: "m" + cid, chat_enviar=lambda cid, t: "e" + cid + t)
+    import contextlib, io
+    for args, saida in (((), "c"), (("1",), "m1"), (("1", "oi"), "e1oi")):
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            chat(*args)
+        assert json.loads(buf.getvalue()) == saida, (args, buf.getvalue())
+    globals().update(reais)
     # primeiros passos: o que já está feito não pergunta nada; o que falta é guiado e p pula
     global PASSOS, escolha, save, limpar
     salvo, feitos, respostas = {}, [], iter(["p", ""])
