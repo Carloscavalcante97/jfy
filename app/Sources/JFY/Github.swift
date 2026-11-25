@@ -214,46 +214,85 @@ struct RepoPainel: View {
     let irParaJFY: () -> Void
     let mudou: () -> Void
 
-    enum Aba: String, CaseIterable { case alteracoes = "Alterações", historico = "Histórico", prs = "PRs", branches = "Branches e worktrees" }
+    enum Aba: String, CaseIterable {
+        case alteracoes = "Alterações", historico = "Histórico", prs = "PRs", branches = "Branches e worktrees"
+        var icone: String {
+            switch self {
+            case .alteracoes: "square.and.pencil"
+            case .historico: "clock.arrow.circlepath"
+            case .prs: "arrow.triangle.pull"
+            case .branches: "arrow.triangle.branch"
+            }
+        }
+    }
 
     @State private var aviso: String?
     @State private var confirmarPush = false
+    @State private var ocupado = false
+    @State private var branches: [BranchesPainel.Dados.Branch] = []
+
+    /// O botão principal muda com o estado, como no GitHub Desktop: baixar, subir, publicar ou só buscar.
+    private var sincronizar: (titulo: String, icone: String, acao: String) {
+        repo.atras > 0 ? ("Pull ↓\(repo.atras)", "arrow.down.circle", "pull")
+            : repo.upstream == nil ? ("Publicar branch", "icloud.and.arrow.up", "push")
+            : repo.frente > 0 ? ("Push ↑\(repo.frente)", "arrow.up.circle", "push")
+            : ("Fetch", "arrow.triangle.2.circlepath", "fetch")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Circle().fill(Color(hex: repo.cor)).frame(width: 10, height: 10)
-                    Text(repo.projeto).font(.title3.weight(.semibold))
-                    Text(repo.remote ?? repo.nome).foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
-                    Button("Fetch") { git("fetch") }.help("Busca o que mudou no origin, sem mexer nos seus arquivos")
-                    Button(repo.atras > 0 ? "Pull ↓\(repo.atras)" : "Pull") { git("pull") }.disabled(repo.atras == 0)
-                        .help("Só fast-forward: nunca cria merge sozinho")
-                    Button(repo.frente > 0 ? "Push ↑\(repo.frente)" : "Push") { confirmarPush = true }
-                        .disabled(repo.frente == 0 && repo.upstream != nil)
-                    Button { abrirPR() } label: { Label("Abrir PR", systemImage: "arrow.triangle.pull") }
-                        .buttonStyle(.borderedProminent)
-                        .help("O Claude abre o PR desta branch pelas regras do pr-creator, numa aba do jfy, com a sua aprovação")
+            HStack(spacing: 10) {
+                Circle().fill(Color(hex: repo.cor)).frame(width: 10, height: 10)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(repo.projeto).font(.headline)
+                    Text(repo.remote ?? repo.nome).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                HStack(spacing: 10) {
-                    Label(repo.branch ?? "?", systemImage: "arrow.triangle.branch").font(.callout.monospaced()).lineLimit(1)
-                    if repo.upstream == nil { Text("sem upstream: o Push cria").foregroundStyle(.orange) }
-                    if repo.frente == 0 && repo.atras == 0 && repo.upstream != nil { Text("em dia com o origin").foregroundStyle(.secondary) }
-                }
-                .font(.callout)
-                if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
-                Picker("Aba", selection: $aba) {
-                    ForEach(Aba.allCases, id: \.self) { a in
-                        Text(a == .alteracoes && repo.nMexidos > 0 ? "Alterações (\(repo.nMexidos))" : a == .prs && !prs.isEmpty ? "PRs (\(prs.count))" : a.rawValue).tag(a)
+                Divider().frame(height: 28)
+                Menu {
+                    Section("Trocar para") {
+                        ForEach(branches.filter { !$0.atual }.prefix(12)) { b in Button(b.nome) { trocar(b.nome) } }
                     }
+                    Divider()
+                    Button("Nova branch…") { aba = .branches }
+                    Button("Todas as branches e worktrees") { aba = .branches }
+                } label: {
+                    Label(repo.branch ?? "?", systemImage: "arrow.triangle.branch").font(.callout.monospaced())
                 }
-                .pickerStyle(.segmented).labelsHidden()
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Branch atual: clique para trocar ou criar outra")
+                Spacer()
+                if ocupado { ProgressView().controlSize(.small) }
+                HStack(spacing: 0) {
+                    Button { sincronizar.acao == "push" ? (confirmarPush = true) : git(sincronizar.acao) } label: {
+                        Label(sincronizar.titulo, systemImage: sincronizar.icone)
+                    }
+                    Menu {
+                        Button("Fetch") { git("fetch") }
+                        Button("Pull (só fast-forward)") { git("pull") }.disabled(repo.atras == 0)
+                        Button("Push") { confirmarPush = true }.disabled(repo.frente == 0 && repo.upstream != nil)
+                    } label: { EmptyView() }
+                    .menuStyle(.borderlessButton).frame(width: 18)
+                }
+                .disabled(ocupado)
+                Button { abrirPR() } label: { Label("Abrir PR", systemImage: "arrow.triangle.pull") }
+                    .buttonStyle(.borderedProminent)
+                    .help("O Claude abre o PR desta branch pelas regras do pr-creator, numa aba do jfy, com a sua aprovação")
             }
-            .padding(12)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            if let aviso {
+                Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.bottom, 8)
+            }
+            Picker("Aba", selection: $aba) {
+                ForEach(Aba.allCases, id: \.self) { a in
+                    Label(a == .alteracoes && repo.nMexidos > 0 ? "Alterações (\(repo.nMexidos))"
+                          : a == .prs && !prs.isEmpty ? "PRs (\(prs.count))" : a.rawValue, systemImage: a.icone).tag(a)
+                }
+            }
+            .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 14).padding(.bottom, 10)
             Divider()
             switch aba {
-            case .alteracoes: CommitPainel(pasta: repo.pasta, mudou: mudou)
+            case .alteracoes: CommitPainel(pasta: repo.pasta, branch: repo.branch ?? "?", mudou: mudou)
             case .historico: HistoricoPainel(pasta: repo.pasta)
             case .prs:
                 HStack(spacing: 0) {
@@ -272,16 +311,34 @@ struct RepoPainel: View {
             case .branches: BranchesPainel(pasta: repo.pasta, irParaJFY: irParaJFY, mudou: mudou)
             }
         }
-        .confirmationDialog("Dar push de \(repo.branch ?? "")?", isPresented: $confirmarPush) {
-            Button("Push") { git("push") }
+        .task(id: repo.branch) { await carregarBranches() }
+        .confirmationDialog(repo.upstream == nil ? "Publicar \(repo.branch ?? "") no origin?" : "Dar push de \(repo.branch ?? "")?",
+                            isPresented: $confirmarPush) {
+            Button(repo.upstream == nil ? "Publicar" : "Push") { git("push") }
         } message: {
             Text("Sobe os commits da branch atual para o origin (cria o upstream se faltar). Usa a conta ativa do gh.")
         }
     }
 
+    private func carregarBranches() async {
+        let (d, _): (BranchesPainel.Dados?, String?) = await JFY.ler(["--repo-branches", repo.pasta])
+        branches = d?.branches ?? []
+    }
+
     private func git(_ acao: String) {
         Task {
+            ocupado = true
             aviso = await JFY.fazer(["--repo-acao", repo.pasta, acao])
+            ocupado = false
+            mudou()
+        }
+    }
+
+    private func trocar(_ b: String) {
+        Task {
+            ocupado = true
+            aviso = await JFY.fazer(["--repo-branch", repo.pasta, "trocar", b])
+            ocupado = false
             mudou()
         }
     }
@@ -329,6 +386,12 @@ struct HistoricoPainel: View {
             if let d = detalhe {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(d.mensagem).textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                    if !d.arquivos.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            ForEach(d.arquivos, id: \.self) { a in ArquivoLinha(estado: a.estado, caminho: a.arquivo) }
+                        }
+                        .padding(.horizontal, 12).padding(.bottom, 10)
+                    }
                     Divider()
                     ScrollView([.vertical, .horizontal]) { Diff(texto: d.diff).padding(8) }
                         .background(Color(nsColor: .textBackgroundColor))
@@ -746,11 +809,13 @@ private struct Grupo<C: View>: View {
 }
 
 // ---------- commit pelos arquivos marcados (como o GitHub Desktop) ----------
-/// Os arquivos mexidos com caixa de marcar, o diff do escolhido e a mensagem: o "Gerar com o committer" escreve pelas
-/// regras do agente committer, e o commit é do jfy, com as travas dele (--repo-mudancas, --repo-diff,
-/// --commit-mensagem, --commit-autor, --commit-fazer).
+/// À esquerda, os arquivos mexidos com caixa de marcar e, embaixo deles, a mensagem (título e descrição) e o commit;
+/// à direita, o diff do arquivo escolhido na altura inteira. "Gerar com o committer" escreve pelas regras do agente
+/// committer; o commit é do jfy, com as travas dele (--repo-mudancas, --repo-diff, --commit-mensagem, --commit-autor,
+/// --commit-fazer).
 struct CommitPainel: View {
     let pasta: String
+    let branch: String
     let mudou: () -> Void
 
     struct Mudancas: Decodable {
@@ -766,7 +831,7 @@ struct CommitPainel: View {
     @State private var marcados: Set<String> = []
     @State private var atual: String?
     @State private var diff = ""
-    @State private var resumo = ""
+    @State private var titulo = ""
     @State private var descricao = ""
     @State private var gerando = false
     @State private var commitando = false
@@ -776,96 +841,141 @@ struct CommitPainel: View {
     @State private var nome = ""
 
     /// O que o committer deixa de fora (segredo e ruído): já vem desmarcado.
-    private static let ruido = #/(^|/)(\.env(?!\.example)[^/]*|\.DS_Store|[^/]*\.(pem|key)|node_modules/.*|(dist|\.next|build|coverage)/.*)$/#
+    static let ruido = #/(^|/)(\.env(?!\.example)[^/]*|\.DS_Store|[^/]*\.(pem|key)|node_modules/.*|(dist|\.next|build|coverage)/.*)$/#
+    private let limiteTitulo = 72  // o assunto inteiro do committer cabe em 72 caracteres
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let d = dados {
-                HStack {
-                    Label(d.branch, systemImage: "arrow.triangle.branch").font(.headline.monospaced())
-                    Text("\(d.arquivos.count) alteração(ões)").foregroundStyle(.secondary)
-                    Spacer()
-                    Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar")
-                }
-                .padding(12)
-                if !d.gitflow {
-                    Label("O committer não commita em \(d.branch): crie uma branch feature/, bugfix/, hotfix/ ou release/.",
-                          systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).padding(.horizontal, 12).padding(.bottom, 8)
-                }
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                listaArquivos
                 Divider()
-                HStack(spacing: 0) {
-                    arquivos(d).frame(width: 300)
-                    Divider()
-                    ScrollView([.vertical, .horizontal]) { Diff(texto: diff).padding(8) }
-                    .background(Color(nsColor: .textBackgroundColor))
-                }
-                Divider()
-                caixaCommit(d)
-            } else if let aviso {
-                Text(aviso).foregroundStyle(.secondary).padding()
-            } else {
-                ProgressView()
+                caixaCommit
             }
+            .frame(width: 330)
+            Divider()
+            painelDiff
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await carregar() }
         .task(id: atual) { await carregarDiff() }
     }
 
-    private func arquivos(_ d: Mudancas) -> some View {
-        VStack(spacing: 0) {
-            Toggle(isOn: Binding(get: { !d.arquivos.isEmpty && marcados.count == d.arquivos.count },
-                                 set: { marcados = $0 ? Set(d.arquivos.map(\.arquivo)) : [] })) {
-                Text("\(marcados.count) de \(d.arquivos.count) marcados").font(.callout)
-            }
-            .toggleStyle(.checkbox).frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            Divider()
-            List(selection: $atual) {
-                ForEach(d.arquivos, id: \.arquivo) { a in
-                    HStack(spacing: 6) {
-                        Toggle("", isOn: Binding(get: { marcados.contains(a.arquivo) },
-                                                 set: { if $0 { marcados.insert(a.arquivo) } else { marcados.remove(a.arquivo) } }))
-                            .toggleStyle(.checkbox).labelsHidden()
-                        let e = estado(a.estado)
-                        Text(e.0).font(.caption.monospaced().bold()).foregroundStyle(e.1).frame(width: 14)
-                        Text(a.arquivo).lineLimit(1).truncationMode(.head).help(a.arquivo)
+    // ---------- esquerda: arquivos ----------
+    @ViewBuilder private var listaArquivos: some View {
+        if let d = dados {
+            if d.arquivos.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle").font(.system(size: 36)).foregroundStyle(.green)
+                    Text("Nada para commitar").font(.headline)
+                    Text("Os arquivos que você mexer em \(d.branch) aparecem aqui.").font(.callout).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(20).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(spacing: 0) {
+                    HStack {
+                        Toggle(isOn: Binding(get: { marcados.count == d.arquivos.count },
+                                             set: { marcados = $0 ? Set(d.arquivos.map(\.arquivo)) : [] })) {
+                            Text("\(d.arquivos.count) arquivo(s) alterado(s)").font(.callout.weight(.medium))
+                        }
+                        .toggleStyle(.checkbox)
+                        Spacer()
+                        Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }
+                            .buttonStyle(.borderless).help("Atualizar")
                     }
-                    .tag(a.arquivo)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    Divider()
+                    List(selection: $atual) {
+                        ForEach(d.arquivos, id: \.arquivo) { a in
+                            HStack(spacing: 6) {
+                                Toggle("", isOn: Binding(get: { marcados.contains(a.arquivo) },
+                                                         set: { if $0 { marcados.insert(a.arquivo) } else { marcados.remove(a.arquivo) } }))
+                                    .toggleStyle(.checkbox).labelsHidden()
+                                ArquivoLinha(estado: a.estado, caminho: a.arquivo)
+                            }
+                            .tag(a.arquivo)
+                        }
+                    }
+                    .listStyle(.plain)
                 }
             }
+        } else if let aviso {
+            Text(aviso).foregroundStyle(.secondary).padding().frame(maxHeight: .infinity)
+        } else {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private func caixaCommit(_ d: Mudancas) -> some View {
+    // ---------- esquerda, embaixo: a mensagem e o commit ----------
+    private var caixaCommit: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
-            if let feito { Label(feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            if let d = dados, !d.gitflow {
+                Label("O committer não commita em \(d.branch). Crie uma branch feature/, bugfix/, hotfix/ ou release/ (menu da branch, no topo).",
+                      systemImage: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(.orange)
+            }
+            if let aviso, dados != nil { Label(aviso, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+            if let feito { Label(feito, systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green) }
             if pedirNome {
                 HStack {
-                    TextField("Seu nome para o prefixo [Nome] dos commits (conta compartilhada)", text: $nome).textFieldStyle(.roundedBorder)
-                    Button("Salvar e gerar") { salvarNome() }.disabled(nome.trimmingCharacters(in: .whitespaces).isEmpty)
+                    TextField("Seu nome para o [Nome] dos commits", text: $nome).textFieldStyle(.roundedBorder)
+                    Button("Salvar") { salvarNome() }.disabled(nome.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
-            TextField("Resumo (obrigatório)", text: $resumo).textFieldStyle(.roundedBorder).font(.body.monospaced())
-            TextEditor(text: $descricao).font(.body.monospaced()).frame(height: 70)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
-            HStack {
-                Button { gerar() } label: { Label("Gerar com o committer", systemImage: "sparkles") }
-                    .disabled(marcados.isEmpty || gerando)
-                if gerando { ProgressView().controlSize(.small); Text("O committer está escrevendo…").foregroundStyle(.secondary) }
-                Spacer()
-                Button("Commit de \(marcados.count) arquivo(s) em \(d.branch)") { commitar() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!d.gitflow || marcados.isEmpty || resumo.trimmingCharacters(in: .whitespaces).isEmpty || commitando)
+            HStack(spacing: 6) {
+                TextField("Título (obrigatório)", text: $titulo).textFieldStyle(.roundedBorder)
+                Text("\(titulo.count)").font(.caption.monospacedDigit())
+                    .foregroundStyle(titulo.count > limiteTitulo ? .orange : .secondary)
+                    .help("O committer limita o título a \(limiteTitulo) caracteres")
             }
-            Text("A mensagem segue as regras do agente committer (formato, prefixo na conta compartilhada, linha Journify). Gerar usa tokens; o commit leva só os marcados.")
-                .font(.caption).foregroundStyle(.secondary)
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $descricao).font(.body).scrollContentBackground(.hidden).padding(4)
+                if descricao.isEmpty {
+                    Text("Descrição (opcional): o porquê, em 1 a 3 linhas").foregroundStyle(.tertiary).padding(.horizontal, 9).padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(height: 64)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            Button { gerar() } label: {
+                HStack {
+                    if gerando { ProgressView().controlSize(.small) } else { Image(systemName: "sparkles") }
+                    Text(gerando ? "O committer está escrevendo…" : "Gerar título e descrição com o committer")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .disabled(marcados.isEmpty || gerando)
+            .help("Pelas regras do agente committer: formato, [Nome] na conta compartilhada, linha Journify. Usa tokens.")
+            Button { commitar() } label: {
+                HStack {
+                    if commitando { ProgressView().controlSize(.small) }
+                    Text(marcados.isEmpty ? "Marque os arquivos" : "Commit de \(marcados.count) arquivo(s) em \(branch)").lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).controlSize(.large)
+            .disabled(!(dados?.gitflow ?? false) || marcados.isEmpty || titulo.trimmingCharacters(in: .whitespaces).isEmpty || commitando)
         }
-        .padding(12)
+        .padding(10)
     }
 
-    private func estado(_ e: String) -> (String, Color) {
-        e == "??" || e.contains("A") ? ("+", .green) : e.contains("D") ? ("−", .red) : e.contains("R") ? ("R", .blue) : ("M", .orange)
+    // ---------- direita: o diff ----------
+    private var painelDiff: some View {
+        VStack(spacing: 0) {
+            if let atual, let a = dados?.arquivos.first(where: { $0.arquivo == atual }) {
+                HStack {
+                    ArquivoLinha(estado: a.estado, caminho: a.arquivo, inteiro: true)
+                    Spacer()
+                    Text(marcados.contains(atual) ? "vai no commit" : "fora do commit").font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                Divider()
+                ScrollView([.vertical, .horizontal]) { Diff(texto: diff).padding(8) }
+                    .background(Color(nsColor: .textBackgroundColor))
+            } else {
+                Text(dados?.arquivos.isEmpty == false ? "Escolha um arquivo para ver o diff" : "")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
     }
 
     // ---------- jfy ----------
@@ -897,7 +1007,7 @@ struct CommitPainel: View {
             gerando = false
             if let r {
                 let linhas = r.mensagem.components(separatedBy: "\n")
-                resumo = linhas.first ?? ""
+                titulo = linhas.first ?? ""
                 descricao = linhas.dropFirst().joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
                 aviso = nil
             } else if let msg, msg.hasPrefix("NOME:") {
@@ -921,17 +1031,37 @@ struct CommitPainel: View {
         Task {
             commitando = true
             struct C: Decodable { let sha, assunto: String }
-            let msg = resumo + (descricao.isEmpty ? "" : "\n\n" + descricao)
+            let msg = titulo + (descricao.isEmpty ? "" : "\n\n" + descricao)
             let (r, erro): (C?, String?) = await JFY.ler(["--commit-fazer", pasta, msg] + marcados.sorted())
             commitando = false
             aviso = r == nil ? erro : nil
             if let r {
                 feito = "Commit \(r.sha): \(r.assunto)"
-                resumo = ""
+                titulo = ""
                 descricao = ""
                 await carregar()
                 mudou()
             }
         }
+    }
+}
+
+/// Um arquivo mexido: o que aconteceu com ele (+ novo, M mudou, − apagado, R renomeado), o nome em destaque e a pasta
+/// mais clara, como no GitHub Desktop.
+struct ArquivoLinha: View {
+    let estado, caminho: String
+    var inteiro = false
+
+    var body: some View {
+        let e = estado == "??" || estado.contains("A") ? ("+", Color.green) : estado.contains("D") ? ("−", Color.red)
+            : estado.contains("R") ? ("R", Color.blue) : ("M", Color.orange)
+        let nome = (caminho as NSString).lastPathComponent, pasta = (caminho as NSString).deletingLastPathComponent
+        HStack(spacing: 6) {
+            Text(e.0).font(.caption.monospaced().bold()).foregroundStyle(.white)
+                .frame(width: 16, height: 16).background(RoundedRectangle(cornerRadius: 4).fill(e.1))
+            Text(nome).lineLimit(1).layoutPriority(1)  // o nome inteiro; quem encolhe é a pasta
+            if !pasta.isEmpty { Text(pasta).foregroundStyle(.secondary).lineLimit(1).truncationMode(inteiro ? .middle : .head) }
+        }
+        .help(caminho)
     }
 }
