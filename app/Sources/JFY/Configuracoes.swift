@@ -62,6 +62,17 @@ struct ConfiguracoesTela: View {
     @State private var ocupado: String?  // "google", "github" ou "journify" enquanto o jfy trabalha
     @State private var pedido: Pedido?
     @State private var colandoToken = false
+    @State private var modelos: Modelos?
+
+    struct Modelos: Decodable {
+        struct Atividade: Decodable, Identifiable {
+            let id, nome, descricao, modelo, padraoJfy: String
+        }
+        let opcoes: [String]
+        let atividades: [Atividade]
+    }
+
+    private static let nomesModelo = ["padrao": "Padrão do Claude Code", "fable": "Fable", "opus": "Opus", "sonnet": "Sonnet", "haiku": "Haiku"]
     @State private var token = ""
 
     var body: some View {
@@ -78,6 +89,7 @@ struct ConfiguracoesTela: View {
                         google(c.google)
                         github(c.github)
                         journify(c.journify)
+                        if let m = modelos { cartaoModelos(m) }
                     }
                     .disabled(ocupado != nil)
                 } else if aviso == nil {
@@ -241,6 +253,36 @@ struct ConfiguracoesTela: View {
     private func carregar() async {
         let (c, msg): (Contas?, String?) = await JFY.ler(["--contas-json"])
         if let c { contas = c } else { aviso = msg }
+        let (m, _): (Modelos?, String?) = await JFY.ler(["--modelos-json"])
+        if let m { modelos = m }
+    }
+
+    // ---------- modelos do Claude ----------
+    private func cartaoModelos(_ m: Modelos) -> some View {
+        cartao("Modelos do Claude", "cpu", "Qual modelo o Claude usa em cada atividade do jfy") {
+            Text("Os mais leves (Sonnet, Haiku) custam menos e bastam para tarefas simples. O padrão do Claude Code é o modelo que você usa no terminal (/model). A troca vale na hora, também para o jfy do terminal.")
+                .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+            ForEach(m.atividades) { a in
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(a.nome).fontWeight(.medium)
+                        Text(a.descricao + (a.padraoJfy == "padrao" ? "" : " · padrão do jfy: \(Self.nomesModelo[a.padraoJfy] ?? a.padraoJfy)"))
+                            .font(.caption).foregroundStyle(Souv.texto2).lineLimit(2)
+                    }
+                    Spacer(minLength: 8)
+                    SouvSelect(opcoes: m.opcoes.map { .init(valor: $0, rotulo: Self.nomesModelo[$0] ?? $0) }, selecionado: a.modelo) { novo in
+                        Task {
+                            if let e = await JFY.fazer(["--modelo", a.id, novo]) { aviso = e } else { feito = "\(a.nome): \(Self.nomesModelo[novo] ?? novo)." }
+                            let (m, _): (Modelos?, String?) = await JFY.ler(["--modelos-json"])
+                            if let m { modelos = m }
+                        }
+                    }
+                    .frame(width: 210)
+                }
+                .padding(.vertical, 2)
+                if a.id != m.atividades.last?.id { Divider().opacity(0.5) }
+            }
+        }
     }
 
     private func estado(_ ok: Bool, _ texto: String) -> some View {

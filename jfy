@@ -1489,7 +1489,7 @@ def lancar_horas(cfg, dia):
 - O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
 - Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
 - No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}. Conferido, rode `{SELF} --horas-lancado {dia.isoformat()}` (o app passa a avisar que o dia já foi lançado)."""
-    subprocess.call(["claude", "--model", MODELO_SIMPLES, pedido], cwd=os.path.expanduser("~"))
+    subprocess.call(["claude", *com_modelo("horas"), pedido], cwd=os.path.expanduser("~"))
     notificar("Lançamento de horas terminou", f"{dia.strftime('%d/%m')}: confira o dia no Journify", app="horas")
 
 
@@ -1721,10 +1721,50 @@ def abrir():
 
 
 # ---------- uso da IA e chat (telas do app do Mac, jfy --uso e jfy --chat) ----------
-# tarefas simples (lançar horas, email, commit, abrir PR) não precisam do modelo mais pesado: Sonnet de base. Revisar PR,
-# as tasks e a avaliação do uso seguem no modelo padrão do Claude Code. O fechamento da task também: ele retoma a conversa
-# que ainda está no cache, e trocar de modelo ali faria o Sonnet reler tudo a preço cheio
-MODELO_SIMPLES = "sonnet"
+# o modelo de cada atividade: o app escolhe em Configurações ("modelos" no config); sem escolha, vale o padrão do jfy.
+# Tarefas simples rodam no Sonnet de base; None é o padrão do Claude Code (o /model do terminal). O fechamento da task
+# fica no mesmo modelo da conversa: ele a retoma ainda em cache, e trocar de modelo faria reler tudo a preço cheio
+MODELOS = [  # (id, nome, para que serve, padrão do jfy)
+    ("pipeline", "Tasks pelo /pipeline", "implementar uma task", None),
+    ("conversa", "Tasks em conversa", "estudo, análise, várias tasks num chat", None),
+    ("terminal", "Terminal livre", "o Claude numa pasta, sem task", None),
+    ("revisao", "Revisar PR", "o /code-review de um PR", None),
+    ("reuniao", "Preparar reunião", "pauta e contexto de uma reunião", None),
+    ("avaliacao", "Avaliar o uso da IA", "o diagnóstico da aba Uso da IA", None),
+    ("fechamento", "Fechar a task", "handoff e memória ao sair; no modelo da conversa, aproveita o cache", None),
+    ("horas", "Lançar horas", "preencher o minhas-horas pelo Chrome", "sonnet"),
+    ("email", "Emails", "gerar, corrigir e melhorar respostas", "sonnet"),
+    ("commit", "Mensagem de commit", "pelas regras do committer", "sonnet"),
+    ("pr", "Abrir PR", "pelas regras do pr-creator", "sonnet"),
+]
+OPCOES_MODELO = ["padrao", "fable", "opus", "sonnet", "haiku"]
+
+
+def modelo_de(atividade):
+    """O modelo da atividade: o escolhido no app, ou o padrão do jfy. None é o padrão do Claude Code."""
+    escolhido = load().get("modelos", {}).get(atividade)
+    if escolhido:
+        return None if escolhido == "padrao" else escolhido
+    return next((m for i, _, _, m in MODELOS if i == atividade), None)
+
+
+def com_modelo(atividade):
+    m = modelo_de(atividade)
+    return ["--model", m] if m else []
+
+
+def modelos_json():
+    """Configurações do app: o modelo de cada atividade e as opções."""
+    return {"opcoes": OPCOES_MODELO, "atividades": [{"id": i, "nome": n, "descricao": d, "modelo": modelo_de(i) or "padrao",
+                                                     "padrao_jfy": m or "padrao"} for i, n, d, m in MODELOS]}
+
+
+def modelo_escolher(atividade, valor):
+    if atividade not in {i for i, *_ in MODELOS} or valor not in OPCOES_MODELO:
+        sys.exit("Atividade ou modelo desconhecido.")
+    cfg = load()
+    cfg.setdefault("modelos", {})[atividade] = valor
+    save(cfg)
 CLAUDE_PROJ = os.path.expanduser("~/.claude/projects")  # transcrições do Claude Code: uma .jsonl por sessão
 # US$ por milhão de tokens (preço de API): entrada, saída, leitura de cache. Escrita de cache: 1,25x a entrada
 # (5 min) e 2x (1 h); modo rápido, o dobro. Para quem usa a assinatura é o valor equivalente, não a conta.
@@ -1889,7 +1929,7 @@ De 3 a 5 problemas e de 4 a 6 recomendações, do mais importante para o menos. 
     pasta = os.path.join(RUN_DIR, "uso-ia")
     os.makedirs(pasta, exist_ok=True)
     try:
-        sai = subprocess.run(["claude", "-p", "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True,
+        sai = subprocess.run(["claude", "-p", *com_modelo("avaliacao"), "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True,
                              timeout=300, stdin=subprocess.DEVNULL, env=dict(os.environ, JFY_SEM_AVISO="1"))
     except subprocess.TimeoutExpired:
         sys.exit("O Claude demorou mais de 5 min. Tente de novo.")
@@ -2615,7 +2655,7 @@ def pr_revisar(repo, n):
     pedido = (f"/code-review {n}" if pasta else
               f"Revise o PR https://github.com/{repo}/pull/{n} (gh pr view e gh pr diff): bugs, riscos e o que falta. "
               "Só me mostre o que achou; não comente nem aprove no GitHub sem eu pedir.")
-    subprocess.call(["claude", pedido], cwd=pasta or os.path.expanduser("~"))
+    subprocess.call(["claude", *com_modelo("revisao"), pedido], cwd=pasta or os.path.expanduser("~"))
 
 
 def github_conta(login):
@@ -3019,7 +3059,7 @@ def email_ia(mid, modo, rascunho="", contexto=""):
     pasta = os.path.join(RUN_DIR, "email-ia")
     os.makedirs(pasta, exist_ok=True)
     try:
-        r = subprocess.run(["claude", "-p", "--model", MODELO_SIMPLES, "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True, timeout=180,
+        r = subprocess.run(["claude", "-p", *com_modelo("email"), "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True, timeout=180,
                            stdin=subprocess.DEVNULL,
                            env=dict(os.environ, JFY_SEM_AVISO="1"))  # sem o aviso "Claude respondeu" do hook
     except subprocess.TimeoutExpired:
@@ -3092,7 +3132,9 @@ def commit_mensagem(pasta, *arquivos):
     except OSError:
         sys.exit("Não achei o agente committer em ~/.claude/agents (rode o ./install.sh do jfy).")
     regras = agente[agente.find("### 5. Message format"):agente.find("### 6. Commit")]
-    modelo = (re.search(r"(?m)^model:\s*(\S+)", agente) or [None, MODELO_SIMPLES])[1]
+    # o escolhido no app vale; sem escolha, o modelo do agente committer (e o Sonnet, se ele não disser)
+    modelo = (modelo_de("commit") if load().get("modelos", {}).get("commit")
+              else (re.search(r"(?m)^model:\s*(\S+)", agente) or [None, "sonnet"])[1])
     compartilhada, nome = identidade(pasta)
     if compartilhada and not nome:
         sys.exit("NOME: conta compartilhada sem nome salvo: diga o seu nome para o prefixo dos commits.")
@@ -3111,7 +3153,7 @@ def commit_mensagem(pasta, *arquivos):
     pasta_vazia = os.path.join(RUN_DIR, "commit-ia")
     os.makedirs(pasta_vazia, exist_ok=True)
     try:
-        r = subprocess.run(["claude", "-p", "--model", modelo, "--tools", "", "--", pedido], cwd=pasta_vazia, capture_output=True,
+        r = subprocess.run(["claude", "-p", *(["--model", modelo] if modelo else []), "--tools", "", "--", pedido], cwd=pasta_vazia, capture_output=True,
                            text=True, timeout=180, stdin=subprocess.DEVNULL, env=dict(os.environ, JFY_SEM_AVISO="1"))
     except subprocess.TimeoutExpired:
         sys.exit("O Claude demorou mais de 3 min. Tente de novo.")
@@ -3270,7 +3312,7 @@ def pr_abrir(pasta):
               "vêm das linhas 'Journify:' dos commits da branch (git log <base>..HEAD); o resto (template do repo, teto de 8 pontos, "
               "limite de 2 PRs por pessoa, plano de testes por critério da task, push sem --force) vale como lá. Mostre o título e o "
               "corpo e espere eu aprovar antes do gh pr create, e de novo antes de comentar o link nas tasks do Journify.")
-    subprocess.call(["claude", "--model", MODELO_SIMPLES, pedido], cwd=pasta)
+    subprocess.call(["claude", *com_modelo("pr"), pedido], cwd=pasta)
 
 
 def app(f, *a):
@@ -3464,7 +3506,7 @@ def fechar_agora(sid, cwd, arq, *outras):
     pedido = open(arq).read()
     os.remove(arq)
     # retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
-    subprocess.call(["claude", "-p", "--resume", sid, "--permission-mode", "acceptEdits", "--allowedTools",
+    subprocess.call(["claude", "-p", "--resume", sid, *com_modelo("fechamento"), "--permission-mode", "acceptEdits", "--allowedTools",
                      "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
                      "Bash(ls:*)", *add_dir([cwd, *outras]), "--", pedido], cwd=cwd, env=dict(os.environ, JFY_SEM_AVISO="1"),
                     stdout=subprocess.DEVNULL)
@@ -3490,12 +3532,12 @@ def preparar_repos(repos, nome_wt):
     return pastas, locks
 
 
-def abrir_claude(cwd, contexto, pedido, locks, sid=None, extra=()):
-    """Roda o Claude até o /exit. Devolve a hora (epoch) em que ele abriu."""
+def abrir_claude(cwd, contexto, pedido, locks, sid=None, extra=(), atividade="conversa"):
+    """Roda o Claude até o /exit, no modelo da atividade. Devolve a hora (epoch) em que ele abriu."""
     cronometro("ligar")
     t0 = time.time()
     try:
-        subprocess.call(["claude", "--append-system-prompt", contexto, *extra] + (["--session-id", sid] if sid else [])
+        subprocess.call(["claude", *com_modelo(atividade), "--append-system-prompt", contexto, *extra] + (["--session-id", sid] if sid else [])
                         + (["--", pedido] if pedido else []), cwd=cwd)
     finally:
         for lock in locks or ():
@@ -3581,7 +3623,8 @@ def rodar(tid, modo="pipeline"):
     contexto = (contexto_projeto(proj, pid_proj) + nos_repos(pastas)
                 + " Não mude status nem registre tempo no Journify: o jfy faz isso ao sair.")
     sid = str(uuid.uuid4())
-    minutos = minutos_uteis(abrir_claude(pastas[0], contexto, pedido, locks, sid, add_dir(pastas)), time.time())
+    minutos = minutos_uteis(abrir_claude(pastas[0], contexto, pedido, locks, sid, add_dir(pastas),
+                                         "pipeline" if modo == "pipeline" else "conversa"), time.time())
 
     print("\n" + c(" Fim da sessão ", 39, True) + " " + task["title"])
     d = destino()
@@ -3643,7 +3686,8 @@ def livre(pasta):
     print(c(f" {nome} ", cor_projeto(achado[0] if achado else pasta), True) + " " + c("terminal livre", 255, True) + "\n")
     contexto = contexto_projeto(achado[1], achado[0]) if achado else "Terminal livre aberto pelo jfy."
     # ponytail: sem lock nem worktree, é uso solto; cuidado ao rodar junto com uma task no mesmo repo
-    t0 = abrir_claude(pasta, contexto + nos_repos(pastas), None, None, extra=["--dangerously-skip-permissions", *add_dir(pastas)])
+    t0 = abrir_claude(pasta, contexto + nos_repos(pastas), None, None, extra=["--dangerously-skip-permissions", *add_dir(pastas)],
+                      atividade="terminal")
     registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "livre", pid=achado[0] if achado else None,
                     titulo="Terminal livre" + ("" if achado else f" em {os.path.basename(pasta)}"))
 
@@ -3678,7 +3722,7 @@ Dados da agenda:
 Me prepare em poucas linhas. O que eu avancei desde a última reunião deste projeto (git log dos últimos 7 dias, handoff.md e o resumo da última reunião, se mcp__journify__listar_reunioes / obter_reuniao tiverem), o que está em revisão ou teste esperando alguém, bloqueios e as perguntas que eu devo levar.
 Não crie task para a reunião nem para o que sair dela: o tempo de reunião vai para as horas do projeto, categoria Reunião."""
     contexto = contexto_projeto(proj, pid) if proj else "Preparação de reunião aberta pelo jfy."
-    t0 = abrir_claude(proj["repo"] if proj else os.path.expanduser("~"), contexto, pedido, None)
+    t0 = abrir_claude(proj["repo"] if proj else os.path.expanduser("~"), contexto, pedido, None, atividade="reuniao")
     registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "reuniao", pid=pid or info.get("projeto"), titulo=f"Preparação: {info.get('contexto') or titulo}")
 
 
@@ -4140,7 +4184,7 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
+                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
                 "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
@@ -4573,6 +4617,14 @@ def selftest():
     finally:
         globals().update(load=salvo_cfg[0], save=salvo_cfg[1])
         shutil.rmtree(pasta_t)
+    salvo_load = globals()["load"]
+    globals()["load"] = lambda: {"projetos": {}, "modelos": {"horas": "haiku", "pipeline": "padrao", "revisao": "opus"}}
+    try:
+        assert (modelo_de("horas"), modelo_de("pipeline"), modelo_de("email"), modelo_de("conversa"), modelo_de("revisao")) \
+            == ("haiku", None, "sonnet", None, "opus")
+        assert com_modelo("pipeline") == [] and com_modelo("email") == ["--model", "sonnet"]
+    finally:
+        globals()["load"] = salvo_load
     pj_real = PROJ_JOURNIFY
     globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")  # sem a lista: os apelidos do jfy
     h = horas_json(hoje)
