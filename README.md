@@ -237,6 +237,10 @@ O tempo vem do relógio (da abertura até o `/exit`, sem as reuniões da agenda 
 
 Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero, se não existir) e a memória do projeto, em segundo plano: a aba já pode ser fechada. O `handoff.md` fica como alteração não commitada: commite junto com a task. Se a task rodou num worktree, ele fica em `~/.jfy/worktrees/` com o `handoff.md`: depois do merge, apague com `git worktree remove <pasta>`.
 
+### Modelos do Claude
+
+As tarefas simples rodam no **Sonnet**, para não gastar o modelo mais pesado: lançar horas, gerar, corrigir e melhorar emails, a mensagem de commit e abrir PR. Revisar PR, as tasks (/pipeline e conversa) e a avaliação do uso seguem no modelo padrão do seu Claude Code. O fechamento da task também, porque ele retoma a conversa que ainda está no cache, e trocar de modelo ali faria o Sonnet reler tudo a preço cheio. Para trocar o modelo das tarefas simples (o Haiku, por exemplo), mude `MODELO_SIMPLES` no `jfy`.
+
 ## Onde ficam as coisas
 
 | O quê | Onde |

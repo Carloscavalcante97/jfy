@@ -1489,7 +1489,7 @@ def lancar_horas(cfg, dia):
 - O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
 - Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
 - No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}. Conferido, rode `{SELF} --horas-lancado {dia.isoformat()}` (o app passa a avisar que o dia já foi lançado)."""
-    subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
+    subprocess.call(["claude", "--model", MODELO_SIMPLES, pedido], cwd=os.path.expanduser("~"))
     notificar("Lançamento de horas terminou", f"{dia.strftime('%d/%m')}: confira o dia no Journify", app="horas")
 
 
@@ -1721,6 +1721,10 @@ def abrir():
 
 
 # ---------- uso da IA e chat (telas do app do Mac, jfy --uso e jfy --chat) ----------
+# tarefas simples (lançar horas, email, commit, abrir PR) não precisam do modelo mais pesado: Sonnet de base. Revisar PR,
+# as tasks e a avaliação do uso seguem no modelo padrão do Claude Code. O fechamento da task também: ele retoma a conversa
+# que ainda está no cache, e trocar de modelo ali faria o Sonnet reler tudo a preço cheio
+MODELO_SIMPLES = "sonnet"
 CLAUDE_PROJ = os.path.expanduser("~/.claude/projects")  # transcrições do Claude Code: uma .jsonl por sessão
 # US$ por milhão de tokens (preço de API): entrada, saída, leitura de cache. Escrita de cache: 1,25x a entrada
 # (5 min) e 2x (1 h); modo rápido, o dobro. Para quem usa a assinatura é o valor equivalente, não a conta.
@@ -3015,7 +3019,7 @@ def email_ia(mid, modo, rascunho="", contexto=""):
     pasta = os.path.join(RUN_DIR, "email-ia")
     os.makedirs(pasta, exist_ok=True)
     try:
-        r = subprocess.run(["claude", "-p", "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True, timeout=180,
+        r = subprocess.run(["claude", "-p", "--model", MODELO_SIMPLES, "--tools", "", "--", pedido], cwd=pasta, capture_output=True, text=True, timeout=180,
                            stdin=subprocess.DEVNULL,
                            env=dict(os.environ, JFY_SEM_AVISO="1"))  # sem o aviso "Claude respondeu" do hook
     except subprocess.TimeoutExpired:
@@ -3088,7 +3092,7 @@ def commit_mensagem(pasta, *arquivos):
     except OSError:
         sys.exit("Não achei o agente committer em ~/.claude/agents (rode o ./install.sh do jfy).")
     regras = agente[agente.find("### 5. Message format"):agente.find("### 6. Commit")]
-    modelo = (re.search(r"(?m)^model:\s*(\S+)", agente) or [None, "sonnet"])[1]
+    modelo = (re.search(r"(?m)^model:\s*(\S+)", agente) or [None, MODELO_SIMPLES])[1]
     compartilhada, nome = identidade(pasta)
     if compartilhada and not nome:
         sys.exit("NOME: conta compartilhada sem nome salvo: diga o seu nome para o prefixo dos commits.")
@@ -3266,7 +3270,7 @@ def pr_abrir(pasta):
               "vêm das linhas 'Journify:' dos commits da branch (git log <base>..HEAD); o resto (template do repo, teto de 8 pontos, "
               "limite de 2 PRs por pessoa, plano de testes por critério da task, push sem --force) vale como lá. Mostre o título e o "
               "corpo e espere eu aprovar antes do gh pr create, e de novo antes de comentar o link nas tasks do Journify.")
-    subprocess.call(["claude", pedido], cwd=pasta)
+    subprocess.call(["claude", "--model", MODELO_SIMPLES, pedido], cwd=pasta)
 
 
 def app(f, *a):
