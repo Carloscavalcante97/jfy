@@ -2110,8 +2110,54 @@ def projetos_json():
                   key=lambda p: (not n(p), cfg["projetos"].get(p, {}).get("nome", "~" + p).lower()))
     return {"foco": [resumo_task(cfg, t) for t in foco(tasks)], "status_lote": [x for x in STATUS_APP if x not in PEDE_VIDEO],
             "projetos": [{"id": p, "nome": cfg["projetos"].get(p, {}).get("nome"), "cor": cor_hex(p), "tasks": n(p),
+                          "pastas": repos_de(cfg["projetos"][p]) if p in cfg["projetos"] else [],
                           "exemplo": None if p in cfg["projetos"] else next(x["title"] for x in tasks if x["projectId"] == p)}
                          for p in pids]}
+
+
+def id_projeto(ref):
+    """O id do projeto no Journify a partir do link (…/projects/<id>?task=…) ou do próprio id."""
+    m = re.search(r"(?:/projects/)?([A-Za-z0-9]{15,30})(?=$|[/?#])", (ref or "").strip())
+    return m[1] if m else None
+
+
+def projeto_validar(ref):
+    """Novo projeto pelo app: o link (ou o id) do projeto no Journify, conferido pelo MCP (você tem acesso? quantas tasks?)."""
+    pid = id_projeto(ref)
+    if not pid:
+        sys.exit("Não achei o id do projeto: cole o link do projeto no Journify (…/projects/<id>).")
+    try:
+        ts = mcp("listar_tasks_projeto", projetoId=pid)
+    except Exception as e:
+        sys.exit(f"O Journify não deixou ver esse projeto: {e}")
+    cfg = load()
+    return {"id": pid, "tasks": len(ts), "exemplo": ts[0]["title"] if ts else None,
+            "nome": cfg["projetos"].get(pid, {}).get("nome"), "pastas": repos_de(cfg["projetos"][pid]) if pid in cfg["projetos"] else [],
+            "journify": next((x["nome"] for x in projetos_journify()["projetos"] if x["jfy"] == pid), None)}
+
+
+def projeto_salvar(dados):
+    """Grava o projeto como o configurar() do terminal: {"id", "nome" (o apelido no jfy), "pastas": [...]}. Sem pasta,
+    é um projeto sem repositório (estudo, documentos): o Claude abre numa pasta só dele."""
+    d = json.loads(dados)
+    pid, nome = id_projeto(d.get("id")), (d.get("nome") or "").strip()
+    if not pid:
+        sys.exit("Escolha o projeto do Journify.")
+    if not nome:
+        sys.exit("Dê um nome curto ao projeto (é como ele aparece no jfy).")
+    cfg = load()
+    if any(k != pid and p["nome"].lower() == nome.lower() for k, p in cfg["projetos"].items()):
+        sys.exit(f"Já existe um projeto chamado {nome} no jfy.")
+    pastas = list(dict.fromkeys(os.path.realpath(os.path.expanduser(x)) for x in d.get("pastas") or [] if x.strip()))
+    for x in pastas:
+        if not os.path.isdir(x):
+            sys.exit(f"A pasta {x} não existe.")
+    if not pastas:
+        pastas = [os.path.join(SEM_REPO, pid)]
+        os.makedirs(pastas[0], exist_ok=True)
+    cfg["projetos"][pid] = {"nome": nome, "repo": pastas[0], "repos": pastas}
+    save(cfg)
+    return {"id": pid, "nome": nome, "pastas": pastas}
 
 
 def tasks_json(pid, todas=False):
@@ -4090,7 +4136,7 @@ def main():
         return login()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
-                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
+                "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--task-abrir": task_abrir, "--agenda-json": agenda_json,
                 "--evento-salvar": evento_salvar, "--evento-apagar": evento_apagar, "--evento-json": evento_json, "--vigiar": vigiar,
                 "--reuniao-ajuste": reuniao_ajuste, "--reuniao-preparar": reuniao_preparar, "--temas-json": temas_json,
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
@@ -4505,6 +4551,24 @@ def selftest():
     assert sin == {"erros": 1, "erro: Bash": 1, "recusas": 1, "recusa: Edit": 1, "interrupcoes": 1, "correcoes": 1, "curtos": 1,
                    "compactacoes": 1}, sin
     assert exe["interrompido"] == ["Implemente o login com Google seguindo o README"] and exe["curto"] == ["pft"], exe
+    assert id_projeto("https://journify.souv.tech/projects/07TeWMeOi2IyKmZjnndI?task=1A5AYCgwKpkZkkxtoGAW") == "07TeWMeOi2IyKmZjnndI"
+    assert id_projeto("07TeWMeOi2IyKmZjnndI") == "07TeWMeOi2IyKmZjnndI" and id_projeto("journify") is None
+    salvo_cfg, cfg_t = (globals()["load"], globals()["save"]), {"projetos": {"x" * 20: {"nome": "okra", "repo": "/a"}}}
+    pasta_t = os.path.join(RUN_DIR, "teste-projeto")
+    os.makedirs(pasta_t, exist_ok=True)
+    globals().update(load=lambda: cfg_t, save=lambda c: None)
+    try:
+        r = projeto_salvar(json.dumps({"id": "https://j/projects/" + "y" * 20, "nome": "novo", "pastas": [pasta_t, pasta_t]}))
+        assert r["pastas"] == [os.path.realpath(pasta_t)] and cfg_t["projetos"]["y" * 20]["nome"] == "novo", r
+        for ruim in ({"id": "z" * 20, "nome": "OKRA", "pastas": [pasta_t]}, {"id": "z" * 20, "nome": "z", "pastas": ["/nao/existe"]}):
+            try:
+                projeto_salvar(json.dumps(ruim))
+                assert False, ruim
+            except SystemExit:
+                pass  # nome repetido e pasta que não existe não gravam
+    finally:
+        globals().update(load=salvo_cfg[0], save=salvo_cfg[1])
+        shutil.rmtree(pasta_t)
     pj_real = PROJ_JOURNIFY
     globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")  # sem a lista: os apelidos do jfy
     h = horas_json(hoje)

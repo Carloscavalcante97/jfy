@@ -24,6 +24,7 @@ struct ProjetosTela: View {
             let id: String
             let nome, cor, exemplo: String?
             let tasks: Int
+            let pastas: [String]?
         }
         let foco: [Resumo]
         let projetos: [Projeto]
@@ -52,6 +53,7 @@ struct ProjetosTela: View {
     @State private var resultadoLote: String?
     @AppStorage("projetos.tabela") private var modoTabela = false  // a tabela agrupada, como no ClickUp
     @State private var pontos: [String: Double] = [:]  // carregam depois da lista (o MCP só dá na task inteira)
+    @State private var configurando: PedidoProjeto?  // novo projeto, ou configurar/editar um que já existe
 
     var body: some View {
         GeometryReader { g in
@@ -134,8 +136,21 @@ struct ProjetosTela: View {
         .listStyle(.sidebar)
         .listaSouv()
         .safeAreaInset(edge: .bottom) {
-            Button { Task { await carregarProjetos() } } label: { Label("Atualizar", systemImage: "arrow.clockwise") }
-                .buttonStyle(.borderless).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Button { configurando = PedidoProjeto() } label: { Label("Novo projeto", systemImage: "plus") }
+                    .help("Ligar um projeto do Journify a uma pasta deste Mac")
+                Spacer()
+                Button { Task { await carregarProjetos() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar")
+            }
+            .buttonStyle(.borderless).padding(8)
+        }
+        .sheet(item: $configurando) { pedido in
+            NovoProjeto(pedido: pedido, semPasta: (dados?.projetos ?? []).filter { $0.nome == nil },
+                        fechar: { configurando = nil },
+                        salvou: { pid in
+                            configurando = nil
+                            Task { await carregarProjetos(); projeto = pid; await carregarTasks() }
+                        })
         }
     }
 
@@ -144,9 +159,13 @@ struct ProjetosTela: View {
             Circle().fill(Color(hex: p.cor)).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 1) {
                 Text(p.nome ?? "sem nome").lineLimit(1).foregroundStyle(p.nome == nil ? .secondary : .primary)
-                if let ex = p.exemplo { Text("configure no menu do jfy · ex.: \(ex)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                if let ex = p.exemplo { Text("ex.: \(ex)").font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
             }
             Spacer()
+            if p.nome == nil {
+                Button("Configurar") { configurando = PedidoProjeto(pid: p.id, nome: nil, pastas: []) }
+                    .controlSize(.small).help("Escolher a pasta e o nome deste projeto no jfy")
+            }
             if p.tasks > 0 { Text("\(p.tasks)").font(.caption).foregroundStyle(.secondary).monospacedDigit() }
             let fav = nav.favoritos.contains { $0.id == p.id }
             Button {
@@ -158,6 +177,11 @@ struct ProjetosTela: View {
             .help(fav ? "Tirar dos favoritos da barra lateral" : "Favoritar: aparece na barra lateral (até \(Navegacao.maxFavoritos))")
         }
         .linhaSouv(projeto == p.id) { projeto = p.id }
+        .contextMenu {
+            Button(p.nome == nil ? "Configurar projeto…" : "Editar projeto…") {
+                configurando = PedidoProjeto(pid: p.id, nome: p.nome, pastas: p.pastas ?? [])
+            }
+        }
     }
 
     // ---------- tasks ----------
@@ -823,5 +847,186 @@ struct BarraLote: View {
     private func aplicarAgora() {
         guard let v = valor else { return }
         if campo == "status", pedeVideo.contains(v) { video = ""; pedindoVideo = true } else { aplicar(campo, v, ""); valor = nil }
+    }
+}
+
+/// O pedido do formulário de projeto: novo (sem id) ou um que já existe (configurar ou editar).
+struct PedidoProjeto: Identifiable {
+    let id = UUID()
+    var pid: String?
+    var nome: String?
+    var pastas: [String] = []
+}
+
+/// Ligar um projeto do Journify a uma pasta deste Mac, como o terminal faz: o projeto (um dos seus sem pasta, ou o link
+/// dele no Journify, conferido pelo MCP), a pasta do código (escolher ou criar; mais de uma para front e back) ou "sem
+/// repositório", e o nome curto com que ele aparece no jfy.
+struct NovoProjeto: View {
+    let pedido: PedidoProjeto
+    let semPasta: [ProjetosTela.Projetos.Projeto]
+    let fechar: () -> Void
+    let salvou: (String) -> Void
+
+    struct Conferido: Decodable {
+        let id: String
+        let tasks: Int
+        let exemplo, nome, journify: String?
+        let pastas: [String]
+    }
+
+    @State private var link = ""
+    @State private var conferido: Conferido?
+    @State private var conferindo = false
+    @State private var pastas: [String] = []
+    @State private var semRepo = false
+    @State private var nome = ""
+    @State private var aviso: String?
+    @State private var salvando = false
+
+    private var pronto: Bool {
+        conferido != nil && !nome.trimmingCharacters(in: .whitespaces).isEmpty && (semRepo || !pastas.isEmpty) && !salvando
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(pedido.pid == nil ? "Novo projeto" : pedido.nome == nil ? "Configurar projeto" : "Editar projeto")
+                .font(Souv.titulo(24))
+            secao("1", "Projeto no Journify") {
+                if let c = conferido {
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        Text(c.journify ?? c.nome ?? c.id).fontWeight(.semibold)
+                        Text("· \(c.tasks) task\(c.tasks == 1 ? "" : "s")").foregroundStyle(Souv.texto2)
+                        Spacer()
+                        if pedido.pid == nil { Button("Trocar") { conferido = nil; link = "" }.buttonStyle(.link) }
+                    }
+                    if let ex = c.exemplo { Text("ex.: \(ex)").font(.caption).foregroundStyle(Souv.texto2).lineLimit(1) }
+                } else if pedido.pid != nil {
+                    ProgressView().controlSize(.small)
+                } else {
+                    if !semPasta.isEmpty {
+                        Text("Seus projetos que ainda não têm pasta:").font(.caption).foregroundStyle(Souv.texto2)
+                        ForEach(semPasta) { p in
+                            Button { conferir(p.id) } label: {
+                                HStack(spacing: 8) {
+                                    Circle().fill(Color(hex: p.cor)).frame(width: 8, height: 8)
+                                    Text(p.exemplo.map { "ex.: \($0)" } ?? p.id).lineLimit(1)
+                                    Spacer()
+                                    Text("\(p.tasks) task\(p.tasks == 1 ? "" : "s")").font(.caption).foregroundStyle(Souv.texto2)
+                                }
+                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Souv.superficie2))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    HStack {
+                        TextField("Cole o link do projeto no Journify (…/projects/…)", text: $link)
+                            .textFieldStyle(.roundedBorder).onSubmit { conferir(link) }
+                        Button("Conferir") { conferir(link) }.disabled(link.trimmingCharacters(in: .whitespaces).isEmpty || conferindo)
+                        if conferindo { ProgressView().controlSize(.small) }
+                    }
+                    Text("O jfy confere no Journify se você tem acesso ao projeto.").font(.caption).foregroundStyle(Souv.texto2)
+                }
+            }
+            secao("2", "Pasta do código") {
+                Toggle("Sem repositório (estudo, documentos): o Claude abre numa pasta só deste projeto", isOn: $semRepo)
+                    .toggleStyle(.checkbox)
+                if !semRepo {
+                    ForEach(pastas, id: \.self) { pasta in
+                        HStack(spacing: 8) {
+                            Image(systemName: "folder.fill").foregroundStyle(Souv.destaque)
+                            Text(pasta.replacingOccurrences(of: NSHomeDirectory(), with: "~")).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Button { pastas.removeAll { $0 == pasta } } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.borderless).help("Tirar esta pasta")
+                        }
+                    }
+                    HStack {
+                        Button { escolherPasta() } label: {
+                            Label(pastas.isEmpty ? "Escolher ou criar a pasta…" : "Outra pasta (front e back, por exemplo)…",
+                                  systemImage: "folder.badge.plus")
+                        }
+                    }
+                }
+            }
+            secao("3", "Nome no jfy") {
+                TextField("curto, como aparece no menu e na barra (ex.: portal)", text: $nome).textFieldStyle(.roundedBorder)
+            }
+            if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
+            HStack {
+                Spacer()
+                Button("Cancelar", action: fechar).keyboardShortcut(.cancelAction)
+                Button(salvando ? "Salvando…" : "Salvar") { salvar() }.buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction).disabled(!pronto)
+            }
+        }
+        .padding(22)
+        .frame(width: 600)
+        .background(Souv.fundo)
+        .task {
+            pastas = pedido.pastas
+            nome = pedido.nome ?? ""
+            semRepo = pedido.pastas.first?.contains("/.jfy/sem-repo/") == true
+            if semRepo { pastas = [] }
+            if let pid = pedido.pid { conferir(pid) }
+        }
+    }
+
+    private func secao(_ n: String, _ titulo: String, @ViewBuilder _ conteudo: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(n).font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .frame(width: 20, height: 20).background(Circle().fill(Souv.primaria))
+                Text(titulo).fontWeight(.semibold)
+            }
+            conteudo()
+        }
+    }
+
+    private func conferir(_ ref: String) {
+        Task {
+            conferindo = true
+            aviso = nil
+            let (c, msg): (Conferido?, String?) = await JFY.ler(["--projeto-validar", ref])
+            conferindo = false
+            if let c {
+                conferido = c
+                if nome.isEmpty { nome = c.nome ?? "" }
+                if pastas.isEmpty && pedido.pid == nil { pastas = c.pastas.filter { !$0.contains("/.jfy/sem-repo/") } }
+            } else {
+                aviso = msg
+            }
+        }
+    }
+
+    /// O painel do macOS: escolhe uma pasta, ou cria uma nova pelo botão Nova Pasta dele.
+    private func escolherPasta() {
+        let painel = NSOpenPanel()
+        painel.canChooseDirectories = true
+        painel.canChooseFiles = false
+        painel.canCreateDirectories = true
+        painel.allowsMultipleSelection = false
+        painel.prompt = "Usar esta pasta"
+        painel.message = "Escolha a pasta do código do projeto, ou crie uma nova (botão Nova Pasta)."
+        if let ultima = pastas.last { painel.directoryURL = URL(fileURLWithPath: ultima).deletingLastPathComponent() }
+        guard painel.runModal() == .OK, let url = painel.url else { return }
+        if !pastas.contains(url.path) { pastas.append(url.path) }
+        if nome.isEmpty { nome = url.lastPathComponent.lowercased() }
+    }
+
+    private func salvar() {
+        guard let c = conferido else { return }
+        Task {
+            salvando = true
+            aviso = nil
+            struct Salvo: Decodable { let id: String }
+            let d: [String: Any] = ["id": c.id, "nome": nome.trimmingCharacters(in: .whitespaces), "pastas": semRepo ? [] : pastas]
+            guard let json = try? JSONSerialization.data(withJSONObject: d), let txt = String(data: json, encoding: .utf8) else { return }
+            let (r, msg): (Salvo?, String?) = await JFY.ler(["--projeto-salvar", txt])
+            salvando = false
+            if let r { salvou(r.id) } else { aviso = msg }
+        }
     }
 }
