@@ -1483,8 +1483,9 @@ def barra_mac():
 
 def abrir():
     """Clique em "Abrir o jfy" na barra de cima: traz o terminal com o jfy no menu, ou abre um com o jfy."""
-    app = load().get("terminal", "com.apple.Terminal")  # o principal() grava o terminal em que o jfy roda
-    if subprocess.run(TMUX + ["list-clients"], capture_output=True, text=True).stdout.strip():
+    app = load().get("terminal", "com.apple.Terminal")  # o main() grava o terminal (ou o jfy.app) que abriu o jfy por último
+    # o jfy.app (app/) abre já com o jfy dentro: não precisa de .command
+    if app == "dev.jfy.mac" or subprocess.run(TMUX + ["list-clients"], capture_output=True, text=True).stdout.strip():
         subprocess.run(TMUX + ["select-window", "-t", "jfy:menu"], capture_output=True)
         subprocess.run(["open", "-b", app])
     elif app == "com.apple.Terminal":
@@ -1494,6 +1495,188 @@ def abrir():
         open(arq, "w").write(f"#!/bin/sh\nexec '{SELF}'\n")
         os.chmod(arq, 0o755)
         subprocess.run(["open", "-b", app, arq])
+
+
+# ---------- uso da IA e chat (telas do app do Mac, jfy --uso e jfy --chat) ----------
+CLAUDE_PROJ = os.path.expanduser("~/.claude/projects")  # transcrições do Claude Code: uma .jsonl por sessão
+# US$ por milhão de tokens (preço de API): entrada, saída, leitura de cache. Escrita de cache: 1,25x a entrada
+# (5 min) e 2x (1 h); modo rápido, o dobro. Para quem usa a assinatura é o valor equivalente, não a conta.
+# ponytail: tabela fixa; modelo novo sem preço aparece em "sem_preco" e entra com custo 0 até alguém pôr aqui
+PRECOS = {"claude-opus-5-5": (4, 20, .2), "claude-opus-5": (5, 25, .5), "claude-opus-4-8": (5, 25, .5),
+          "claude-sonnet-5-5": (2, 10, .1), "claude-sonnet-5": (2, 10, .2), "claude-haiku-5-5": (.1, .5, .01),
+          "claude-fable-5-2": (8, 40, .2), "claude-fable-5-1": (10, 50, .25), "claude-fable-5": (10, 50, 1)}
+# /pipeline <id> chega como <command-name>/pipeline</command-name>\n<command-args><id>; conversar, como "Task Journify <id>: "título""
+TASK_NO_PEDIDO = re.compile(r'(?:/pipeline</command-name>\\n<command-args>|/pipeline |Task Journify )([A-Za-z0-9]{15,30})(?:: \\"(.+?)\\")?')
+
+
+def custo_ia(modelo, u):
+    """Custo de uma resposta em US$: (entrada, saída, escrita de cache, leitura de cache), economia do cache."""
+    if modelo not in PRECOS:
+        return (0, 0, 0, 0), 0
+    ent, sai, leit = PRECOS[modelo]
+    cc = u.get("cache_creation") or {}
+    w1h = cc.get("ephemeral_1h_input_tokens", 0)
+    w5 = (u.get("cache_creation_input_tokens") or 0) - w1h
+    cr = u.get("cache_read_input_tokens") or 0
+    x = (2 if u.get("speed") == "fast" else 1) / 1e6
+    return ((u.get("input_tokens") or 0) * ent * x, (u.get("output_tokens") or 0) * sai * x,
+            (w5 * 1.25 + w1h * 2) * ent * x, cr * leit * x), cr * (ent - leit) / 1e6
+
+
+def uso(dias=None):
+    """Análise do uso do Claude Code a partir das transcrições: custo e tokens por dia, projeto, task, sessão, modelo
+    e ferramenta. dias=None: tudo. Uma resposta aparece em mais de um arquivo (resume, fork) e uma vez por bloco
+    de conteúdo: conta uma vez só, pelo id."""
+    cfg = load()
+    desde = date.today() - timedelta(days=dias - 1) if dias else date.min
+    raizes = sorted(((os.path.realpath(r), pr["nome"]) for pr in cfg["projetos"].values()
+                     if pr.get("repo") or pr.get("repos") for r in repos_de(pr)),
+                    key=lambda x: -len(x[0]))
+    casa, wt = os.path.realpath(os.path.expanduser("~")), os.path.realpath(WT_DIR)
+
+    def projeto(cwd):
+        cwd = os.path.realpath(cwd)
+        for r, n in raizes:
+            if cwd == r or cwd.startswith(r + "/"):
+                return n
+        if cwd.startswith(wt + "/"):  # worktree do jfy: <pasta do repo>-<task>
+            base = cwd[len(wt) + 1:].split("/")[0]
+            return next((n for r, n in raizes if base.startswith(os.path.basename(r) + "-")), base)
+        return "~" if cwd == casa else os.path.basename(cwd)
+
+    msgs, ferr, res, sess = {}, {}, {}, {}
+    for raiz, _, nomes in os.walk(CLAUDE_PROJ):
+        for nome in sorted(nomes):
+            if not nome.endswith(".jsonl"):
+                continue
+            sub = os.path.basename(raiz) == "subagents"
+            sid = os.path.basename(os.path.dirname(raiz)) if sub else nome[:-6]
+            s = sess.setdefault(sid, {"titulo": None, "task": None, "titulo_task": None, "branch": None, "cwd": None})
+            for l in open(os.path.join(raiz, nome), errors="ignore"):
+                # ponytail: filtro por texto antes do json.loads; só ~1/3 das linhas precisa ser lida de verdade
+                titulo = '"ai-title"' in l and not s["titulo"]
+                pedido = not sub and not s["task"] and ("/pipeline" in l or "Task Journify " in l)
+                if not (titulo or pedido or '"usage"' in l or '"tool_use"' in l or '"tool_result"' in l):
+                    continue
+                try:
+                    d = json.loads(l)
+                except ValueError:
+                    continue  # linha cortada (sessão ainda escrevendo)
+                m = d.get("message") if isinstance(d.get("message"), dict) else {}
+                if titulo:
+                    s["titulo"] = d.get("aiTitle")
+                if pedido and d.get("type") == "user" and TASK_NO_PEDIDO.search(l):
+                    s["task"], s["titulo_task"] = TASK_NO_PEDIDO.search(l).groups()
+                if d.get("type") == "assistant":
+                    s["cwd"], s["branch"] = d.get("cwd") or s["cwd"], d.get("gitBranch") or s["branch"]
+                    if m.get("usage") and m.get("id") and m.get("model") != "<synthetic>" and d.get("timestamp"):
+                        msgs.setdefault(m["id"], (d["timestamp"], m.get("model"), m["usage"], sid, sub))
+                for b in m.get("content") if isinstance(m.get("content"), list) and d.get("timestamp") else ():
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        ferr[b["id"]] = (b.get("name"), d["timestamp"])
+                    elif isinstance(b, dict) and b.get("type") == "tool_result":
+                        res[b.get("tool_use_id")] = len(json.dumps(b.get("content"), ensure_ascii=False)) // 4
+
+    dia = lambda ts: datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().date()
+    vazio = lambda: {"custo": 0, "entrada": 0, "saida": 0, "cache_escrita": 0, "cache_leitura": 0, "respostas": 0}
+    grupos = {k: {} for k in ("dia", "projeto", "task", "sessao", "modelo")}
+    total, sem_preco, economia, dia_proj, contexto, sub_custo, tipo = vazio(), set(), 0, {}, {}, [0, 0], [0] * 4
+    for ts, modelo, u, sid, sub in msgs.values():
+        d = dia(ts)
+        if d < desde:
+            continue
+        partes, eco = custo_ia(modelo, u)
+        v, economia, tipo = sum(partes), economia + eco, [a + b for a, b in zip(tipo, partes)]
+        sem_preco |= set() if modelo in PRECOS else {modelo}
+        s = sess[sid]
+        p = projeto(s["cwd"] or casa)
+        ctx = (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+        contexto[sid] = max(contexto.get(sid, 0), ctx)
+        sub_custo[sub] += v
+        dia_proj[(d.isoformat(), p)] = dia_proj.get((d.isoformat(), p), 0) + v
+        for g, k in (("dia", d.isoformat()), ("projeto", p), ("task", s["task"]), ("sessao", sid), ("modelo", modelo)):
+            if k is None:
+                continue
+            for a in (grupos[g].setdefault(k, vazio()), *((total,) if g == "dia" else ())):
+                a["custo"] += v
+                a["entrada"] += u.get("input_tokens") or 0
+                a["saida"] += u.get("output_tokens") or 0
+                a["cache_escrita"] += u.get("cache_creation_input_tokens") or 0
+                a["cache_leitura"] += u.get("cache_read_input_tokens") or 0
+                a["respostas"] += 1
+                a.setdefault("sessoes", set()).add(sid)
+
+    titulos = {}
+    if grupos["task"]:
+        try:
+            titulos = {t["id"]: t["title"] for t in mcp("minhas_tasks")}
+        except Exception:
+            pass  # sem rede ou sem MCP: fica o título do pedido ou o da sessão
+    url = cfg.get("journify") or JOURNIFY
+    pid_de = {pr["nome"]: k for k, pr in cfg["projetos"].items()}
+
+    def linhas(g, extra=lambda k, a: {}, n=None):
+        out = sorted(({"nome": k, **{x: y for x, y in a.items() if x != "sessoes"}, "sessoes": len(a["sessoes"]), **extra(k, a)}
+                      for k, a in grupos[g].items()), key=lambda x: -x["custo"])
+        return out[:n] if n else out
+
+    def da_task(tid, a):
+        ss = [sess[s] for s in a["sessoes"]]
+        p = projeto(ss[0]["cwd"] or casa)
+        return {"titulo": titulos.get(tid) or next((s["titulo_task"] for s in ss if s["titulo_task"]), None)
+                or ss[0]["titulo"] or tid, "projeto": p,
+                "url": f"{url}/projects/{pid_de[p]}?task={tid}" if p in pid_de else None}
+
+    def da_sessao(sid, a):
+        s = sess[sid]
+        tss = [ts for ts, _, _, x, _ in msgs.values() if x == sid]
+        return {"titulo": s["titulo"] or "(sem título)", "projeto": projeto(s["cwd"] or casa), "branch": s["branch"],
+                "task": s["task"], "inicio": min(tss), "fim": max(tss), "contexto_max": contexto[sid]}
+
+    top = [p["nome"] for p in linhas("projeto")[:6]]
+    porpd = {}
+    for (d, p), v in dia_proj.items():
+        k = (d, p if p in top else "outros")
+        porpd[k] = porpd.get(k, 0) + v
+    usadas = {}
+    for tid, (nome, ts) in ferr.items():
+        if dia(ts) >= desde:
+            f = usadas.setdefault(nome, {"nome": nome, "chamadas": 0, "resultado_tokens": 0})
+            f["chamadas"] += 1
+            f["resultado_tokens"] += res.get(tid, 0)
+    limites = {}
+    for arq in (USO, USO + ".ok"):  # a .ok guarda a última leitura boa (barra_ia)
+        try:
+            limites = json.load(open(arq)).get("rate_limits") or limites
+        except (OSError, ValueError):
+            pass
+        if limites:
+            break
+    total["sessoes"] = len(total.pop("sessoes", ()))
+    return {
+        "gerado": time.time(), "dias": dias, "total": total, "economia_cache": economia, "sem_preco": sorted(sem_preco),
+        "custo_por_tipo": dict(zip(("entrada", "saida", "cache_escrita", "cache_leitura"), tipo)),
+        "limites": {k: limites.get(k) for k in ("five_hour", "seven_day")},
+        "subagentes": {"principal": sub_custo[0], "subagentes": sub_custo[1]},
+        "por_dia": sorted(linhas("dia"), key=lambda x: x["nome"]), "por_dia_projeto": [{"dia": d, "projeto": p, "custo": v} for (d, p), v in sorted(porpd.items())],
+        "por_projeto": linhas("projeto"), "por_modelo": linhas("modelo"),
+        "por_task": linhas("task", da_task, 30), "sessoes": linhas("sessao", da_sessao, 30),
+        "ferramentas": sorted(usadas.values(), key=lambda f: -f["chamadas"])[:20],
+    }
+
+
+CHAT_MCP = None  # nome da ferramenta de chat no MCP do Journify, quando ela sair
+
+
+def chat(texto=None):
+    """Envio da tela de chat do app. Sem texto: só diz se está conectado (código de saída 0 = sim).
+    ponytail: o chat do Journify ainda não saiu. Quando sair, ponha o nome em CHAT_MCP e ajuste o mcp(...) abaixo
+    aos argumentos e à resposta da ferramenta; o app não muda."""
+    if not CHAT_MCP:
+        sys.exit("O chat do Journify ainda não está conectado.")
+    if texto is not None:
+        r = mcp(CHAT_MCP, mensagem=texto)
+        print(r if isinstance(r, str) else r.get("resposta") or json.dumps(r, ensure_ascii=False))
 
 
 # ---------- configuração de projeto ----------
@@ -2077,9 +2260,6 @@ def tela_projeto(cfg, pid):
 
 def principal():
     cfg = load()
-    if os.environ.get("__CFBundleIdentifier", cfg.get("terminal")) != cfg.get("terminal"):  # "Abrir o jfy" da barra de cima
-        cfg["terminal"] = os.environ["__CFBundleIdentifier"]
-        save(cfg)
     if os.path.exists(os.path.expanduser("~/Library/LaunchAgents/jfy.swiftbar.plist")) and \
             subprocess.run(["pgrep", "-x", "SwiftBar"], capture_output=True).returncode:
         subprocess.run(["open", "-g", "/Applications/SwiftBar.app"])  # ícone da barra de cima fechado: volta
@@ -2406,6 +2586,13 @@ def main():
         return atalhos()
     if a[:1] == ["--avisar"]:  # hook do Claude Code
         return avisar()
+    if a[:1] == ["--uso"]:  # tela de uso da IA do app: jfy --uso [dias], JSON
+        return print(json.dumps(uso(int(a[1]) if a[1:] else None), ensure_ascii=False))
+    if a[:1] == ["--chat"]:  # tela de chat do app: jfy --chat [texto]
+        return chat(*a[1:2])
+    if a[:1] == ["--icone"]:  # app/build.sh: a chama do jfy num PNG de ~1024 px, base do ícone do JFY.app
+        d = desenho("chama")
+        return png(a[1], d, rgb256(202), escala=1024 // (max(len(d), *map(len, d)) + 2))
     if a[:1] == ["--fim"]:
         arg = lambda k: a[a.index(k) + 1] if k in a[:-1] else None
         novo = arg("--status") or ("em_teste" if "--pronta" in a else None)  # --pronta: sessões abertas antes do --status
@@ -2415,6 +2602,12 @@ def main():
     if os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
         return principal()
     # fora do tmux: entra (ou volta) na sessão jfy, garantindo a aba do menu
+    cfg = load()
+    if os.environ.get("__CFBundleIdentifier", cfg.get("terminal")) != cfg.get("terminal"):
+        # o terminal (ou o jfy.app) de onde o jfy foi aberto por último: é ele que o "Abrir o jfy" da barra de cima traz.
+        # Lido aqui, fora do tmux: lá dentro a variável é a do terminal que criou o servidor do tmux
+        cfg["terminal"] = os.environ["__CFBundleIdentifier"]
+        save(cfg)
     tmux_conf()
     if subprocess.run(TMUX + ["has-session", "-t", "jfy"], capture_output=True).returncode == 0:
         abas = subprocess.run(TMUX + ["list-windows", "-t", "jfy", "-F", "#{window_name}"], capture_output=True, text=True).stdout.split("\n")
@@ -2636,6 +2829,31 @@ def selftest():
     assert json.load(open(ajustes_arq(hoje))) == {} and [x["lanc"] for x in itens_horas(cfg_h, hoje)[0]] == [30, 10]
     shutil.rmtree(HORAS_DIR)
     os.remove(REUNIOES)
+    # uso da IA: resposta repetida (um registro por bloco, e de novo num fork) conta uma vez; subagente soma na sessão-mãe
+    cp = os.path.join(RUN_DIR, "teste-claude")
+    os.makedirs(os.path.join(cp, "p", "S1", "subagents"))
+    u = {"input_tokens": 10, "output_tokens": 100, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 50,
+         "cache_creation": {"ephemeral_1h_input_tokens": 50}}
+    ts = datetime.now().astimezone().isoformat()
+    linha = lambda tipo, **m: json.dumps({"type": tipo, "timestamp": ts, "cwd": "/x/proj", "message": m}) + "\n"
+    r1 = linha("assistant", id="m1", model="claude-opus-5-5", usage=u, content=[{"type": "tool_use", "id": "t1", "name": "Read"}])
+    open(os.path.join(cp, "p", "S1.jsonl"), "w").write(
+        linha("user", content="<command-name>/pipeline</command-name>\n<command-args>T1234567890123456789</command-args>")
+        + r1 + r1 + linha("user", content=[{"type": "tool_result", "tool_use_id": "t1", "content": "x" * 400}]))
+    open(os.path.join(cp, "p", "S2.jsonl"), "w").write(r1)
+    open(os.path.join(cp, "p", "S1", "subagents", "a.jsonl"), "w").write(
+        linha("assistant", id="m2", model="claude-opus-5-5", usage=u, content=[]))
+    reais = {k: globals()[k] for k in ("CLAUDE_PROJ", "mcp")}
+    globals().update(CLAUDE_PROJ=cp, mcp=lambda *a, **k: [])
+    r = uso(1)
+    globals().update(reais)
+    shutil.rmtree(cp)
+    um = (10 * 4 + 100 * 20 + 1000 * .2 + 50 * 4 * 2) / 1e6  # opus 5.5; a escrita de 1 h custa 2x a entrada
+    assert r["total"]["respostas"] == 2 and abs(r["total"]["custo"] - 2 * um) < 1e-12, r["total"]
+    assert abs(r["custo_por_tipo"]["cache_escrita"] - 2 * 50 * 4 * 2 / 1e6) < 1e-12, r["custo_por_tipo"]
+    assert [(x["nome"], x["respostas"]) for x in r["por_task"]] == [("T1234567890123456789", 2)], r["por_task"]
+    assert abs(r["subagentes"]["subagentes"] - um) < 1e-12 and r["por_projeto"][0]["nome"] == "proj"
+    assert r["ferramentas"] == [{"nome": "Read", "chamadas": 1, "resultado_tokens": 100}], r["ferramentas"]
     # primeiros passos: o que já está feito não pergunta nada; o que falta é guiado e p pula
     global PASSOS, escolha, save, limpar
     salvo, feitos, respostas = {}, [], iter(["p", ""])

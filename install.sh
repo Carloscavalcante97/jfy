@@ -141,6 +141,10 @@ EOF
     launchctl bootstrap "gui/$(id -u)" "$SB" && ok "ícone do jfy na barra de cima, abre junto com o Mac (SwiftBar, plugins em ${PLUG/#$HOME/~})"
   fi
 fi
+# app do jfy para o Mac (app/): o jfy numa janela própria, com uso da IA e chat. Monta com o Swift do Xcode
+if [ -d /Applications/jfy.app ] || [ -d "$HOME/Applications/jfy.app" ] || quer "App do jfy para o Mac (janela própria, uso da IA, chat)? Precisa do Xcode; monta em ~1 min."; then
+  if command -v swift >/dev/null; then "$DIR/app/build.sh" || aviso "não consegui montar o jfy.app"; else aviso "sem o Swift: instale o Xcode e rode de novo"; fi
+fi
 PLIST="$HOME/Library/LaunchAgents/jfy.dia.plist"
 if [ -f "$PLIST" ] || quer "Notificação às 7h (seg a sex) com as reuniões e as tasks no foco? Cria um LaunchAgent."; then
   DIAS=""; for d in 1 2 3 4 5; do DIAS="$DIAS<dict><key>Weekday</key><integer>$d</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>0</integer></dict>"; done

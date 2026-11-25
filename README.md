@@ -25,7 +25,8 @@ O `install.sh`:
   - **uso da IA na barra**: muda o `statusLine` do `~/.claude/settings.json`;
   - **aviso do Claude no macOS**: dois hooks no `~/.claude/settings.json` (valem para todo Claude Code) e o `terminal-notifier`;
   - **ícone do jfy na barra de cima do Mac**: instala o [SwiftBar](https://swiftbar.app) (Homebrew) e um plugin dele;
-  - **notificação das 7h**: um LaunchAgent.
+  - **notificação das 7h**: um LaunchAgent;
+  - **app do jfy para o Mac**: monta o `jfy.app` em `/Applications` (precisa do Xcode). Veja [App do Mac](#app-do-mac).
 
 ### 2. Rodar
 
@@ -133,6 +134,16 @@ No menu principal, `o` lista as portas abertas por programas de desenvolvimento,
 
 Com o extra do SwiftBar, o jfy ganha um ícone (a chama) ao lado do relógio do Mac, que abre junto com o Mac. A até 1h de uma reunião, a chama vira o ícone de reunião do tema, que esquenta (laranja a 15 min, vermelho a 5): o nome e a contagem ficam na primeira linha do menu, com "Entrar na chamada". A 5 min chega a notificação, mesmo com o jfy fechado; clicar nela entra na chamada. O ícone nunca leva texto: em Mac com notch, o que fica largo some atrás dele. O menu tem: abrir o jfy (traz o terminal dele, ou abre um com o jfy), abrir o Journify, pausar/retomar a jornada, as próximas reuniões (clique entra na chamada), as tasks no foco (clique abre no Journify), as portas abertas com "Encerrar" em cada uma e os emails não lidos. Atualiza a cada minuto e quando você abre o menu.
 
+### App do Mac
+
+O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight. Na barra lateral (ou ⌘1, ⌘2, ⌘3):
+
+- **jfy**: o menu de sempre, num terminal embutido que já vem com a JFY Mono (não precisa configurar fonte). As tasks continuam no tmux: fechar o app não encerra nenhuma, e abrir de novo volta para o mesmo lugar. Dá para usar o app e um terminal ao mesmo tempo. Com o app aberto, "Abrir o jfy" na barra de cima e o clique nas notificações trazem o app.
+- **Uso da IA**: quanto o Claude Code gastou neste Mac, lido das conversas em `~/.claude/projects` (hoje, 7 dias, 30 dias ou tudo). Mostra o custo em US$ pelo preço da API (na assinatura é o valor equivalente, não a conta), os tokens, as sessões e os limites de 5 h e semanal; o custo por dia de cada projeto (passe o mouse num dia para ver o detalhe); para onde foi o custo (leitura e escrita de cache, saída); e os rankings por projeto, task do Journify (clique abre a task), modelo, ferramenta e sessão, com o maior contexto de cada uma. `jfy --uso [dias]` dá o mesmo em JSON.
+- **Chat**: conversa com o Journify. Ainda não está conectado: o chat do Journify ainda não saiu. Quando sair, é só ajustar a função `chat()` do `jfy` (e a `CHAT_MCP`); o app não muda.
+
+Para montar ou atualizar depois de um `git pull`: `./app/build.sh` (o `./install.sh` já faz isso se o app estiver instalado). A assinatura é local, vale para este Mac.
+
 ### Notificação das 7h
 
 De segunda a sexta, às 7h, chega uma notificação do macOS com as reuniões do dia e as tasks no foco. Se o Mac estiver dormindo, ela chega quando ele acordar. Se a notificação não aparecer, libere as notificações do **Editor de Scripts** em Ajustes do Sistema > Notificações.
@@ -196,6 +207,7 @@ Depois o Claude atualiza o `handoff.md` na raiz do repositório (ou cria do zero
 | projeto e contexto de cada reunião (base das horas) | `~/.jfy/reunioes.json` |
 | ajustes que você fez na tabela de horas de um dia | `~/.jfy/horas/AAAA-MM-DD.ajustes.json` |
 | notificação das 7h | `~/Library/LaunchAgents/jfy.dia.plist` |
+| app do Mac | `/Applications/jfy.app`, montado por `app/build.sh` a partir de `app/` |
 | ícone na barra de cima | plugin em `~/.jfy/swiftbar/jfy.1m.sh` (ou na pasta de plugins do seu SwiftBar); abre com o Mac por `~/Library/LaunchAgents/jfy.swiftbar.plist` |
 | acesso ao Google | Chaves do macOS, item `jfy-google` |
 
@@ -226,6 +238,7 @@ find ~/.claude/commands ~/.claude/agents ~/.claude/hooks -type l -lname "*pipeli
 launchctl bootout gui/$(id -u)/jfy.dia; rm ~/Library/LaunchAgents/jfy.dia.plist
 launchctl bootout gui/$(id -u)/jfy.swiftbar; rm ~/Library/LaunchAgents/jfy.swiftbar.plist
 brew uninstall --cask swiftbar  # se você só usava ele para o jfy
+rm -rf /Applications/jfy.app
 security delete-generic-password -s jfy-google
 rm -rf ~/.jfy ~/jfy
 # e tire o "tee ~/.jfy/claude-status.json | " do statusLine e os hooks "jfy --avisar" em ~/.claude/settings.json
