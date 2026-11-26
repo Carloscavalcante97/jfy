@@ -854,27 +854,76 @@ def email_barra():
 
 def corpo_email(payload):
     """Texto de um email (payload do format=full): o text/plain; se não houver, o text/html sem as tags.
-    Devolve (texto, [anexos])."""
+    Devolve (texto, [nomes dos anexos])."""
     import base64, html
-    partes, achado, anexos = [payload], {}, []
+    partes, achado, anexos = [payload], {}, [p["filename"] for p in partes_anexo(payload)]
     while partes:
         p = partes.pop(0)
         partes += p.get("parts", [])
-        if p.get("filename"):
-            anexos.append(p["filename"])
-        elif p.get("mimeType") in ("text/plain", "text/html") and p.get("body", {}).get("data"):
+        if not p.get("filename") and p.get("mimeType") in ("text/plain", "text/html") and p.get("body", {}).get("data"):
             achado.setdefault(p["mimeType"], base64.urlsafe_b64decode(p["body"]["data"] + "==").decode(errors="replace"))
     if "text/plain" in achado:
         return achado["text/plain"].strip(), anexos
     return html_texto(achado.get("text/html", "")), anexos
 
 
+def partes_anexo(payload):
+    """As partes de um email (format=full) que são anexo: as com nome e as fotos coladas no corpo, que às vezes vêm sem
+    nome (ganham "imagem1.png"). O html vira texto sem as <img>, então é por aqui que a foto aparece."""
+    out, partes = [], [payload]
+    while partes:
+        p = partes.pop(0)
+        partes += p.get("parts", [])
+        b, tipo = p.get("body", {}), p.get("mimeType") or ""
+        if (p.get("filename") or tipo.startswith("image/")) and (b.get("attachmentId") or b.get("data")):
+            out.append(dict(p, filename=p.get("filename") or f"imagem{len(out) + 1}.{tipo.split('/')[-1]}"))
+    return out
+
+
+def anexos_json(payload):
+    """Os anexos de um email para o app: nome, tipo, tamanho e a parte (o --email-anexo baixa por ela)."""
+    return [{"nome": p["filename"], "tipo": p.get("mimeType") or "", "parte": p.get("partId", ""),
+             "tamanho": p.get("body", {}).get("size", 0)} for p in partes_anexo(payload)]
+
+
+def dados_anexo(tok, mid, p):
+    """Os bytes de uma parte de anexo: vem no corpo (pequena) ou se busca pelo attachmentId."""
+    import base64
+    b = p.get("body", {})
+    return base64.urlsafe_b64decode((b.get("data") or http_json(f"{GMAIL}/{mid}/attachments/{b['attachmentId']}", token=tok)["data"]) + "==")
+
+
+def email_anexo(mid, parte):
+    """Baixa um anexo de um email para ~/.jfy/anexos/<email>/<parte>/ e devolve o caminho; o app mostra a foto ou abre o
+    arquivo. Já baixado, não baixa de novo."""
+    if not re.fullmatch(r"[0-9A-Za-z]+", mid) or not re.fullmatch(r"\d+(\.\d+)*", parte):
+        sys.exit("Anexo inválido.")
+    # ponytail: a pasta só cresce (o que você abriu); limpar por idade se pesar
+    pasta = os.path.join(HOME, "anexos", mid, parte)
+    if os.path.isdir(pasta) and os.listdir(pasta):
+        return {"caminho": os.path.join(pasta, sorted(os.listdir(pasta))[0])}
+    tok = caixa_google()
+    m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
+    p = next((p for p in partes_anexo(m["payload"]) if p.get("partId") == parte), None)
+    if not p:
+        sys.exit("Esse anexo não está mais no email.")
+    dados = dados_anexo(tok, mid, p)
+    os.makedirs(pasta, exist_ok=True)
+    destino = nome_livre(pasta, p["filename"])
+    open(destino, "wb").write(dados)
+    return {"caminho": destino}
+
+
 def html_texto(h):
     """HTML de email (corpo, assinatura) para texto: sem style/script, quebras nas tags de bloco."""
     import html
     h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", "", h)
+    # o link fica: "texto <url>", como o Gmail faz no texto puro (o app mostra o <url> como link com o domínio)
+    h = re.sub(r"""(?is)<a\b[^>]*?href\s*=\s*["']?(https?://[^"'\s>]+)[^>]*>(.*?)</a>""",
+               lambda m: m[2] if html.unescape(re.sub(r"<[^>]+>", "", m[2])).strip() == html.unescape(m[1])
+               else f"{m[2]} \ue000{m[1]}\ue001", h)  # marcadores: o "<url>" sairia junto com as tags
     h = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", h)
-    txt = html.unescape(re.sub(r"<[^>]+>", "", h))
+    txt = html.unescape(re.sub(r"<[^>]+>", "", h)).replace("\ue000", "<").replace("\ue001", ">")
     return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip()
 
 
@@ -2572,7 +2621,7 @@ def secao_contexto(it, pasta):
         e = email_json(ref)
         conversa = "\n\n".join(f"--- {m['de']} ({m['data']}):\n{m['texto']}" for m in e["conversa"]) or e["texto"]
         return e["assunto"], (f"De: {e['de']}\nPara: {e['para']}\nData: {e['data']}"
-                               + (f"\nAnexos do email (não baixados): {', '.join(e['anexos'])}" if e["anexos"] else "") + f"\n\n{conversa}")
+                               + (f"\nAnexos do email (não baixados): {', '.join(a['nome'] for a in e['anexos'])}" if e["anexos"] else "") + f"\n\n{conversa}")
     if tipo == "pr":
         repo, n = ref.rsplit("#", 1)
         p = pr_json(repo, n)
@@ -3221,14 +3270,14 @@ def email_json(mid):
     tok = caixa_google()
     m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
     h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
-    texto, anexos = corpo_email(m["payload"])
+    texto = corpo_email(m["payload"])[0]
     conversa = []
     for x in http_json(f"{GMAIL.rsplit('/', 1)[0]}/threads/{m['threadId']}?format=full", token=tok).get("messages", []):
         hx = {y["name"].lower(): y["value"] for y in x["payload"]["headers"]}
         conversa.append({"id": x["id"], "de": hx.get("from", ""), "data": hx.get("date", ""), "texto": corpo_email(x["payload"])[0][:6000],
-                         "eu": "SENT" in x.get("labelIds", [])})
+                         "eu": "SENT" in x.get("labelIds", []), "anexos": anexos_json(x["payload"])})
     return {"id": mid, "de": h.get("from", ""), "para": h.get("to", ""), "cc": h.get("cc", ""), "data": h.get("date", ""),
-            "assunto": h.get("subject") or "(sem assunto)", "texto": texto, "anexos": anexos,
+            "assunto": h.get("subject") or "(sem assunto)", "texto": texto, "anexos": anexos_json(m["payload"]),
             "link": link_gmail(tok, m["threadId"]), "lido": "UNREAD" not in m.get("labelIds", []),
             "conversa": conversa, "tem_assinatura": bool(assinatura_gmail(tok))}
 
@@ -3339,17 +3388,8 @@ def montar_email(h, eu, modo, texto, para="", cc="", corpo_original="", assinatu
 
 
 def anexos_do_email(tok, mid, payload):
-    """[(nome, tipo, bytes)] dos anexos de um email, para encaminhar."""
-    import base64
-    out, partes = [], [payload]
-    while partes:
-        p = partes.pop(0)
-        partes += p.get("parts", [])
-        b = p.get("body", {})
-        if p.get("filename") and (b.get("attachmentId") or b.get("data")):
-            dado = b.get("data") or http_json(f"{GMAIL}/{mid}/attachments/{b['attachmentId']}", token=tok)["data"]
-            out.append((p["filename"], p.get("mimeType") or "application/octet-stream", base64.urlsafe_b64decode(dado + "==")))
-    return out
+    """[(nome, tipo, bytes)] dos anexos de um email, para encaminhar (as fotos coladas no corpo vão junto)."""
+    return [(p["filename"], p.get("mimeType") or "application/octet-stream", dados_anexo(tok, mid, p)) for p in partes_anexo(payload)]
 
 
 def email_enviar(dados):
@@ -4624,7 +4664,7 @@ def main():
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--github-sair": github_sair,
                 "--contas-json": contas_json, "--google-sair": google_sair, "--journify-token": journify_token,
                 "--journify-sair": journify_sair, "--projetos-journify": guardar_projetos_journify, "--horas-lancado": horas_lancado, "--pr-revisar": pr_revisar,
-                "--emails-json": emails_json, "--email-json": email_json, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
+                "--emails-json": emails_json, "--email-json": email_json, "--email-anexo": email_anexo, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
                 "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-assinatura": email_assinatura, "--email-ia": email_ia, "--contatos-json": contatos_json,
                 "--repo-mudancas": repo_mudancas, "--repo-diff": repo_diff, "--commit-mensagem": commit_mensagem,
@@ -4755,6 +4795,12 @@ def selftest():
     com_plain = {"mimeType": "multipart/alternative", "parts": [{"mimeType": "text/plain", "body": {"data": b64("oi\n")}},
                                                                {"mimeType": "text/html", "body": {"data": b64("<b>x</b>")}}]}
     assert corpo_email(com_plain) == ("oi", [])
+    assert html_texto('<p>Veja <a href="https://x.com/a?b=1&amp;c=2">o painel</a> e <a href="https://y.com">https://y.com</a></p>'
+                      '<a href="mailto:a@b">a@b</a>') == "Veja o painel <https://x.com/a?b=1&c=2> e https://y.com\na@b"
+    foto_colada = {"mimeType": "multipart/related", "parts": [com_plain, {"mimeType": "image/png", "partId": "1", "filename": "",
+                                                                          "body": {"attachmentId": "y", "size": 9}}]}
+    assert corpo_email(foto_colada) == ("oi", ["imagem1.png"]) and anexos_json(foto_colada) == [
+        {"nome": "imagem1.png", "tipo": "image/png", "parte": "1", "tamanho": 9}], anexos_json(foto_colada)
     global TEMA
     for nome, t in TEMAS.items():  # cor de aba igual a um papel seria trocada duas vezes
         assert not set(t.get("projetos", [])) & {k for k in t if k != "projetos"}, nome

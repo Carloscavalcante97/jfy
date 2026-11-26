@@ -46,13 +46,19 @@ struct EmailsTela: View {
     enum Grupo: String, CaseIterable { case data = "Data", remetente = "Remetente", nenhum = "Sem grupo" }
 
     struct Email: Decodable {
+        struct Anexo: Decodable, Identifiable {
+            let nome, tipo, parte: String
+            let tamanho: Int
+            var id: String { parte }
+        }
         struct Mensagem: Decodable, Identifiable {
             let id, de, data, texto: String
             let eu: Bool
+            var anexos: [Anexo]?
         }
         let id, de, para, data, assunto, texto, link: String
         let cc: String?
-        let anexos: [String]
+        let anexos: [Anexo]
         let lido, temAssinatura: Bool
         let conversa: [Mensagem]
     }
@@ -256,9 +262,6 @@ struct EmailsTela: View {
                         if let u = URL(string: e.link) { Link("Abrir no Gmail", destination: u) }
                         BotaoContexto(item: .init(tipo: "email", ref: e.id, titulo: e.assunto, origem: e.de))
                     }
-                    if !e.anexos.isEmpty {
-                        Label("Anexos: \(e.anexos.joined(separator: ", "))", systemImage: "paperclip").font(.callout).foregroundStyle(.secondary)
-                    }
                     Divider()
                     conversa(e)
                     Divider().padding(.top, 8)
@@ -274,7 +277,7 @@ struct EmailsTela: View {
 
     /// A conversa inteira: a última mensagem aberta, as antigas em uma linha (o clique abre). A sua resposta entra aqui.
     @ViewBuilder private func conversa(_ e: Email) -> some View {
-        let msgs = e.conversa.isEmpty ? [Email.Mensagem(id: e.id, de: e.de, data: e.data, texto: e.texto, eu: false)] : e.conversa
+        let msgs = e.conversa.isEmpty ? [Email.Mensagem(id: e.id, de: e.de, data: e.data, texto: e.texto, eu: false, anexos: e.anexos)] : e.conversa
         if msgs.count > 1 { Text("CONVERSA (\(msgs.count))").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
         ForEach(Array(msgs.enumerated()), id: \.element.id) { i, m in
             let aberta = i == msgs.count - 1 || abertas.contains(m.id) || m.id == e.id
@@ -284,9 +287,14 @@ struct EmailsTela: View {
                     Spacer()
                     Text(m.data).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-                Text(aberta ? m.texto : m.texto.split(separator: "\n").first.map(String.init) ?? "")
-                    .foregroundStyle(aberta ? .primary : .secondary).lineLimit(aberta ? nil : 1)
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: aberta)
+                if aberta {
+                    TextoEmail(texto: m.texto)
+                } else {
+                    Text(m.texto.split(separator: "\n").first.map(String.init) ?? "").foregroundStyle(.secondary).lineLimit(1)
+                }
+                if aberta, let anexos = m.anexos, !anexos.isEmpty {
+                    ForEach(anexos) { AnexoEmail(mid: m.id, anexo: $0) }
+                }
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 8).fill(m.eu ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06)))
@@ -304,7 +312,7 @@ struct EmailsTela: View {
             case .encaminhar:
                 CampoEmails(rotulo: "Para", texto: $para)
                 CampoEmails(rotulo: "Cc", texto: $cc)
-                if !e.anexos.isEmpty { Label("Os anexos vão junto: \(e.anexos.joined(separator: ", "))", systemImage: "paperclip").font(.caption).foregroundStyle(.secondary) }
+                if !e.anexos.isEmpty { Label("Os anexos vão junto: \(e.anexos.map(\.nome).joined(separator: ", "))", systemImage: "paperclip").font(.caption).foregroundStyle(.secondary) }
             case .todos:
                 Text("Para \(remetente(e.de)), com cópia para os outros de Para e Cc (menos você).").font(.caption).foregroundStyle(.secondary)
             case .responder:
@@ -396,6 +404,120 @@ struct EmailsTela: View {
         return Calendar.current.isDateInToday(d) ? d.formatted(.dateTime.hour().minute())
             : d.formatted(.dateTime.day().month(.twoDigits).locale(Locale(identifier: "pt_BR")))
     }
+}
+
+
+/// O texto de um email com os links clicáveis (e os emails, como mailto). O "texto <url>" que o jfy deixa no lugar do
+/// link do html (e o Gmail no texto puro) vira "↗ dominio": o endereço inteiro, com rastreio, ocupava linhas.
+private let detectorLinks = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+
+func comLinks(_ s: String) -> AttributedString {
+    let ns = s as NSString
+    var out = AttributedString(), resto = 0
+    for m in detectorLinks?.matches(in: s, range: NSRange(location: 0, length: ns.length)) ?? [] {
+        guard let url = m.url, m.range.location >= resto else { continue }
+        let fim = m.range.location + m.range.length
+        let entre = m.range.location > 0 && fim < ns.length && ns.character(at: m.range.location - 1) == 60 && ns.character(at: fim) == 62  // < >
+        let ini = entre ? m.range.location - 1 : m.range.location
+        out += AttributedString(ns.substring(with: NSRange(location: resto, length: ini - resto)))
+        var link = AttributedString(entre ? "↗ " + (url.host() ?? url.absoluteString) : ns.substring(with: m.range))
+        link.link = url
+        out += link
+        resto = entre ? fim + 1 : fim
+    }
+    out += AttributedString(ns.substring(from: resto))
+    return out
+}
+
+/// O texto de uma mensagem aberta: selecionável, com os links clicáveis, sublinhados na cor de destaque e com a mãozinha
+/// em cima deles. O Text do SwiftUI não muda o cursor no link; o NSTextView muda. TextKit 1 para medir a altura na
+/// largura que a tela dá.
+struct TextoEmail: NSViewRepresentable {
+    let texto: String
+
+    final class Coordinator { var texto: String? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSTextView {
+        let v = NSTextView(usingTextLayoutManager: false)
+        v.isEditable = false
+        v.isSelectable = true
+        v.drawsBackground = false
+        v.isVerticallyResizable = false
+        v.textContainerInset = .zero
+        v.textContainer?.lineFragmentPadding = 0
+        v.textContainer?.widthTracksTextView = true
+        v.linkTextAttributes = [.foregroundColor: NSColor(Souv.destaque), .cursor: NSCursor.pointingHand,
+                                .underlineStyle: NSUnderlineStyle.single.rawValue]
+        return v
+    }
+
+    func updateNSView(_ v: NSTextView, context: Context) {
+        guard context.coordinator.texto != texto else { return }
+        context.coordinator.texto = texto
+        let s = NSMutableAttributedString(comLinks(texto))
+        s.addAttributes([.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor], range: NSRange(location: 0, length: s.length))
+        v.textStorage?.setAttributedString(s)
+    }
+
+    func sizeThatFits(_ proposta: ProposedViewSize, nsView v: NSTextView, context: Context) -> CGSize? {
+        guard let lm = v.layoutManager, let tc = v.textContainer else { return nil }
+        let w = proposta.width.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 600
+        tc.containerSize = NSSize(width: w, height: .greatestFiniteMagnitude)
+        lm.ensureLayout(for: tc)
+        return CGSize(width: w, height: ceil(lm.usedRect(for: tc).height))
+    }
+}
+
+/// Um anexo de email: a foto aparece na mensagem (o html vira texto e perde as <img>); o resto é uma linha que abre o
+/// arquivo no app padrão do Mac. Quem baixa é o jfy (--email-anexo), para ~/.jfy/anexos: da segunda vez já está lá.
+struct AnexoEmail: View {
+    let mid: String
+    let anexo: EmailsTela.Email.Anexo
+    @State private var caminho: String?
+    @State private var imagem: NSImage?
+    @State private var baixando = false
+    @State private var erro: String?
+
+    private var foto: Bool { anexo.tipo.hasPrefix("image/") }
+
+    var body: some View {
+        if let imagem, let caminho {
+            Image(nsImage: imagem).resizable().scaledToFit()
+                .frame(maxWidth: 480, maxHeight: 320, alignment: .leading)
+                .onTapGesture { abrir(caminho) }.help("\(anexo.nome): abrir")
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                Button { Task { if let c = await baixar() { abrir(c) } } } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: foto ? "photo" : "paperclip")
+                        Text(anexo.nome).lineLimit(1)
+                        if anexo.tamanho > 0 {
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(anexo.tamanho), countStyle: .file)).foregroundStyle(.secondary)
+                        }
+                        if baixando { ProgressView().controlSize(.small) }
+                    }
+                }
+                .buttonStyle(.borderless).disabled(baixando).help("Abrir o arquivo")
+                if let erro { Text(erro).font(.caption).foregroundStyle(.orange) }
+            }
+            .task { if foto { _ = await baixar() } }
+        }
+    }
+
+    private func baixar() async -> String? {
+        if let caminho { return caminho }
+        baixando = true
+        defer { baixando = false }
+        struct Baixado: Decodable { let caminho: String }
+        let (r, msg): (Baixado?, String?) = await JFY.ler(["--email-anexo", mid, anexo.parte])
+        erro = msg
+        caminho = r?.caminho
+        if foto, let c = r?.caminho { imagem = NSImage(contentsOfFile: c) }  // formato que o Mac não lê: fica a linha
+        return r?.caminho
+    }
+
+    private func abrir(_ c: String) { NSWorkspace.shared.open(URL(fileURLWithPath: c)) }
 }
 
 
