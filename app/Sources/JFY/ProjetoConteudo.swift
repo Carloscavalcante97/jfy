@@ -283,7 +283,7 @@ private struct ArquivosProjeto: View {
         let url, por, quando, taskTitulo: String?
         let tamanho: Double?
     }
-    struct Resposta: Decodable { let arquivos: [Arquivo]; let tasks, lidas: Int }
+    struct Resposta: Decodable { let arquivos: [Arquivo]; let tasks, lidas: Int; let lido: Double? }
     static let categorias = ["Todas", "Documentos", "Planilhas", "Imagens", "Outros"]
 
     @State private var r: Resposta?
@@ -308,7 +308,10 @@ private struct ArquivosProjeto: View {
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
                 Spacer(minLength: 8)
                 TextField("Buscar arquivo", text: $busca).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
-                Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Ler de novo").disabled(carregando)
+                Button { Task { await carregar(forcar: true) } } label: {
+                    if carregando && r != nil { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
+                }
+                .help("Ler de novo do Journify (fica guardado por 24 h)").disabled(carregando)
                 botaoAguardando("Enviar arquivos", "arrow.up.doc", "enviar_arquivo").buttonStyle(.borderedProminent)
             }
             .padding(12)
@@ -326,7 +329,7 @@ private struct ArquivosProjeto: View {
             } else {
                 VStack(spacing: 10) {
                     ProgressView()
-                    Text("Lendo os anexos de cada task. Num projeto grande, a primeira vez leva até uns 2 minutos; depois fica guardado por 30 min.")
+                    Text("Lendo os anexos de cada task. Num projeto grande, a leitura leva até uns 2 minutos; depois fica guardada por 24 h (o ↻ lê de novo).")
                         .font(.callout).foregroundStyle(Souv.texto2).multilineTextAlignment(.center).frame(maxWidth: 380)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -361,6 +364,7 @@ private struct ArquivosProjeto: View {
 
     private func rodape(_ r: Resposta) -> String {
         let n = "\(r.arquivos.count) anexo\(r.arquivos.count == 1 ? "" : "s") em \(r.tasks) task\(r.tasks == 1 ? "" : "s")."
+            + (r.lido.map { " Lido \(relativo(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: $0))))." } ?? "")
         let faltou = r.lidas < r.tasks ? " O Journify não deixou ler \(r.tasks - r.lidas) delas agora; tente de novo em instantes." : ""
         return n + faltou + " Arquivos enviados direto no projeto ainda não vêm pelo MCP."
     }
@@ -378,9 +382,9 @@ private struct ArquivosProjeto: View {
         if let u = a.url.flatMap(URL.init(string:)) { NSWorkspace.shared.open(u) }
     }
 
-    private func carregar() async {
+    private func carregar(forcar: Bool = false) async {
         carregando = true
-        let (x, msg): (Resposta?, String?) = await JFY.ler(["--arquivos-json", pid])
+        let (x, msg): (Resposta?, String?) = await JFY.ler(["--arquivos-json", pid] + (forcar ? ["forcar"] : []))
         carregando = false
         if let x { r = x; aviso = nil } else if r == nil { aviso = msg }
     }
