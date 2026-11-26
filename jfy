@@ -382,8 +382,34 @@ def dias_prazo(t):
     return (date.fromisoformat(t["dueDate"][:10]) - date.today()).days if t.get("dueDate") else None
 
 
+_marcadas = (None, set())
+
+
+def foco_marcadas():
+    """As tasks que você marcou como foco (pelo app; jfy --foco-marcar), no config: são suas, o Journify não sabe.
+    Relido só quando o config muda, porque urgencia() pergunta task por task."""
+    global _marcadas
+    try:
+        m = os.path.getmtime(CONFIG)
+    except OSError:
+        return set()
+    if _marcadas[0] != m:
+        _marcadas = (m, set(load().get("foco_marcadas", [])))
+    return _marcadas[1]
+
+
+def foco_marcar(tid, quer="sim"):
+    cfg = load()
+    resto = [x for x in cfg.get("foco_marcadas", []) if x != tid]
+    cfg["foco_marcadas"] = resto + [tid] if quer == "sim" else resto
+    save(cfg)
+
+
 def urgencia(t):
-    """Chave do foco: dias até o prazo; crítica sem prazo próximo vem logo depois. None = fora do foco."""
+    """Chave do foco: marcada como foco vem antes de tudo; depois os dias até o prazo; crítica sem prazo próximo vem
+    logo depois. None = fora do foco."""
+    if t.get("id") in foco_marcadas():
+        return float("-inf")
     n = dias_prazo(t)
     if n is not None and n <= JANELA:
         return n
@@ -397,7 +423,8 @@ def foco(tasks):
 def tag_prazo(t, largura=0):
     n = dias_prazo(t)
     if n is None:
-        return c("crítica".ljust(largura), 203) if t.get("priority") == "critica" else " " * largura
+        return (c("crítica".ljust(largura), 203) if t.get("priority") == "critica"
+                else c("foco".ljust(largura), 39) if t.get("id") in foco_marcadas() else " " * largura)
     txt = (f"atrasada {-n}d" if n < 0 else "hoje" if n == 0 else "amanhã" if n == 1
            else f"em {n}d" if n <= JANELA else date.fromisoformat(t["dueDate"][:10]).strftime("%d/%m"))
     return c(txt.ljust(largura), 203 if n <= 0 else 214 if n <= 3 else 250, n <= 1)
@@ -1188,6 +1215,32 @@ def entrar():
     if ev:
         return subprocess.run(["open", ev[3]])
     subprocess.run(TMUX + ["display-message", "jfy: nenhuma reunião com link pela frente hoje"])
+
+
+def atualizar():
+    """jfy --update: traz a versão nova do git (o branch em que o seu clone está) e reinstala pelo install.sh, sem as
+    perguntas dos extras (o que já está ligado é atualizado; o resto fica como está). O install.sh religa o comando,
+    atualiza a pipeline e remonta o app, se ele estiver instalado. O app aberto fecha e abre de novo na versão nova."""
+    repo, app = os.path.dirname(SELF), ["pgrep", "-f", "jfy.app/Contents/MacOS/JFY"]
+    antes = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if subprocess.run(["git", "-C", repo, "pull", "--ff-only"]).returncode:
+        sys.exit(c("Não consegui buscar a versão nova (o erro do git está acima). Alteração sua no ~/jfy que conflita, "
+                   "ou o branch não segue nenhum do GitHub?", 203))
+    novos = git(repo, "log", "--format=  · %s", f"{antes}..HEAD").stdout.rstrip()
+    if not novos:
+        return print(c("✓", 78, True) + " o jfy já está na versão mais nova")
+    print(c("O que chegou:", 39, True) + "\n" + novos + "\n", flush=True)  # antes da saída do install.sh
+    aberto = subprocess.run(app, capture_output=True).returncode == 0
+    if subprocess.run([os.path.join(repo, "install.sh")], env=dict(os.environ, JFY_SEM_PERGUNTAS="1")).returncode:
+        sys.exit(c("O install.sh parou (o erro está acima). O código novo já está no ~/jfy: rode ~/jfy/install.sh de novo.", 203))
+    if aberto:  # rodando no terminal do app, este processo está no tmux: continua vivo com o app fechado e abre ele de novo
+        subprocess.run(["osascript", "-e", 'tell application id "dev.jfy.mac" to quit'], capture_output=True)
+        for _ in range(40):  # até 10 s para fechar
+            if subprocess.run(app, capture_output=True).returncode:
+                break
+            time.sleep(0.25)
+        subprocess.run(["open", "-b", "dev.jfy.mac"])
+        print(c("✓", 78, True) + " app reaberto na versão nova")
 
 
 def atalhos():
@@ -2352,7 +2405,8 @@ def resumo_task(cfg, t):
             "prazo_txt": re.sub(r"\x1b\[[0-9;]*m", "", tag_prazo(t)).strip(),
             "etapa": "Encerradas" if fim else ETAPAS[etapa(t)].capitalize(), "etapa_n": 5 if fim else etapa(t),
             "pid": t["projectId"], "projeto": cfg["projetos"].get(t["projectId"], {}).get("nome"), "cor": cor_hex(t["projectId"]),
-            "resp": len(resp), "eu": bool(cfg.get("journify_uid")) and cfg["journify_uid"] in resp}  # a tabela agrupa por responsável
+            "resp": len(resp), "eu": bool(cfg.get("journify_uid")) and cfg["journify_uid"] in resp,  # a tabela agrupa por responsável
+            "foco": t["id"] in foco_marcadas()}
 
 
 def projetos_json():
@@ -4719,6 +4773,10 @@ def main():
         return sessao(a[1])
     if a[:1] == ["--inicio"]:
         return inicio(a[1])
+    if a[:1] == ["--foco-marcar"]:  # app: jfy --foco-marcar <task> [sim|nao]
+        return foco_marcar(a[1], a[2] if a[2:] else "sim")
+    if a[:1] == ["--update"]:  # busca a versão nova no git e reinstala
+        return atualizar()
     if a[:1] == ["--relogio"]:
         return relogio()
     if a[:1] == ["--pausar"]:  # Ctrl-b p
@@ -4924,6 +4982,11 @@ def selftest():
           {"id": "critica", "dueDate": None, "priority": "critica"}, {"id": "em3", "dueDate": d(3), "priority": "baixa"},
           {"id": "alta", "dueDate": None, "priority": "alta"}, {"id": "hoje", "dueDate": d(0) + "T03:00:00Z", "priority": "media"}]
     assert [t["id"] for t in foco(ts)] == ["atrasada", "hoje", "em3", "critica"], foco(ts)
+    global foco_marcadas
+    foco_marcadas, real = (lambda: {"alta"}), foco_marcadas  # marcada à mão: entra no foco, na frente de tudo
+    assert [t["id"] for t in foco(ts)] == ["alta", "atrasada", "hoje", "em3", "critica"], foco(ts)
+    assert "foco" in tag_prazo(ts[4]) and resumo_task({"projetos": {}}, dict(ts[4], title="", statusId="em_aberto", projectId="p"))["foco"]
+    foco_marcadas = real
     global mcp, DIA, USO
     DIA = os.path.join(RUN_DIR, "teste-dia.json")
     cronometro("ligar")

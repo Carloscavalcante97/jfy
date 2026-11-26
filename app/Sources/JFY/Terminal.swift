@@ -5,7 +5,7 @@ import SwiftUI
 /// O jfy (menu e abas do tmux) num terminal dentro da janela. Quem guarda as sessões é o tmux: fechar o app
 /// não mata task nenhuma, e abrir de novo volta para o mesmo menu.
 final class TerminalHost: NSObject, ObservableObject, LocalProcessTerminalViewDelegate {
-    let view = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
+    let view = TerminalJFY(frame: NSRect(x: 0, y: 0, width: 960, height: 640))
     @Published var encerrado = false
 
     override init() {
@@ -44,6 +44,49 @@ final class TerminalHost: NSObject, ObservableObject, LocalProcessTerminalViewDe
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+}
+
+/// O terminal do jfy aceita o que se arrasta: um arquivo do Finder ou o print da miniatura do canto viram o caminho
+/// colado, como no Terminal do macOS (o Claude anexa a imagem). Cmd+V com só imagem copiada vira o Ctrl+V do Claude.
+final class TerminalJFY: LocalProcessTerminalView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
+    }
+
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+
+    // ponytail: só arquivos (e promessas de arquivo); imagem arrastada do navegador sem arquivo não entra
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let pb = sender.draggingPasteboard
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            colar(urls)
+            return true
+        }
+        // o print da miniatura do canto chega como promessa: o macOS grava o arquivo aqui e devolve o caminho
+        guard let promessas = pb.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver],
+              !promessas.isEmpty else { return false }
+        for p in promessas {
+            p.receivePromisedFiles(atDestination: FileManager.default.temporaryDirectory, operationQueue: .main) { url, erro in
+                if erro == nil { self.colar([url]) }
+            }
+        }
+        return true
+    }
+
+    override func paste(_ sender: Any) {
+        let pb = NSPasteboard.general
+        if pb.string(forType: .string) == nil, NSImage.canInit(with: pb) { send(data: [0x16]); return }  // Ctrl+V: o Claude lê a imagem
+        super.paste(sender)
+    }
+
+    /// Os caminhos como o Terminal do macOS cola: espaço e símbolos com \ na frente, um espaço no fim.
+    private func colar(_ urls: [URL]) {
+        let especiais = Set(" '\"()[]{}&;|<>$`\\!*?#~")
+        pasteText(urls.map { String($0.path.flatMap { especiais.contains($0) ? ["\\", $0] : [$0] }) }.joined(separator: " ") + " ")
+    }
 }
 
 struct TerminalTela: View {

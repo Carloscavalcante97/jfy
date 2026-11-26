@@ -11,7 +11,7 @@ rm -rf "$APP" build/AppIcon.iconset
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/AppIcon.iconset
 cp .build/release/JFY "$APP/Contents/MacOS/JFY"
 # fontes carregadas pelo ATSApplicationFontsPath, sem instalar: JFY Mono (terminal) e as da Souv (Lexend, Roboto)
-cp "$REPO/fonte/JFYMono.ttf" Marca/Lexend.ttf Marca/Roboto.ttf Marca/souv-simbolo.svg Marca/souv-nome.svg Marca/creditos.jpg "$APP/Contents/Resources/"
+cp "$REPO/fonte/JFYMono.ttf" Marca/Lexend.ttf Marca/Roboto.ttf Marca/souv-simbolo.svg Marca/souv-nome.svg Marca/creditos.jpg Marca/creditos.aac "$APP/Contents/Resources/"
 
 # ícone: o símbolo da Souv sobre Midnight Blue (Marca/souv-icone.svg), nos tamanhos que o macOS pede
 sips -s format png -Z 1024 Marca/souv-icone.svg --out build/icone.png >/dev/null

@@ -434,6 +434,7 @@ struct TaskDetalhe: View {
         let dias: Int?
         let pontos: Double?
         let configurado: Bool
+        let foco: Bool?  // marcada como foco (só sua, no config do jfy)
         let statusApp, pedeVideo: [String]
         let anexos: [Anexo]
         let comentarios: [Comentario]
@@ -486,12 +487,19 @@ struct TaskDetalhe: View {
                 controles(d)
                 if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
                 HStack {
-                    Button { abrir("pipeline") } label: { Label("Implementar (/pipeline)", systemImage: "hammer") }
-                        .buttonStyle(.souvPrimario)
-                    Button { abrir("livre") } label: { Label("Conversar com o Claude", systemImage: "bubble.left") }
+                    HStack {
+                        Button { abrir("pipeline") } label: { Label("Implementar (/pipeline)", systemImage: "hammer") }
+                            .buttonStyle(.souvPrimario)
+                        Button { abrir("livre") } label: { Label("Conversar com o Claude", systemImage: "bubble.left") }
+                    }
+                    .disabled(!d.configurado)
+                    .help(d.configurado ? "Abre numa aba do jfy" : "Configure o projeto no menu do jfy antes")
+                    let noFoco = d.foco == true
+                    Button { focar(!noFoco) } label: { Label(noFoco ? "Tirar do foco" : "Marcar como foco", systemImage: "scope") }
+                        .disabled(ocupado)
+                        .help(noFoco ? "Sai do Foco (volta a entrar sozinha se o prazo chegar perto)"
+                              : "Entra no topo do Foco e da Meu dia, mesmo sem prazo. Só para você: o Journify não muda")
                 }
-                .disabled(!d.configurado)
-                .help(d.configurado ? "Abre numa aba do jfy" : "Configure o projeto no menu do jfy antes")
 
                 Secao("O que fazer") {
                     if d.descricao.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -643,6 +651,17 @@ struct TaskDetalhe: View {
             ocupado = false
             aviso = erro
             if erro == nil, campo != "comentario" { mudou() }
+        }
+    }
+
+    private func focar(_ sim: Bool) {
+        Task {
+            ocupado = true
+            let erro = await JFY.fazer(["--foco-marcar", tid, sim ? "sim" : "nao"])
+            await carregar()
+            ocupado = false
+            aviso = erro
+            if erro == nil { mudou() }
         }
     }
 

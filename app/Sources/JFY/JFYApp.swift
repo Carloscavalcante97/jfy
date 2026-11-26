@@ -91,12 +91,13 @@ extension Color {
 }
 
 enum Tela: String, CaseIterable, Identifiable {
-    case terminal = "jfy", projetos = "Projetos", contexto = "Contexto", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
+    case dia = "Meu dia", terminal = "jfy", projetos = "Projetos", contexto = "Contexto", github = "GitHub", horas = "Horas", reunioes = "Agenda", emails = "Emails",
          portas = "Portas", uso = "Uso da IA",
          chat = "Chat", notificacoes = "Notificações", temas = "Temas", configuracoes = "Configurações", creditos = "Créditos"
     var id: Self { self }
     var icone: String {
         switch self {
+        case .dia: "sun.max"
         case .terminal: "terminal"
         case .projetos: "folder"
         case .contexto: "tray.full"
@@ -147,7 +148,7 @@ final class Navegacao: ObservableObject {
     }
     static let maxFavoritos = 4
 
-    @Published var tela: Tela? = .terminal
+    @Published var tela: Tela? = .dia  // o app abre na Meu dia
     @Published var abrirTask: TaskRef?
     @Published var abrirPR: String?  // "dono/repo#n"
     @Published var abrirProjeto: String?
@@ -241,8 +242,16 @@ struct Principal: View {
                 ForEach(Tela.allCases) { t in
                     let marcada = (tela ?? .terminal) == t
                     HStack(spacing: 8) {
-                        Image(systemName: t.icone).frame(width: 18)
-                            .foregroundStyle(marcada ? Souv.destaque : Souv.texto2)
+                        Group {
+                            // a tela inicial leva o símbolo da Souv (sem o arquivo no app, fica o ícone do sistema)
+                            if t == .dia, let s = Souv.simbolo {
+                                Image(nsImage: s).resizable().interpolation(.high).frame(width: 16, height: 16)
+                            } else {
+                                Image(systemName: t.icone)
+                            }
+                        }
+                        .frame(width: 18)
+                        .foregroundStyle(marcada ? Souv.destaque : Souv.texto2)
                         Text(t.rawValue).foregroundStyle(Souv.texto).fontWeight(marcada ? .medium : .regular).lineLimit(1)
                         Spacer(minLength: 0)
                         selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count
@@ -280,6 +289,7 @@ struct Principal: View {
             // todas ficam montadas: trocar de tela não reinicia o terminal nem perde a conversa
             ZStack {
                 Souv.fundo.ignoresSafeArea()
+                mostrar(.dia) { MeuDiaTela(ativa: tela == .dia, nav: nav, abas: abas) }
                 mostrar(.terminal) { TerminalTela(host: terminal) }
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.contexto) { ContextoTela(ativa: tela == .contexto, irParaJFY: irParaJFY, abas: abas) }

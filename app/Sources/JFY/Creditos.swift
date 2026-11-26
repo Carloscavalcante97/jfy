@@ -2,14 +2,14 @@ import AVFoundation
 import AppKit
 import SwiftUI
 
-/// A música dos créditos, de ~/.jfy/creditos.aac: fica fora do repositório (a música não é nossa para distribuir).
+/// A música dos créditos vem dentro do app (app/Marca/creditos.aac), como a foto.
 /// Toca em loop enquanto a aba está aberta e para ao sair dela; o botão pausa. Sem o arquivo, sem música e sem botão.
 @MainActor final class MusicaCreditos: ObservableObject {
-    static let arquivo = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/creditos.aac")
+    static let arquivo = Bundle.main.url(forResource: "creditos", withExtension: "aac")
     @Published private(set) var pausada = false
-    let existe = FileManager.default.fileExists(atPath: arquivo.path)
+    let existe = arquivo != nil
     private lazy var player: AVAudioPlayer? = {
-        let p = try? AVAudioPlayer(contentsOf: Self.arquivo)
+        let p = Self.arquivo.flatMap { try? AVAudioPlayer(contentsOf: $0) }
         p?.numberOfLoops = -1
         return p
     }()
