@@ -992,8 +992,14 @@ def ler_emails():
                     ids, metas = [], []
                     ask(c(f" {n} email(s) marcados como lidos. Enter volta.", 78))
                 except Exception as e:
-                    ask(c(f" Gmail: {e}\n" + (" Rode jfy --login de novo: o jfy agora pede licença para marcar como lido.\n"
-                                                if "403" in str(e) else "") + " Enter volta.", 203))
+                    if "403" not in str(e):
+                        ask(c(f" Gmail: {e}\n Enter volta.", 203))
+                    # login de antes do gmail.modify: o Google só deixa ler. Refaz aqui mesmo (abre o navegador)
+                    elif escolha(c(" O seu login do Google é de antes do \"marcar como lido\" e só deixa ler.", 214)
+                                 + "\n Enter faz o login de novo agora (abre o navegador), 0 volta. ", "") != "0":
+                        login()
+                        tok = google_token()
+                        ask(c(" Aperte t de novo. Enter volta.", 78))
             continue
         n = op.lstrip("o")
         if not (n.isdigit() and 1 <= int(n) <= len(ids)):
