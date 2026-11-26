@@ -175,7 +175,7 @@ struct ProjetosTela: View {
                 Spacer()
                 Button { Task { await carregarProjetos() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar")
             }
-            .buttonStyle(.borderless).padding(8)
+            .buttonStyle(.souvIcone).padding(8)
         }
         .sheet(item: $configurando) { pedido in
             NovoProjeto(pedido: pedido, semPasta: (dados?.projetos ?? []).filter { $0.nome == nil },
@@ -184,6 +184,7 @@ struct ProjetosTela: View {
                             configurando = nil
                             Task { await carregarProjetos(); projeto = pid; await carregarTasks() }
                         })
+                .identidadeSouv()
         }
     }
 
@@ -206,13 +207,15 @@ struct ProjetosTela: View {
                     aviso = "Até \(Navegacao.maxFavoritos) favoritos: tire a estrela de um antes."
                 }
             } label: { Image(systemName: fav ? "star.fill" : "star").foregroundStyle(fav ? Color.yellow : .secondary) }
-            .buttonStyle(.borderless)
+            .buttonStyle(.souvIcone)
             .help(fav ? "Tirar dos favoritos da barra lateral" : "Favoritar: aparece na barra lateral (até \(Navegacao.maxFavoritos))")
         }
         .linhaSouv(projeto == p.id) { projeto = p.id }
-        .menuSouv([.init(rotulo: p.nome == nil ? "Configurar projeto…" : "Editar projeto…", icone: "pencil") {
-            configurando = PedidoProjeto(pid: p.id, nome: p.nome, pastas: p.pastas ?? [])
-        }])
+        .menuSouv {
+            Button(p.nome == nil ? "Configurar projeto…" : "Editar projeto…", systemImage: "pencil") {
+                configurando = PedidoProjeto(pid: p.id, nome: p.nome, pastas: p.pastas ?? [])
+            }
+        }
     }
 
     // ---------- tasks ----------
@@ -236,17 +239,10 @@ struct ProjetosTela: View {
             Text(tituloProjeto).font(.headline).lineLimit(1)
             Spacer()
             if projeto != Self.foco && projeto != nil {
-                Picker("Tasks", selection: $todas) {
-                    Text("Minhas").tag(false)
-                    Text("Todas").tag(true)
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Segmentos(selecao: $todas, opcoes: [.init(valor: false, rotulo: "Minhas"), .init(valor: true, rotulo: "Todas")])
             }
-            Picker("Ver", selection: $modoTabela) {
-                Image(systemName: "list.bullet").tag(false).help("Lista")
-                Image(systemName: "tablecells").tag(true).help("Tabela: agrupada, com filtros")
-            }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            Segmentos(selecao: $modoTabela, opcoes: [.init(valor: false, icone: "list.bullet", ajuda: "Lista"),
+                                                    .init(valor: true, icone: "tablecells", ajuda: "Tabela: agrupada, com filtros")])
         }
         .padding(12)
         if let resultadoLote {
@@ -325,7 +321,7 @@ struct ProjetosTela: View {
         .linhaSouv(selecionando ? marcadas.contains(t.id) : task == t.id) {
             if selecionando { marcar(t.id) } else { task = t.id }
         }
-        .contextMenu { menuSelecao(t.id) }
+        .menuSouv { menuSelecao(t.id) }
     }
 
     // ---------- seleção em lote ----------
@@ -456,15 +452,16 @@ struct TaskDetalhe: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await carregar() }
-        .alert("Vídeo do teste", isPresented: Binding(get: { fechandoEm != nil }, set: { if !$0 { fechandoEm = nil } })) {
-            TextField("link do vídeo, ou por que não tem", text: $video)
+        .dialogoSouv("Vídeo do teste", isPresented: Binding(get: { fechandoEm != nil }, set: { if !$0 { fechandoEm = nil } })) {
             Button("Mover") {
                 if let s = fechandoEm, video.trimmingCharacters(in: .whitespaces).count >= 3 { mudar("status", s, video) }
                 fechandoEm = nil
             }
-            Button("Cancelar", role: .cancel) { fechandoEm = nil }
         } message: {
-            Text("O Journify só move a task para \(rotulo(fechandoEm ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo.")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("O Journify só move a task para \(rotulo(fechandoEm ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo.")
+                TextField("link do vídeo, ou por que não tem", text: $video).foregroundStyle(Souv.texto).campoSouv()
+            }
         }
     }
 
@@ -477,10 +474,10 @@ struct TaskDetalhe: View {
                     if let e = d.epico { Text("· \(e)").foregroundStyle(.secondary) }
                     Spacer()
                     BotaoContexto(item: .init(tipo: "task", ref: tid, titulo: d.titulo, origem: d.projeto, pid: d.pid))
-                    Link(destination: URL(string: d.url)!) { Label("Abrir no Journify", systemImage: "arrow.up.right.square") }
+                    Link(destination: URL(string: d.url)!) { Label("Abrir no Journify", systemImage: "arrow.up.right.square") }.buttonStyle(.souvLink)
                     if let fechar {
                         Button(action: fechar) { Image(systemName: "xmark").font(.body.weight(.semibold)) }
-                            .buttonStyle(.borderless).keyboardShortcut(.cancelAction).help("Fechar os detalhes (Esc)")
+                            .buttonStyle(.souvIcone).keyboardShortcut(.cancelAction).help("Fechar os detalhes (Esc)")
                     }
                 }
                 .lineLimit(1)
@@ -490,7 +487,7 @@ struct TaskDetalhe: View {
                 if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
                 HStack {
                     Button { abrir("pipeline") } label: { Label("Implementar (/pipeline)", systemImage: "hammer") }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.souvPrimario)
                     Button { abrir("livre") } label: { Label("Conversar com o Claude", systemImage: "bubble.left") }
                 }
                 .disabled(!d.configurado)
@@ -519,8 +516,8 @@ struct TaskDetalhe: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain).help(l.url)
-                            .contextMenu {
-                                Button("Copiar o link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(l.url, forType: .string) }
+                            .menuSouv {
+                                Button("Copiar o link", systemImage: "link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(l.url, forType: .string) }
                                 MenuContexto(item: .init(tipo: "link", ref: l.url, titulo: l.nome, origem: d.titulo, pid: d.pid))
                             }
                         }
@@ -531,7 +528,7 @@ struct TaskDetalhe: View {
                     Secao("Pull requests (\(prs.count))") {
                         ForEach(prs, id: \.self) { pr in
                             Button { abrirPR(pr) } label: { Label(pr, systemImage: "arrow.triangle.pull") }
-                                .buttonStyle(.link).help("Abrir na aba GitHub")
+                                .buttonStyle(.souvLink).help("Abrir na aba GitHub")
                         }
                     }
                 }
@@ -570,10 +567,7 @@ struct TaskDetalhe: View {
     }
 
     @ViewBuilder private func prazoEPontos(_ d: Detalhe) -> some View {
-        DatePicker("Prazo", selection: Binding(
-            get: { d.prazo.flatMap(dataLocal) ?? Date() },
-            set: { mudar("prazo", diaLocal($0)) }), displayedComponents: .date)
-            .fixedSize()
+        CampoDataSouv(data: Binding(get: { d.prazo.flatMap(dataLocal) ?? Date() }, set: { mudar("prazo", diaLocal($0)) }))
         if d.prazo == nil { Text("sem prazo").font(.caption).foregroundStyle(.secondary) }
         if let pts = d.pontos {
             Text("\(pts.formatted()) pts").foregroundStyle(pts > 8 ? .red : .secondary)
@@ -597,7 +591,7 @@ struct TaskDetalhe: View {
                             }
                         }
                         .buttonStyle(.plain).help(a.nome)
-                        .contextMenu { menuAnexo(a) }
+                        .menuSouv(se: a.url != nil) { menuAnexo(a) }
                     }
                 }
             }
@@ -605,8 +599,8 @@ struct TaskDetalhe: View {
                 Button { abrirURL(a.url) } label: {
                     Label { Text("a\(a.n)  \(a.nome)") } icon: { Image(systemName: icone(a.tipo)) }
                 }
-                .buttonStyle(.link).help("Abrir \(a.nome)")
-                .contextMenu { menuAnexo(a) }
+                .buttonStyle(.souvLink).help("Abrir \(a.nome)")
+                .menuSouv(se: a.url != nil) { menuAnexo(a) }
             }
         }
     }
@@ -627,7 +621,7 @@ struct TaskDetalhe: View {
                 }
             }
             HStack(alignment: .bottom) {
-                TextField("Comentar", text: $comentario, axis: .vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
+                TextField("Comentar", text: $comentario, axis: .vertical).lineLimit(1...5).campoSouv()
                 Button("Enviar") { mudar("comentario", comentario); comentario = "" }
                     .disabled(comentario.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ocupado)
             }
@@ -902,14 +896,15 @@ struct BarraLote: View {
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Souv.primaria.opacity(0.55)))
         .shadow(color: Color(claro: 0x8C93AD, escuro: 0x000000).opacity(0.35), radius: 18, y: 8)  // no claro, uma sombra leve
         .onExitCommand(perform: limpar)
-        .alert("Vídeo do teste", isPresented: $pedindoVideo) {
-            TextField("link do vídeo, ou por que não tem", text: $video)
+        .dialogoSouv("Vídeo do teste", isPresented: $pedindoVideo) {
             Button("Aplicar") {
                 if let v = valor, video.trimmingCharacters(in: .whitespaces).count >= 3 { aplicar(campo, v, video); valor = nil }
             }
-            Button("Cancelar", role: .cancel) {}
         } message: {
-            Text("O Journify só move para \(rotulo(valor ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo. Ele vale para as \(quantas) tasks.")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("O Journify só move para \(rotulo(valor ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo. Ele vale para as \(quantas) tasks.")
+                TextField("link do vídeo, ou por que não tem", text: $video).foregroundStyle(Souv.texto).campoSouv()
+            }
         }
     }
 
@@ -939,10 +934,11 @@ struct BarraLote: View {
             .buttonStyle(.plain)
             .popover(isPresented: $escolhendoData, arrowEdge: .top) {
                 VStack(alignment: .trailing, spacing: 8) {
-                    DatePicker("Prazo", selection: $data, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
-                    Button("Usar este dia") { valor = diaLocal(data); escolhendoData = false }.buttonStyle(.borderedProminent)
+                    CalendarioSouv(data: $data)
+                    Button("Usar este dia") { valor = diaLocal(data); escolhendoData = false }.buttonStyle(.souvPrimario)
                 }
                 .padding(12)
+                .background(Souv.superficie).identidadeSouv()
             }
         }
     }
@@ -1003,7 +999,7 @@ struct NovoProjeto: View {
                         Text(c.journify ?? c.nome ?? c.id).fontWeight(.semibold)
                         Text("· \(c.tasks) task\(c.tasks == 1 ? "" : "s")").foregroundStyle(Souv.texto2)
                         Spacer()
-                        if pedido.pid == nil { Button("Trocar") { conferido = nil; link = "" }.buttonStyle(.link) }
+                        if pedido.pid == nil { Button("Trocar") { conferido = nil; link = "" }.buttonStyle(.souvLink) }
                     }
                     if let ex = c.exemplo { Text("ex.: \(ex)").font(.caption).foregroundStyle(Souv.texto2).lineLimit(1) }
                 } else if pedido.pid != nil {
@@ -1028,7 +1024,7 @@ struct NovoProjeto: View {
                     }
                     HStack {
                         TextField("Cole o link do projeto no Journify (…/projects/…)", text: $link)
-                            .textFieldStyle(.roundedBorder).onSubmit { conferir(link) }
+                            .campoSouv().onSubmit { conferir(link) }
                         Button("Conferir") { conferir(link) }.disabled(link.trimmingCharacters(in: .whitespaces).isEmpty || conferindo)
                         if conferindo { ProgressView().controlSize(.small) }
                     }
@@ -1037,7 +1033,6 @@ struct NovoProjeto: View {
             }
             secao("2", "Pasta do código") {
                 Toggle("Sem repositório (estudo, documentos): o Claude abre numa pasta só deste projeto", isOn: $semRepo)
-                    .toggleStyle(.checkbox)
                 if !semRepo {
                     ForEach(pastas, id: \.self) { pasta in
                         HStack(spacing: 8) {
@@ -1045,7 +1040,7 @@ struct NovoProjeto: View {
                             Text(pasta.replacingOccurrences(of: NSHomeDirectory(), with: "~")).lineLimit(1).truncationMode(.middle)
                             Spacer()
                             Button { pastas.removeAll { $0 == pasta } } label: { Image(systemName: "xmark") }
-                                .buttonStyle(.borderless).help("Tirar esta pasta")
+                                .buttonStyle(.souvIcone).help("Tirar esta pasta")
                         }
                     }
                     HStack {
@@ -1057,7 +1052,7 @@ struct NovoProjeto: View {
                 }
             }
             secao("3", "Nome no jfy") {
-                TextField("curto, como aparece no menu e na barra (ex.: portal)", text: $nome).textFieldStyle(.roundedBorder)
+                TextField("curto, como aparece no menu e na barra (ex.: portal)", text: $nome).campoSouv()
             }
             if !semRepo, let contas = conferido?.contasGithub, !contas.isEmpty {
                 secao("4", "Conta do GitHub") {
@@ -1073,7 +1068,7 @@ struct NovoProjeto: View {
             HStack {
                 Spacer()
                 Button("Cancelar", action: fechar).keyboardShortcut(.cancelAction)
-                Button(salvando ? "Salvando…" : "Salvar") { salvar() }.buttonStyle(.borderedProminent)
+                Button(salvando ? "Salvando…" : "Salvar") { salvar() }.buttonStyle(.souvPrimario)
                     .keyboardShortcut(.defaultAction).disabled(!pronto)
             }
         }

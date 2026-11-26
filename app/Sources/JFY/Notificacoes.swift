@@ -164,7 +164,7 @@ struct NotificacoesTela: View {
             notificacoes.marcarLidas()  // ao abrir e ao sair da aba
         }
         .onChange(of: notificacoes.itens.first?.ts) { if ativa { notificacoes.marcarLidas() } }
-        .confirmationDialog("Apagar o histórico de notificações?", isPresented: $confirmarLimpar) {
+        .dialogoSouv("Apagar o histórico de notificações?", isPresented: $confirmarLimpar) {
             Button("Apagar", role: .destructive) { notificacoes.limpar() }
         }
     }
@@ -184,14 +184,14 @@ struct NotificacoesTela: View {
         let nova = it.ts > destaqueAte, acao = it.abrir != nil || it.executar != nil || it.app != nil
         return Button { clicar(it) } label: {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: it.tipo.icone).frame(width: 20).foregroundStyle(nova ? Color.accentColor : .secondary)
+                Image(systemName: it.tipo.icone).frame(width: 20).foregroundStyle(nova ? Souv.primaria : .secondary)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(it.titulo).fontWeight(nova ? .semibold : .regular)
                     Text(it.texto).foregroundStyle(.secondary).lineLimit(3)
                 }
                 Spacer()
                 Text(Date(timeIntervalSince1970: it.ts).formatted(.dateTime.hour().minute())).font(.caption).foregroundStyle(.secondary)
-                if nova { Circle().fill(Color.accentColor).frame(width: 8, height: 8).padding(.top, 4) }
+                if nova { Circle().fill(Souv.primaria).frame(width: 8, height: 8).padding(.top, 4) }
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())

@@ -103,7 +103,7 @@ struct GithubTela: View {
             Image(systemName: "person.crop.circle.badge.questionmark").font(.system(size: 40)).foregroundStyle(.tertiary)
             Text("Conecte sua conta do GitHub").font(.title3.weight(.semibold))
             Text("O login abre numa aba do jfy e pede para confirmar no navegador.").foregroundStyle(.secondary)
-            Button("Conectar GitHub") { conectar() }.buttonStyle(.borderedProminent)
+            Button("Conectar GitHub") { conectar() }.buttonStyle(.souvPrimario)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -121,7 +121,7 @@ struct GithubTela: View {
                             Text(r.projeto).fontWeight(.medium).lineLimit(1)
                             Spacer()
                             let n = prsDo(r).count
-                            if n > 0 { Text("\(n) PR").font(.caption2.bold()).padding(.horizontal, 5).background(Capsule().fill(Color.accentColor.opacity(0.2))) }
+                            if n > 0 { Text("\(n) PR").font(.caption2.bold()).padding(.horizontal, 5).background(Capsule().fill(Souv.primaria.opacity(0.2))) }
                         }
                         HStack(spacing: 6) {
                             Text(r.branch ?? r.nome).lineLimit(1).truncationMode(.middle)
@@ -247,17 +247,16 @@ struct RepoPainel: View {
                     Text(repo.remote ?? repo.nome).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Divider().frame(height: 28)
-                Menu {
-                    Section("Trocar para") {
-                        ForEach(branches.filter { !$0.atual }.prefix(12)) { b in Button(b.nome) { trocar(b.nome) } }
-                    }
+                MenuBotaoSouv {
+                    Text("TROCAR PARA").font(.caption2.weight(.semibold)).foregroundStyle(Souv.texto2).padding(.horizontal, 10).padding(.top, 4)
+                    ForEach(branches.filter { !$0.atual }.prefix(12)) { b in Button(b.nome) { trocar(b.nome) } }
                     Divider()
                     Button("Nova branch…") { aba = .branches }
                     Button("Todas as branches e worktrees") { aba = .branches }
                 } label: {
                     Label(repo.branch ?? "?", systemImage: "arrow.triangle.branch").font(.callout.monospaced())
                 }
-                .menuStyle(.borderlessButton).fixedSize()
+                .fixedSize()
                 .help("Branch atual: clique para trocar ou criar outra")
                 Spacer()
                 if ocupado { ProgressView().controlSize(.small) }
@@ -265,16 +264,16 @@ struct RepoPainel: View {
                     Button { sincronizar.acao == "push" ? (confirmarPush = true) : git(sincronizar.acao) } label: {
                         Label(sincronizar.titulo, systemImage: sincronizar.icone)
                     }
-                    Menu {
+                    MenuBotaoSouv {
                         Button("Fetch") { git("fetch") }
                         Button("Pull (só fast-forward)") { git("pull") }.disabled(repo.atras == 0)
                         Button("Push") { confirmarPush = true }.disabled(repo.frente == 0 && repo.upstream != nil)
                     } label: { EmptyView() }
-                    .menuStyle(.borderlessButton).frame(width: 18)
+                    .help("Fetch, pull ou push")
                 }
                 .disabled(ocupado)
                 Button { abrirPR() } label: { Label("Abrir PR", systemImage: "arrow.triangle.pull") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.souvPrimario)
                     .help("O Claude abre o PR desta branch pelas regras do pr-creator, numa aba do jfy, com a sua aprovação")
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -282,13 +281,11 @@ struct RepoPainel: View {
                 Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 14).padding(.bottom, 8)
             }
-            Picker("Aba", selection: $aba) {
-                ForEach(Aba.allCases, id: \.self) { a in
-                    Label(a == .alteracoes && repo.nMexidos > 0 ? "Alterações (\(repo.nMexidos))"
-                          : a == .prs && !prs.isEmpty ? "PRs (\(prs.count))" : a.rawValue, systemImage: a.icone).tag(a)
-                }
-            }
-            .pickerStyle(.segmented).labelsHidden().padding(.horizontal, 14).padding(.bottom, 10)
+            Segmentos(selecao: $aba, opcoes: Aba.allCases.map { a in
+                .init(valor: a, rotulo: a == .alteracoes && repo.nMexidos > 0 ? "Alterações (\(repo.nMexidos))"
+                      : a == .prs && !prs.isEmpty ? "PRs (\(prs.count))" : a.rawValue, icone: a.icone)
+            }, cheio: true)
+            .padding(.horizontal, 14).padding(.bottom, 10)
             Divider()
             switch aba {
             case .alteracoes: CommitPainel(pasta: repo.pasta, branch: repo.branch ?? "?", mudou: mudou)
@@ -312,7 +309,7 @@ struct RepoPainel: View {
             }
         }
         .task(id: repo.branch) { await carregarBranches() }
-        .confirmationDialog(repo.upstream == nil ? "Publicar \(repo.branch ?? "") no origin?" : "Dar push de \(repo.branch ?? "")?",
+        .dialogoSouv(repo.upstream == nil ? "Publicar \(repo.branch ?? "") no origin?" : "Dar push de \(repo.branch ?? "")?",
                             isPresented: $confirmarPush) {
             Button(repo.upstream == nil ? "Publicar" : "Push") { git("push") }
         } message: {
@@ -457,12 +454,11 @@ struct BranchesPainel: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("NOVA BRANCH").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     HStack {
-                        Picker("Tipo", selection: $tipo) {
-                            ForEach(["feature", "bugfix", "hotfix", "release"], id: \.self) { Text($0).tag($0) }
-                        }
-                        .labelsHidden().fixedSize()
+                        SouvSelect(opcoes: ["feature", "bugfix", "hotfix", "release"].map { .init(valor: $0, rotulo: $0) },
+                                   selecionado: tipo) { tipo = $0 }
+                            .fixedSize()
                         Text("/").foregroundStyle(.secondary)
-                        TextField("o que ela faz (vira o nome)", text: $titulo).textFieldStyle(.roundedBorder).onSubmit(criar)
+                        TextField("o que ela faz (vira o nome)", text: $titulo).campoSouv().onSubmit(criar)
                         Button("Criar e trocar") { criar() }.disabled(titulo.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
                     Text(tipo == "hotfix" || tipo == "release" ? "Sai da main atualizada." : "Sai da \(d?.base?.replacingOccurrences(of: "origin/", with: "") ?? "develop") atualizada.")
@@ -472,7 +468,7 @@ struct BranchesPainel: View {
                     Text("BRANCHES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     ForEach(d?.branches ?? []) { b in
                         HStack(spacing: 8) {
-                            Image(systemName: b.atual ? "checkmark.circle.fill" : "circle").foregroundStyle(b.atual ? Color.accentColor : .secondary)
+                            Image(systemName: b.atual ? "checkmark.circle.fill" : "circle").foregroundStyle(b.atual ? Souv.primaria : .secondary)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(b.nome).font(.callout.monospaced()).lineLimit(1)
                                 Text([b.upstream == nil ? "só local" : b.sumiu ? "apagada no origin" : nil,
@@ -519,7 +515,7 @@ struct BranchesPainel: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .task { await carregar() }
-        .confirmationDialog("Remover o worktree?", isPresented: Binding(get: { removerWt != nil }, set: { if !$0 { removerWt = nil } })) {
+        .dialogoSouv("Remover o worktree?", isPresented: Binding(get: { removerWt != nil }, set: { if !$0 { removerWt = nil } })) {
             Button("Remover", role: .destructive) { if let w = removerWt { worktree("remover", w) } }
         } message: {
             Text("Apaga a pasta do worktree. A branch continua no repositório.")
@@ -632,16 +628,16 @@ struct PRDetalhe: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await carregar() }
-        .confirmationDialog("Merge (\(mergeCom ?? "")) de #\(n) em \(d?.para ?? "")?",
+        .dialogoSouv("Merge (\(mergeCom ?? "")) de #\(n) em \(d?.para ?? "")?",
                             isPresented: Binding(get: { mergeCom != nil }, set: { if !$0 { mergeCom = nil } })) {
             Button("Fazer merge") { if let m = mergeCom { agir("merge", m) } }
         } message: {
             Text(d?.situacao == "UNSTABLE" ? "Atenção: há checks falhando." : "O PR entra em \(d?.para ?? "") e fecha. Não tem volta pelo app.")
         }
-        .confirmationDialog("Fechar #\(n) sem merge?", isPresented: $confirmarFechar) {
+        .dialogoSouv("Fechar #\(n) sem merge?", isPresented: $confirmarFechar) {
             Button("Fechar sem merge", role: .destructive) { agir("fechar") }
         }
-        .confirmationDialog("Revisar #\(n) com o Claude?", isPresented: $confirmarReview) {
+        .dialogoSouv("Revisar #\(n) com o Claude?", isPresented: $confirmarReview) {
             Button("Revisar") { revisar() }
         } message: {
             Text("Abre uma aba do jfy com o Claude rodando o /code-review deste PR (usa tokens). Ele só mostra o que achou: não comenta nem aprova no GitHub sem você pedir.")
@@ -655,7 +651,7 @@ struct PRDetalhe: View {
                     Text("\(repo) #\(n)").foregroundStyle(.secondary)
                     Spacer()
                     BotaoContexto(item: .init(tipo: "pr", ref: "\(repo)#\(n)", titulo: d.titulo, origem: repo))
-                    Link(destination: URL(string: d.url)!) { Label("Abrir no GitHub", systemImage: "arrow.up.right.square") }
+                    Link(destination: URL(string: d.url)!) { Label("Abrir no GitHub", systemImage: "arrow.up.right.square") }.buttonStyle(.souvLink)
                 }
                 .font(.callout)
                 Text(d.titulo).font(.title2.weight(.semibold)).textSelection(.enabled)
@@ -673,12 +669,12 @@ struct PRDetalhe: View {
                 }
                 if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
                 HStack {
-                    Menu("Merge") {
+                    MenuBotaoSouv("Merge") {
                         ForEach(d.metodos, id: \.self) { m in Button(NOME_METODO[m] ?? m) { mergeCom = m } }
                     }
                     .fixedSize().disabled(d.rascunho || d.metodos.isEmpty)
                     Button { confirmarReview = true } label: { Label("Revisar com o Claude", systemImage: "sparkles") }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.souvPrimario)
                     Button("Aprovar") { agir("aprovar") }
                     Button("Fechar sem merge") { confirmarFechar = true }
                 }
@@ -734,7 +730,7 @@ struct PRDetalhe: View {
                         }
                     }
                     HStack(alignment: .bottom) {
-                        TextField("Comentar no PR", text: $comentario, axis: .vertical).lineLimit(1...5).textFieldStyle(.roundedBorder)
+                        TextField("Comentar no PR", text: $comentario, axis: .vertical).lineLimit(1...5).campoSouv()
                         Button("Enviar") { agir("comentar", comentario); comentario = "" }
                             .disabled(comentario.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ocupado)
                     }
@@ -900,10 +896,9 @@ struct CommitPainel: View {
                                              set: { marcados = $0 ? Set(d.arquivos.map(\.arquivo)) : [] })) {
                             Text("\(d.arquivos.count) arquivo(s) alterado(s)").font(.callout.weight(.medium))
                         }
-                        .toggleStyle(.checkbox)
                         Spacer()
                         Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }
-                            .buttonStyle(.borderless).help("Atualizar")
+                            .buttonStyle(.souvIcone).help("Atualizar")
                     }
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     Divider()
@@ -912,7 +907,7 @@ struct CommitPainel: View {
                             HStack(spacing: 6) {
                                 Toggle("", isOn: Binding(get: { marcados.contains(a.arquivo) },
                                                          set: { if $0 { marcados.insert(a.arquivo) } else { marcados.remove(a.arquivo) } }))
-                                    .toggleStyle(.checkbox).labelsHidden()
+                                    .labelsHidden()
                                 ArquivoLinha(estado: a.estado, caminho: a.arquivo)
                             }
                             .linhaSouv(atual == a.arquivo) { atual = a.arquivo }
@@ -940,12 +935,12 @@ struct CommitPainel: View {
             if let feito { Label(feito, systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green) }
             if pedirNome {
                 HStack {
-                    TextField("Seu nome para o [Nome] dos commits", text: $nome).textFieldStyle(.roundedBorder)
+                    TextField("Seu nome para o [Nome] dos commits", text: $nome).campoSouv()
                     Button("Salvar") { salvarNome() }.disabled(nome.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             HStack(spacing: 6) {
-                TextField("Título (obrigatório)", text: $titulo).textFieldStyle(.roundedBorder)
+                TextField("Título (obrigatório)", text: $titulo).campoSouv()
                 Text("\(titulo.count)").font(.caption.monospacedDigit())
                     .foregroundStyle(titulo.count > limiteTitulo ? .orange : .secondary)
                     .help("O committer limita o título a \(limiteTitulo) caracteres")
@@ -958,8 +953,8 @@ struct CommitPainel: View {
                 }
             }
             .frame(height: 64)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(Souv.superficie2))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Souv.borda))
             Button { gerar() } label: {
                 HStack {
                     if gerando { ProgressView().controlSize(.small) } else { Image(systemName: "sparkles") }
@@ -976,7 +971,7 @@ struct CommitPainel: View {
                 }
                 .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent).controlSize(.large)
+            .buttonStyle(.souvPrimario).controlSize(.large)
             .disabled(!(dados?.gitflow ?? false) || marcados.isEmpty || titulo.trimmingCharacters(in: .whitespaces).isEmpty || commitando)
         }
         .padding(10)

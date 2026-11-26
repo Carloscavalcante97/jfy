@@ -73,10 +73,9 @@ struct ReunioesTela: View {
                     Button("Hoje") { ref = Date() }
                     Button { mover(1) } label: { Image(systemName: "chevron.right") }
                 }
-                Picker("Modo", selection: $modo) { ForEach(Modo.allCases, id: \.self) { Text($0.rawValue) } }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Segmentos(selecao: $modo, opcoes: Modo.allCases.map { .init(valor: $0, rotulo: $0.rawValue) })
                 Button { formulario = FormEvento(inicio: proximaMeiaHora(no: ref)) } label: { Label("Novo evento", systemImage: "plus") }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.souvPrimario)
                 Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar")
             }
             .padding(.horizontal, 20).padding(.vertical, 12)
@@ -121,9 +120,11 @@ struct ReunioesTela: View {
             EventoDetalhe(evento: e, projetos: agenda?.projetos ?? [], fechar: { aberto = nil },
                           editar: { aberto = nil; formulario = FormEvento(e) },
                           mudou: { Task { await carregar() } }, irParaJFY: { aberto = nil; irParaJFY() })
+                .identidadeSouv()
         }
         .sheet(item: $formulario) { f in
             EventoForm(form: f, fechar: { formulario = nil }, salvou: { formulario = nil; Task { await carregar() } })
+                .identidadeSouv()
         }
     }
 
@@ -208,7 +209,7 @@ struct ReunioesTela: View {
                     }
                 }
             }
-            if pessoas.count > 1 { Button("Limpar") { pessoasTxt = "" }.buttonStyle(.link) }
+            if pessoas.count > 1 { Button("Limpar") { pessoasTxt = "" }.buttonStyle(.souvLink) }
         }
     }
 
@@ -243,7 +244,7 @@ private struct GradeHoras: View {
                         Text(d.formatted(.dateTime.weekday(.abbreviated).locale(Locale(identifier: "pt_BR")))).font(.caption).foregroundStyle(.secondary)
                         Text("\(cal.component(.day, from: d))").font(.title3.weight(hoje ? .bold : .regular))
                             .foregroundStyle(hoje ? Color.white : .primary)
-                            .frame(width: 30, height: 30).background(Circle().fill(hoje ? Color.accentColor : .clear))
+                            .frame(width: 30, height: 30).background(Circle().fill(hoje ? Souv.primaria : .clear))
                     }
                     .frame(maxWidth: .infinity).padding(.vertical, 6)
                 }
@@ -324,7 +325,7 @@ private struct GradeHoras: View {
     }
 }
 
-private func corEvento(_ e: ReunioesTela.Evento) -> Color { e.cor == nil ? .accentColor : Color(hex: e.cor) }
+private func corEvento(_ e: ReunioesTela.Evento) -> Color { e.cor == nil ? Souv.primaria : Color(hex: e.cor) }
 
 private struct Bloco: View {
     let evento: ReunioesTela.Evento
@@ -423,7 +424,7 @@ private struct MesView: View {
             Button { irDia(d) } label: {
                 Text("\(cal.component(.day, from: d))").font(.callout.weight(hoje ? .bold : .regular))
                     .foregroundStyle(hoje ? Color.white : noMes ? .primary : .secondary)
-                    .frame(width: 24, height: 24).background(Circle().fill(hoje ? Color.accentColor : .clear))
+                    .frame(width: 24, height: 24).background(Circle().fill(hoje ? Souv.primaria : .clear))
             }
             .buttonStyle(.plain).help("Abrir o dia")
             ForEach(doDia.prefix(3)) { e in Chip(evento: e, abrir: abrir) }
@@ -475,7 +476,7 @@ private struct EventoDetalhe: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     if let l = evento.link, let u = URL(string: l) {
-                        Button { NSWorkspace.shared.open(u) } label: { Label("Entrar na chamada", systemImage: "video") }.buttonStyle(.borderedProminent)
+                        Button { NSWorkspace.shared.open(u) } label: { Label("Entrar na chamada", systemImage: "video") }.buttonStyle(.souvPrimario)
                     }
                     if let local = evento.local, !local.hasPrefix("http") { Label(local, systemImage: "mappin.and.ellipse").textSelection(.enabled) }
                     if let org = evento.organizador { Label("Organizado por \(evento.euOrganizo ? "você" : org)", systemImage: "person") }
@@ -501,7 +502,7 @@ private struct EventoDetalhe: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
-                if let u = evento.url.flatMap(URL.init(string:)) { Link("Abrir no Google Agenda", destination: u) }
+                if let u = evento.url.flatMap(URL.init(string:)) { Link("Abrir no Google Agenda", destination: u).buttonStyle(.souvLink) }
                 Spacer()
                 if evento.podeEditar {
                     Button("Apagar", role: .destructive) { confirmarApagar = true }
@@ -512,16 +513,16 @@ private struct EventoDetalhe: View {
         }
         .padding(20)
         .frame(width: 560, height: 560)
-        .confirmationDialog("Apagar \"\(evento.titulo)\"?", isPresented: $confirmarApagar) {
+        .dialogoSouv("Apagar \"\(evento.titulo)\"?", isPresented: $confirmarApagar) {
             Button("Apagar" + (avisarApagar && !semConvidados ? " e avisar os convidados" : ""), role: .destructive) { apagar() }
-            if !semConvidados { Button(avisarApagar ? "Apagar sem avisar" : "Apagar e avisar") { avisarApagar.toggle(); apagar() } }
+            if !semConvidados { Button(avisarApagar ? "Apagar sem avisar" : "Apagar e avisar", role: .destructive) { avisarApagar.toggle(); apagar() } }
         } message: {
             Text(evento.recorrente ? "Só esta ocorrência sai da agenda." : "O evento sai da agenda.")
         }
-        .alert("Projeto no Journify", isPresented: $outroNome) {
-            TextField("ex.: Souv", text: $textoOutro)
+        .dialogoSouv("Projeto no Journify", isPresented: $outroNome) {
             Button("OK") { if !textoOutro.isEmpty { horas(p: textoOutro) } }
-            Button("Cancelar", role: .cancel) {}
+        } message: {
+            TextField("ex.: Souv", text: $textoOutro).foregroundStyle(Souv.texto).campoSouv()
         }
     }
 
@@ -535,7 +536,7 @@ private struct EventoDetalhe: View {
                            extra: ("Outro nome no Journify…", { textoOutro = ""; outroNome = true })) { horas(p: $0) }
                     .frame(width: 180)
                 if evento.palpite { Text("pelo título").font(.caption).foregroundStyle(.secondary).fixedSize() }
-                TextField("contexto (vira a descrição nas horas)", text: $contexto).textFieldStyle(.roundedBorder)
+                TextField("contexto (vira a descrição nas horas)", text: $contexto).campoSouv()
                     .onSubmit { if let p = evento.p { horas(p: p) } }
                     .disabled(evento.p == nil)
                 Button("Preparar com o Claude") { preparar() }.disabled(evento.p == nil).help("Abre numa aba do jfy")
@@ -634,19 +635,18 @@ private struct EventoForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(form.eventoId == nil ? "Novo evento" : "Editar evento").font(.title2.weight(.semibold))
-            TextField("Título", text: $form.titulo).textFieldStyle(.roundedBorder).font(.title3)
+            Text(form.eventoId == nil ? "Novo evento" : "Editar evento").font(Souv.titulo(22))
+            TextField("Título", text: $form.titulo).campoSouv().font(.title3)
             Toggle("Dia inteiro", isOn: $form.diaInteiro)
-            HStack {
-                DatePicker("Início", selection: $form.inicio, displayedComponents: form.diaInteiro ? [.date] : [.date, .hourAndMinute])
-                DatePicker("Fim", selection: $form.fim, displayedComponents: form.diaInteiro ? [.date] : [.date, .hourAndMinute])
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) { Text("Início").foregroundStyle(Souv.texto2).frame(width: 44, alignment: .leading); CampoDataSouv(data: $form.inicio, comHora: !form.diaInteiro) }
+                HStack(spacing: 8) { Text("Fim").foregroundStyle(Souv.texto2).frame(width: 44, alignment: .leading); CampoDataSouv(data: $form.fim, comHora: !form.diaInteiro) }
             }
             .onChange(of: form.inicio) { antes, depois in form.fim = form.fim.addingTimeInterval(depois.timeIntervalSince(antes)) }  // mantém a duração
-            TextField("Local", text: $form.local).textFieldStyle(.roundedBorder)
+            TextField("Local", text: $form.local).campoSouv()
             CampoEmails(rotulo: "Convidados", texto: $form.convidados)
             Text("Descrição").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $form.descricao).frame(height: 90)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            TextEditor(text: $form.descricao).frame(height: 90).campoSouv()
             if !form.temChamada { Toggle("Criar chamada do Google Meet", isOn: $form.meet) }
             if !listaConvidados.isEmpty { Toggle("Mandar o convite (ou a atualização) por email aos convidados", isOn: $form.avisar) }
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
@@ -655,7 +655,7 @@ private struct EventoForm: View {
                 if salvando { ProgressView().controlSize(.small) }
                 Button("Cancelar") { fechar() }.keyboardShortcut(.cancelAction)
                 Button(form.eventoId == nil ? "Criar" : "Salvar") { salvar() }
-                    .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .buttonStyle(.souvPrimario).keyboardShortcut(.defaultAction)
                     .disabled(form.titulo.trimmingCharacters(in: .whitespaces).isEmpty || salvando || (!form.diaInteiro && form.fim <= form.inicio))
             }
         }

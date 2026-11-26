@@ -305,7 +305,7 @@ struct Principal: View {
         .toolbar(removing: .title)
         .frame(minWidth: 1040, minHeight: 640)  // abaixo disso as telas de três colunas ficariam espremidas
         .font(Souv.corpo())  // Roboto no texto; os títulos usam Souv.titulo (Lexend)
-        .tint(Souv.primaria)
+        .identidadeSouv()
         .onOpenURL { nav.abrir($0) }  // o clique nas notificações (jfy://…)
         .onChange(of: nav.abrirAba) {
             guard let alvo = nav.abrirAba else { return }
@@ -313,12 +313,15 @@ struct Principal: View {
             nav.abrirAba = nil
         }
         .background { atalhos }
-        .alert("Renomear aba", isPresented: Binding(get: { renomeando != nil }, set: { if !$0 { renomeando = nil } })) {
-            TextField("Nome", text: $novoNome)
+        .dialogoSouv("Renomear aba", isPresented: Binding(get: { renomeando != nil }, set: { if !$0 { renomeando = nil } })) {
             Button("Renomear") { if let a = renomeando { abas.renomear(a, novoNome) } }
-            Button("Cancelar", role: .cancel) {}
-        } message: { Text("\"menu\" é o nome da aba principal do jfy e não pode ser usado.") }
-        .confirmationDialog("Fechar a aba \(fechando?.nome ?? "")?", isPresented: Binding(get: { fechando != nil }, set: { if !$0 { fechando = nil } }),
+        } message: {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("Nome", text: $novoNome).foregroundStyle(Souv.texto).campoSouv()
+                Text("\"menu\" é o nome da aba principal do jfy e não pode ser usado.")
+            }
+        }
+        .dialogoSouv("Fechar a aba \(fechando?.nome ?? "")?", isPresented: Binding(get: { fechando != nil }, set: { if !$0 { fechando = nil } }),
                             presenting: fechando) { a in
             Button("Fechar aba", role: .destructive) { abas.fechar(a) }
         } message: { _ in Text("O que roda nela (o Claude daquela task, um servidor…) é encerrado junto.") }
@@ -393,11 +396,9 @@ struct Principal: View {
             .buttonStyle(.plain)
             .padding(.leading, 20)
             .help(a.nome)
-            .contextMenu {
-                if a.nome != "menu" {
-                    Button("Renomear…") { novoNome = a.nome; renomeando = a }
-                    Button("Fechar aba…", role: .destructive) { fechando = a }
-                }
+            .menuSouv(se: a.nome != "menu") {
+                Button("Renomear…", systemImage: "pencil") { novoNome = a.nome; renomeando = a }
+                Button("Fechar aba…", systemImage: "xmark", role: .destructive) { fechando = a }
             }
             .moveDisabled(a.nome == "menu")
         }

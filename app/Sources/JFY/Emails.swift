@@ -98,8 +98,8 @@ struct EmailsTela: View {
                 }
                 Spacer()
                 Button { escrevendoNovo = true } label: { Label("Escrever", systemImage: "square.and.pencil") }
-                    .buttonStyle(.borderedProminent)
-                if let u = lista?.url.flatMap(URL.init(string:)) { Link("Abrir o Gmail", destination: u) }
+                    .buttonStyle(.souvPrimario)
+                if let u = lista?.url.flatMap(URL.init(string:)) { Link("Abrir o Gmail", destination: u).buttonStyle(.souvLink) }
                 Button("Marcar todos como lidos") { confirmarTodos = true }.disabled((lista?.naoLidos ?? lista?.total ?? 0) == 0)
                 Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }.help("Atualizar").disabled(carregando)
             }
@@ -144,17 +144,17 @@ struct EmailsTela: View {
             Task { await carregar() }
         }
         .onChange(of: caixa.naoLidos) { if ativa { Task { await carregar() } } }  // chegou email com a aba aberta
-        .confirmationDialog("Marcar todos os não lidos da Principal como lidos no Gmail?", isPresented: $confirmarTodos) {
+        .dialogoSouv("Marcar todos os não lidos da Principal como lidos no Gmail?", isPresented: $confirmarTodos) {
             Button("Marcar todos") { agir(["--emails-lidos"]) }
         }
-        .confirmationDialog(modo == .encaminhar ? "Encaminhar para \(para)?" : "Enviar a resposta para \(email.map { remetente($0.de) } ?? "")" + (modo == .todos ? " e os outros da conversa?" : "?"),
+        .dialogoSouv(modo == .encaminhar ? "Encaminhar para \(para)?" : "Enviar a resposta para \(email.map { remetente($0.de) } ?? "")" + (modo == .todos ? " e os outros da conversa?" : "?"),
                             isPresented: $confirmarEnvio) {
             Button("Enviar") { if let e = email { responderGmail(e, enviar: true) } }
         } message: {
             Text("Sai da sua conta do Gmail, na mesma conversa" + (email?.temAssinatura == true ? ", com a sua assinatura" : "") + ". Não tem volta pelo app.")
         }
         .sheet(isPresented: $escrevendoNovo) {
-            NovoEmail(fechar: { escrevendoNovo = false }, enviado: { feito = $0; escrevendoNovo = false })
+            NovoEmail(fechar: { escrevendoNovo = false }, enviado: { feito = $0; escrevendoNovo = false }).identidadeSouv()
         }
         .onChange(of: selecao) {
             feito = nil
@@ -170,11 +170,7 @@ struct EmailsTela: View {
     // ---------- filtros e grupos ----------
     private var filtros: some View {
         HStack(spacing: 8) {
-            Picker("Caixa", selection: $caixaLista) {
-                Text("Não lidos").tag(Caixa.naoLidos)
-                Text("Importantes").tag(Caixa.importantes)
-            }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            Segmentos(selecao: $caixaLista, opcoes: [.init(valor: .naoLidos, rotulo: "Não lidos"), .init(valor: .importantes, rotulo: "Importantes")])
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Souv.texto2)
                 TextField("Buscar remetente ou assunto", text: $busca).textFieldStyle(.plain)
@@ -187,7 +183,7 @@ struct EmailsTela: View {
                 FiltroMulti(titulo: "Leitura", opcoes: [("nao_lido", "Não lidos", Souv.primaria), ("lido", "Lidos", nil)], marcados: $filtroLeitura)
             }
             if !busca.isEmpty || !filtroLeitura.isEmpty {
-                Button("Limpar") { busca = ""; filtroLeitura = [] }.buttonStyle(.link)
+                Button("Limpar") { busca = ""; filtroLeitura = [] }.buttonStyle(.souvLink)
             }
             Spacer(minLength: 4)
             SouvSelect(opcoes: Grupo.allCases.map { .init(valor: $0, rotulo: $0.rawValue) }, selecionado: grupo) { grupo = $0 }
@@ -259,7 +255,7 @@ struct EmailsTela: View {
                     .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack {
                         Button(e.lido ? "Marcar como não lido" : "Marcar como lido") { agir(["--email-acao", e.id, e.lido ? "nao_lido" : "lido"]) }
-                        if let u = URL(string: e.link) { Link("Abrir no Gmail", destination: u) }
+                        if let u = URL(string: e.link) { Link("Abrir no Gmail", destination: u).buttonStyle(.souvLink) }
                         BotaoContexto(item: .init(tipo: "email", ref: e.id, titulo: e.assunto, origem: e.de))
                     }
                     Divider()
@@ -297,7 +293,7 @@ struct EmailsTela: View {
                 }
             }
             .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(m.eu ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: 8).fill(m.eu ? Souv.primaria.opacity(0.08) : Color.secondary.opacity(0.06)))
             .contentShape(Rectangle())
             .onTapGesture { if !aberta { abertas.insert(m.id) } }
         }
@@ -306,8 +302,7 @@ struct EmailsTela: View {
     // ---------- responder ----------
     private func responder(_ e: Email) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Picker("Modo", selection: $modo) { ForEach(Modo.allCases, id: \.self) { Text($0.rawValue) } }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+            Segmentos(selecao: $modo, opcoes: Modo.allCases.map { .init(valor: $0, rotulo: $0.rawValue) })
             switch modo {
             case .encaminhar:
                 CampoEmails(rotulo: "Para", texto: $para)
@@ -320,10 +315,10 @@ struct EmailsTela: View {
             }
             TextEditor(text: $resposta)
                 .font(.body).frame(minHeight: 140)
-                .padding(6).background(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.secondary.opacity(0.3)))
+                .campoSouv()
                 .disabled(escrevendo != nil)
             TextField("Contexto para o Claude (opcional): o que responder, o tom, o que já foi combinado…", text: $contexto, axis: .vertical)
-                .lineLimit(1...4).textFieldStyle(.roundedBorder)
+                .lineLimit(1...4).campoSouv()
             HStack {
                 Button { ia(e, "gerar") } label: { Label("Gerar com o Claude", systemImage: "sparkles") }
                 Button("Corrigir") { ia(e, "corrigir") }.disabled(vazia).help("Só os erros do seu texto, sem mudar o que ele diz")
@@ -331,7 +326,7 @@ struct EmailsTela: View {
                 if let m = escrevendo { ProgressView().controlSize(.small); Text("O Claude está \(m == "gerar" ? "escrevendo" : m == "corrigir" ? "corrigindo" : "melhorando")…").foregroundStyle(.secondary) }
                 Spacer()
                 Button("Salvar rascunho") { responderGmail(e, enviar: false) }.disabled(vazia || semDestino)
-                Button("Enviar") { confirmarEnvio = true }.buttonStyle(.borderedProminent).disabled(vazia || semDestino)
+                Button("Enviar") { confirmarEnvio = true }.buttonStyle(.souvPrimario).disabled(vazia || semDestino)
             }
             .disabled(escrevendo != nil)
             Text("O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
@@ -498,7 +493,7 @@ struct AnexoEmail: View {
                         if baixando { ProgressView().controlSize(.small) }
                     }
                 }
-                .buttonStyle(.borderless).disabled(baixando).help("Abrir o arquivo")
+                .buttonStyle(.souvLink).disabled(baixando).help("Abrir o arquivo")
                 if let erro { Text(erro).font(.caption).foregroundStyle(.orange) }
             }
             .task { if foto { _ = await baixar() } }
@@ -577,13 +572,13 @@ struct NovoEmail: View {
             }
             CampoEmails(rotulo: "Para", texto: $para)
             CampoEmails(rotulo: "Cc", texto: $cc)
-            TextField("Assunto", text: $assunto).textFieldStyle(.roundedBorder)
+            TextField("Assunto", text: $assunto).campoSouv()
             TextEditor(text: $texto)
                 .font(.body).frame(minHeight: 220)
-                .padding(6).background(RoundedRectangle(cornerRadius: 8).strokeBorder(Souv.borda))
+                .campoSouv()
                 .disabled(escrevendo != nil)
             TextField("Contexto para o Claude: o que o email precisa dizer, para quem, o tom…", text: $contexto, axis: .vertical)
-                .lineLimit(1...4).textFieldStyle(.roundedBorder)
+                .lineLimit(1...4).campoSouv()
             HStack {
                 Button { ia("gerar") } label: { Label("Gerar com o Claude", systemImage: "sparkles") }
                     .disabled(contexto.trimmingCharacters(in: .whitespaces).isEmpty).help("Escreve o email a partir do contexto")
@@ -595,7 +590,7 @@ struct NovoEmail: View {
                 }
                 Spacer()
                 Button("Salvar rascunho") { mandar(false) }.disabled(vazio || semDestino || enviando)
-                Button("Enviar") { confirmar = true }.buttonStyle(.borderedProminent).disabled(vazio || semDestino || enviando)
+                Button("Enviar") { confirmar = true }.buttonStyle(.souvPrimario).disabled(vazio || semDestino || enviando)
             }
             .disabled(escrevendo != nil)
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
@@ -608,7 +603,7 @@ struct NovoEmail: View {
         .padding(20)
         .frame(width: 660)
         .background(Souv.fundo)
-        .confirmationDialog("Enviar para \(para)?", isPresented: $confirmar) {
+        .dialogoSouv("Enviar para \(para)?", isPresented: $confirmar) {
             Button("Enviar") { mandar(true) }
         } message: { Text("Sai da sua conta do Gmail" + (cc.contains("@") ? ", com cópia para \(cc)" : "") + ". Não tem volta pelo app.") }
     }
@@ -649,7 +644,7 @@ struct AvisoAssinatura: View {
             Label("Vai sem assinatura: o Gmail não tem uma assinatura padrão.", systemImage: "signature").foregroundStyle(.orange)
             Text("No Gmail, em Configurações › Geral › Assinatura › Padrões de assinatura, escolha a sua (ex.: Souv) em \"Para uso em novos e-mails\" e em \"Para respostas/encaminhamentos\" e salve. O jfy só enxerga a assinatura marcada como padrão.")
                 .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
-            if let u = url.flatMap(URL.init(string:)) { Link("Abrir as configurações do Gmail", destination: u).font(.caption) }
+            if let u = url.flatMap(URL.init(string:)) { Link("Abrir as configurações do Gmail", destination: u).font(.caption).buttonStyle(.souvLink) }
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
@@ -675,9 +670,9 @@ struct CampoEmails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text(rotulo).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
+                Text(rotulo).foregroundStyle(.secondary).fixedSize().frame(minWidth: 64, alignment: .leading)
                 TextField("emails, separados por vírgula", text: $texto, axis: .vertical).lineLimit(1...3)
-                    .textFieldStyle(.roundedBorder).focused($focado)
+                    .focused($focado).campoSouv(foco: focado)
                     .onSubmit {  // Enter fecha o email digitado, como no Gmail (na Agenda, ele vira uma pessoa)
                         if let s = sugestoes.first { escolher(s) } else if digitando.contains("@") { texto += ", " }
                     }
