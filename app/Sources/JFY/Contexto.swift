@@ -154,9 +154,9 @@ struct ContextoTela: View {
                 TextField("nota para o Claude (opcional)", text: Binding(
                     get: { i.nota },
                     set: { n in if let k = cesta.itens.firstIndex(where: { $0.id == i.id }) { cesta.itens[k].nota = n } }))
-                    .textFieldStyle(.roundedBorder).font(.callout)
+                    .campoSouv().font(.callout)
             }
-            Button { cesta.alternar(i) } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Tirar da cesta")
+            Button { cesta.alternar(i) } label: { Image(systemName: "xmark") }.buttonStyle(.souvIcone).help("Tirar da cesta")
         }
         .padding(.vertical, 4)
     }
@@ -187,15 +187,10 @@ struct ContextoTela: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("O que você quer que o Claude faça").font(.headline)
-                TextEditor(text: $pedido).font(Souv.corpo(14)).frame(height: 110).scrollContentBackground(.hidden)
-                    .padding(6).background(RoundedRectangle(cornerRadius: 8).fill(Souv.fundo))
+                TextEditor(text: $pedido).font(Souv.corpo(14)).frame(height: 110).campoSouv()
                 Text("Mandar para").font(.headline)
-                Picker("Mandar para", selection: $destino) {
-                    Text("Conversa nova").tag("conversa")
-                    Text("Aba aberta").tag("aba")
-                    Text("Pipeline").tag("pipeline")
-                }
-                .pickerStyle(.segmented).labelsHidden()
+                Segmentos(selecao: $destino, opcoes: [.init(valor: "conversa", rotulo: "Conversa nova"), .init(valor: "aba", rotulo: "Aba aberta"),
+                                                     .init(valor: "pipeline", rotulo: "Pipeline")], cheio: true)
                 switch destino {
                 case "aba":
                     if abasClaude.isEmpty { Text("Nenhuma aba aberta no jfy.").foregroundStyle(Souv.texto2) }
@@ -213,7 +208,7 @@ struct ContextoTela: View {
                 Button { Task { await montar() } } label: {
                     Label(ocupado && montado == nil ? "Montando…" : "Montar o contexto", systemImage: "shippingbox").frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent).disabled(cesta.itens.isEmpty || ocupado)
+                .buttonStyle(.souvPrimario).disabled(cesta.itens.isEmpty || ocupado)
                 if let montado { revisao(montado) }
                 if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
             }
@@ -243,7 +238,7 @@ struct ContextoTela: View {
             HStack {
                 Button("Abrir a pasta") { NSWorkspace.shared.open(URL(fileURLWithPath: m.pasta)) }
                 Spacer()
-                Button("Enviar") { enviar(m.pasta) }.buttonStyle(.borderedProminent).disabled(!podeEnviar || ocupado)
+                Button("Enviar") { enviar(m.pasta) }.buttonStyle(.souvPrimario).disabled(!podeEnviar || ocupado)
             }
         }
         .padding(12)

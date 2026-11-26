@@ -40,7 +40,7 @@ struct TemasTela: View {
                 HStack {
                     Text(t.nome).font(.headline)
                     Spacer()
-                    if t.atual { Label("em uso", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(Color.accentColor) }
+                    if t.atual { Label("em uso", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(Souv.primaria) }
                 }
                 HStack(spacing: 4) {
                     ForEach(Array(t.cores.enumerated()), id: \.offset) { _, h in
@@ -62,7 +62,7 @@ struct TemasTela: View {
             }
             .padding(14)
             .background(RoundedRectangle(cornerRadius: 12).fill(Souv.superficie))
-            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(t.atual ? Color.accentColor : Color.secondary.opacity(0.15),
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(t.atual ? Souv.primaria : Color.secondary.opacity(0.15),
                                                                      lineWidth: t.atual ? 2 : 1))
             .contentShape(Rectangle())
         }

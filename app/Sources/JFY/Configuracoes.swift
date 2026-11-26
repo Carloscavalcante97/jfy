@@ -119,7 +119,7 @@ struct ConfiguracoesTela: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .task(id: ativa) { if ativa { await carregar() } }
-        .confirmationDialog(pedido?.titulo ?? "", isPresented: Binding(get: { pedido != nil }, set: { if !$0 { pedido = nil } }),
+        .dialogoSouv(pedido?.titulo ?? "", isPresented: Binding(get: { pedido != nil }, set: { if !$0 { pedido = nil } }),
                             presenting: pedido) { p in
             Button(p.botao, role: .destructive) { confirmar(p) }
         } message: { p in Text(p.mensagem) }
@@ -164,7 +164,7 @@ struct ConfiguracoesTela: View {
                         Button("Trocar de conta") { entrarGoogle(trocando: true) }
                         Button("Desconectar", role: .destructive) { pedido = .googleSair }
                     } else {
-                        Button("Conectar") { entrarGoogle(trocando: false) }.buttonStyle(.borderedProminent)
+                        Button("Conectar") { entrarGoogle(trocando: false) }.buttonStyle(.souvPrimario)
                     }
                 }
             }
@@ -237,8 +237,8 @@ struct ConfiguracoesTela: View {
             }
             if colandoToken {
                 HStack {
-                    SecureField("Cole o token gerado no Journify", text: $token).textFieldStyle(.roundedBorder).onSubmit(salvarToken)
-                    Button("Salvar") { salvarToken() }.buttonStyle(.borderedProminent).disabled(token.isEmpty)
+                    SecureField("Cole o token gerado no Journify", text: $token).campoSouv().onSubmit(salvarToken)
+                    Button("Salvar") { salvarToken() }.buttonStyle(.souvPrimario).disabled(token.isEmpty)
                     Button("Cancelar") { colandoToken = false; token = "" }
                 }
                 Text("No Journify, em Configurações › Conectar meu Claude, clique em Gerar token e cole aqui. O jfy testa o token antes de trocar.")

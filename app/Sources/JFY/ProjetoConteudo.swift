@@ -107,7 +107,7 @@ private struct DocumentosProjeto: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack {
-                    TextField("Buscar documento", text: $busca).textFieldStyle(.roundedBorder)
+                    TextField("Buscar documento", text: $busca).campoSouv()
                     botaoAguardando("Novo", "plus", "criar_documento").labelStyle(.iconOnly)
                 }
                 .padding(10)
@@ -125,7 +125,7 @@ private struct DocumentosProjeto: View {
                             }
                         }
                         .linhaSouv(aberto == d.id) { aberto = d.id }
-                        .contextMenu { if !d.sensivel { MenuContexto(item: .init(tipo: "documento", ref: d.id, titulo: d.titulo, pid: pid)) } }
+                        .menuSouv(se: !d.sensivel) { MenuContexto(item: .init(tipo: "documento", ref: d.id, titulo: d.titulo, pid: pid)) }
                     }
                     .listaSouv()
                 }
@@ -302,17 +302,14 @@ private struct ArquivosProjeto: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Picker("Categoria", selection: $categoria) {
-                    ForEach(Self.categorias, id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Segmentos(selecao: $categoria, opcoes: Self.categorias.map { .init(valor: $0, rotulo: $0) })
                 Spacer(minLength: 8)
-                TextField("Buscar arquivo", text: $busca).textFieldStyle(.roundedBorder).frame(maxWidth: 240)
+                TextField("Buscar arquivo", text: $busca).campoSouv().frame(maxWidth: 240)
                 Button { Task { await carregar(forcar: true) } } label: {
                     if carregando && r != nil { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.clockwise") }
                 }
                 .help("Ler de novo do Journify (fica guardado por 24 h)").disabled(carregando)
-                botaoAguardando("Enviar arquivos", "arrow.up.doc", "enviar_arquivo").buttonStyle(.borderedProminent)
+                botaoAguardando("Enviar arquivos", "arrow.up.doc", "enviar_arquivo").buttonStyle(.souvPrimario)
             }
             .padding(12)
             Divider()
@@ -354,9 +351,9 @@ private struct ArquivosProjeto: View {
         .contentShape(Rectangle())
         .onTapGesture { abrir(a) }
         .help("Abrir o arquivo")
-        .contextMenu {
-            Button("Abrir o arquivo") { abrir(a) }
-            Button("Abrir a task") { abrirTask(a.task) }
+        .menuSouv {
+            Button("Abrir o arquivo", systemImage: "arrow.up.forward.square") { abrir(a) }
+            Button("Abrir a task", systemImage: "checklist") { abrirTask(a.task) }
             if let u = a.url { MenuContexto(item: .init(tipo: "arquivo", ref: u, titulo: a.nome, origem: a.taskTitulo, pid: pid)) }
             if let u = a.url { Button("Copiar o link") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(u, forType: .string) } }
         }

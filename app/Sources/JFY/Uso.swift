@@ -132,17 +132,11 @@ struct UsoTela: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Picker("Período", selection: $dias) {
-                Text("Hoje").tag(1)
-                Text("7 dias").tag(7)
-                Text("30 dias").tag(30)
-                Text("Tudo").tag(0)
-            }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            Segmentos(selecao: $dias, opcoes: [(1, "Hoje"), (7, "7 dias"), (30, "30 dias"), (0, "Tudo")].map { .init(valor: $0.0, rotulo: $0.1) })
             Button(action: avaliar) {
                 Label(avaliacao?.resumo == nil ? "Avaliar este período" : "Avaliar de novo", systemImage: "sparkles")
             }
-            .buttonStyle(.borderedProminent).disabled(avaliando)
+            .buttonStyle(.souvPrimario).disabled(avaliando)
             .help("O Claude lê os seus pedidos e os sinais de atrito do período e diz como usar melhor (usa tokens)")
             Button { Task { await carregar() } } label: { Image(systemName: "arrow.clockwise") }
                 .help("Atualizar").disabled(carregando)

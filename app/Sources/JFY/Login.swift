@@ -118,7 +118,7 @@ struct LoginTela: View {
                     if let i = info, i.conectado, !i.permitido, let conta = i.conta {
                         Label("\(conta) não é uma conta @\(dominio).", systemImage: "person.crop.circle.badge.xmark")
                             .foregroundStyle(.orange)
-                        Button("Desconectar essa conta") { desconectar() }.buttonStyle(.link)
+                        Button("Desconectar essa conta") { desconectar() }.buttonStyle(.souvLink)
                     }
                     if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                         .multilineTextAlignment(.center).textSelection(.enabled) }
@@ -138,7 +138,7 @@ struct LoginTela: View {
                 .font(.callout).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Abrir no Drive") { if let u = info?.arquivoCliente.flatMap(URL.init(string:)) { NSWorkspace.shared.open(u) } }
-                Button("Escolher o arquivo…") { escolherArquivo() }.buttonStyle(.borderedProminent)
+                Button("Escolher o arquivo…") { escolherArquivo() }.buttonStyle(.souvPrimario)
             }
         }
         .padding(14)

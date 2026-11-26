@@ -86,7 +86,7 @@ struct ChatTela: View {
                         if let n = c.naoLidas, n > 0 {
                             Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
                                 .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Capsule().fill(Color.accentColor))
+                                .background(Capsule().fill(Souv.primaria))
                         }
                     }
                 }
@@ -135,7 +135,7 @@ struct ChatTela: View {
                     if enviando { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(podeEnviar ? Color.accentColor : .secondary)
+                .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
                 .disabled(!podeEnviar)
                 .help("Enviar (Enter)")
             }
@@ -220,7 +220,7 @@ struct ChatTela: View {
                         .textSelection(.enabled)
                         .padding(.horizontal, 12).padding(.vertical, 7)
                         .foregroundStyle(minha ? Color.white : Color.primary)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(minha ? Color.accentColor : Color.secondary.opacity(0.12)))
+                        .background(RoundedRectangle(cornerRadius: 14).fill(minha ? Souv.primaria : Color.secondary.opacity(0.12)))
                     if !minha { Text(hora(m.quando)).font(.caption2).foregroundStyle(.tertiary); Spacer(minLength: 80) }
                 }
             }

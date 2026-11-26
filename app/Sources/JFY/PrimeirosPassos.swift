@@ -67,11 +67,13 @@ struct PrimeirosPassos: View {
                 }
             }
             .padding(20)
+            .background(Souv.fundo).identidadeSouv()
             .onChange(of: caixa.c.terminou) { if caixa.c.terminou != nil { comando = nil; Task { await carregar() } } }
         }
         .sheet(item: $configurando) { pedido in
             NovoProjeto(pedido: pedido, semPasta: semPasta, fechar: { configurando = nil },
                         salvou: { _ in configurando = nil; Task { await carregar() } })
+                .identidadeSouv()
         }
     }
 
@@ -129,8 +131,8 @@ struct PrimeirosPassos: View {
                     Label("Abrir as Configurações do Journify", systemImage: "arrow.up.right.square")
                 }
                 HStack {
-                    SecureField("Cole o token aqui", text: $token).textFieldStyle(.roundedBorder).onSubmit(salvarToken)
-                    Button(salvandoToken ? "Conferindo…" : "Conferir e salvar", action: salvarToken).buttonStyle(.borderedProminent)
+                    SecureField("Cole o token aqui", text: $token).campoSouv().onSubmit(salvarToken)
+                    Button(salvandoToken ? "Conferindo…" : "Conferir e salvar", action: salvarToken).buttonStyle(.souvPrimario)
                         .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty || salvandoToken)
                 }
                 Text("O jfy testa o token no Journify antes de salvar. Ele fica no Claude Code (o MCP journify).")
@@ -145,16 +147,16 @@ struct PrimeirosPassos: View {
                 } else if g.instalado == false {
                     if g.brew == true {
                         Button { rodar("brew install gh", "Instalar o GitHub CLI") } label: { Label("Instalar o GitHub CLI", systemImage: "arrow.down.circle") }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.souvPrimario)
                     } else {
                         Text("Falta o Homebrew para instalar o gh. Instale em brew.sh e volte aqui.").foregroundStyle(.orange)
-                        Link("Abrir brew.sh", destination: URL(string: "https://brew.sh")!)
+                        Link("Abrir brew.sh", destination: URL(string: "https://brew.sh")!).buttonStyle(.souvLink)
                     }
                 } else {
                     Button { rodar("gh auth login -h github.com --web --git-protocol https", "Conectar o GitHub") } label: {
                         Label("Conectar o GitHub", systemImage: "person.badge.key")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.souvPrimario)
                     Text("Abre o login do gh aqui mesmo: copie o código que ele mostrar, aperte Enter e confirme no navegador.")
                         .font(.caption).foregroundStyle(Souv.texto2)
                 }
@@ -186,7 +188,7 @@ struct PrimeirosPassos: View {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
                 }
             } else {
-                Button { pedirNotificacoes() } label: { Label("Permitir notificações", systemImage: "bell.badge") }.buttonStyle(.borderedProminent)
+                Button { pedirNotificacoes() } label: { Label("Permitir notificações", systemImage: "bell.badge") }.buttonStyle(.souvPrimario)
             }
         case .pronto:
             explicacao("O jfy está pronto. Dá para mudar tudo isso depois em Configurações (contas, modelos do Claude e a sessão) e, nos projetos, pela aba Projetos.")
@@ -205,9 +207,9 @@ struct PrimeirosPassos: View {
             Spacer()
             if !passo.obrigatorio && passo != .pronto && !feito(passo) { Button("Pular por agora") { mover(1) } }
             if passo == .pronto {
-                Button("Começar a usar o jfy", action: concluir).buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Começar a usar o jfy", action: concluir).buttonStyle(.souvPrimario).keyboardShortcut(.defaultAction)
             } else {
-                Button("Continuar") { mover(1) }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                Button("Continuar") { mover(1) }.buttonStyle(.souvPrimario).keyboardShortcut(.defaultAction)
                     .disabled(passo.obrigatorio && !feito(passo))
             }
         }

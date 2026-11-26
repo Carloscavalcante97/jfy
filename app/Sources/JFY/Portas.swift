@@ -73,13 +73,13 @@ struct PortasTela: View {
         }
         .padding(24)
         .onChange(of: ativa) { _, agora in portas.olhando = agora }
-        .confirmationDialog("Encerrar \(encerrando?.tipo ?? "") \(encerrando?.nome ?? "") (\(encerrando.map { txt($0.portas) } ?? ""))?",
+        .dialogoSouv("Encerrar \(encerrando?.tipo ?? "") \(encerrando?.nome ?? "") (\(encerrando.map { txt($0.portas) } ?? ""))?",
                             isPresented: Binding(get: { encerrando != nil }, set: { if !$0 { encerrando = nil } })) {
             Button("Encerrar", role: .destructive) { if let p = encerrando { Task { await portas.encerrar(p) } } }
         } message: {
             Text("Pede para o programa sair; se em 3 s ele não saiu, força. Container do Docker é parado com docker stop.")
         }
-        .confirmationDialog("Encerrar as \(portas.itens.count) portas abertas?", isPresented: $encerrarTodas) {
+        .dialogoSouv("Encerrar as \(portas.itens.count) portas abertas?", isPresented: $encerrarTodas) {
             Button("Encerrar todas", role: .destructive) { Task { await portas.encerrarTodas() } }
         } message: {
             Text(portas.itens.map { "\($0.tipo) \($0.nome)" }.joined(separator: ", ")
@@ -103,7 +103,7 @@ struct PortasTela: View {
             }
             Spacer()
             if let porta = p.portas.first, !["postgres", "mysql", "redis", "mongo"].contains(p.tipo) {  // banco não abre no navegador
-                Link("Abrir", destination: URL(string: "http://localhost:\(porta)")!).help("Abre http://localhost:\(porta)")
+                Link("Abrir", destination: URL(string: "http://localhost:\(porta)")!).buttonStyle(.souvLink).help("Abre http://localhost:\(porta)")
             }
             Button("Encerrar") { encerrando = p }
         }

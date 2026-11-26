@@ -79,15 +79,16 @@ struct TabelaTasks: View {
                 }
             }
         }
-        .alert("Vídeo do teste", isPresented: Binding(get: { pedidoVideo != nil }, set: { if !$0 { pedidoVideo = nil } })) {
-            TextField("link do vídeo, ou por que não tem", text: $video)
+        .dialogoSouv("Vídeo do teste", isPresented: Binding(get: { pedidoVideo != nil }, set: { if !$0 { pedidoVideo = nil } })) {
             Button("Mover") {
                 if let p = pedidoVideo, video.trimmingCharacters(in: .whitespaces).count >= 3 { mudar(p.tid, "status", p.status, video) }
                 pedidoVideo = nil
             }
-            Button("Cancelar", role: .cancel) { pedidoVideo = nil }
         } message: {
-            Text("O Journify só move a task para \(rotulo(pedidoVideo?.status ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo.")
+            VStack(alignment: .leading, spacing: 8) {
+                Text("O Journify só move a task para \(rotulo(pedidoVideo?.status ?? "")) com o link do vídeo do teste ou o motivo de não ter vídeo.")
+                TextField("link do vídeo, ou por que não tem", text: $video).foregroundStyle(Souv.texto).campoSouv()
+            }
         }
     }
 
@@ -118,7 +119,7 @@ struct TabelaTasks: View {
                         marcados: $filtroPrioridade)
             FiltroMulti(titulo: "Prazo", opcoes: Self.faixasPrazo.map { ($0, $0, nil) }, marcados: $filtroPrazo)
             if !(filtroStatus.isEmpty && filtroPrioridade.isEmpty && filtroPrazo.isEmpty && busca.isEmpty) {
-                Button("Limpar") { filtroStatus = []; filtroPrioridade = []; filtroPrazo = []; busca = "" }.buttonStyle(.link)
+                Button("Limpar") { filtroStatus = []; filtroPrioridade = []; filtroPrazo = []; busca = "" }.buttonStyle(.souvLink)
             }
             Spacer(minLength: 4)
             SouvSelect(opcoes: Grupo.allCases.map { .init(valor: $0, rotulo: $0.rawValue) }, selecionado: grupo) { grupo = $0; recolhidos = [] }
@@ -345,14 +346,15 @@ private struct CelulaPrazo: View {
         .help("Mudar o vencimento")
         .popover(isPresented: $aberto, arrowEdge: .bottom) {
             VStack(alignment: .trailing, spacing: 8) {
-                DatePicker("Vencimento", selection: $data, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
+                CalendarioSouv(data: $data)
                 Button("Usar este dia") {
                     aberto = false
                     if diaLocal(data) != prazo { mudar(diaLocal(data)) }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.souvPrimario)
             }
             .padding(12)
+            .background(Souv.superficie).identidadeSouv()
         }
     }
 }

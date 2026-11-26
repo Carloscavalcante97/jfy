@@ -1,12 +1,48 @@
+import AVFoundation
 import AppKit
 import SwiftUI
 
+/// A música dos créditos, de ~/.jfy/creditos.aac: fica fora do repositório (a música não é nossa para distribuir).
+/// Toca em loop enquanto a aba está aberta e para ao sair dela; o botão pausa. Sem o arquivo, sem música e sem botão.
+@MainActor final class MusicaCreditos: ObservableObject {
+    static let arquivo = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/creditos.aac")
+    @Published private(set) var pausada = false
+    let existe = FileManager.default.fileExists(atPath: arquivo.path)
+    private lazy var player: AVAudioPlayer? = {
+        let p = try? AVAudioPlayer(contentsOf: Self.arquivo)
+        p?.numberOfLoops = -1
+        return p
+    }()
+
+    func aba(_ aberta: Bool) {
+        guard existe else { return }
+        if aberta && !pausada { player?.play() } else { player?.pause() }
+    }
+
+    func alternar() {
+        pausada.toggle()
+        aba(true)
+    }
+}
+
 /// Quem fez o jfy, e por quê. A foto vem dentro do app (app/Marca/creditos.jpg).
 struct CreditosTela: View {
+    let ativa: Bool
     private let foto = Bundle.main.url(forResource: "creditos", withExtension: "jpg").flatMap(NSImage.init(contentsOf:))
+    @StateObject private var musica = MusicaCreditos()
 
     var body: some View {
         ScrollView { conteudo }
+            .overlay(alignment: .topTrailing) {
+                if musica.existe {
+                    Button { musica.alternar() } label: {
+                        Label(musica.pausada ? "Tocar" : "Pausar", systemImage: musica.pausada ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    }
+                    .help(musica.pausada ? "Tocar a música" : "Pausar a música")
+                    .padding(16)
+                }
+            }
+            .onChange(of: ativa, initial: true) { musica.aba(ativa) }
     }
 
     var conteudo: some View {

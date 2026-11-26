@@ -65,16 +65,16 @@ struct HorasTela: View {
         .task(id: "\(ativa)|\(iso)") { if ativa { await carregar() } }
         .onChange(of: iso) { levou = nil }
         .onChange(of: focado) { antigo, _ in if let antigo { salvar(antigo) } }  // saiu do campo: salva o que ficou
-        .alert(outro?.campo == "p" ? "Projeto no Journify" : "Categoria", isPresented: Binding(
+        .dialogoSouv(outro?.campo == "p" ? "Projeto no Journify" : "Categoria", isPresented: Binding(
             get: { outro != nil }, set: { if !$0 { outro = nil } })) {
-            TextField(outro?.campo == "p" ? "ex.: Souv" : "ex.: Pesquisa", text: $textoOutro)
             Button("OK") {
                 if let o = outro, !textoOutro.isEmpty { ajustar(o.item, o.campo, textoOutro) }
                 outro = nil
             }
-            Button("Cancelar", role: .cancel) { outro = nil }
+        } message: {
+            TextField(outro?.campo == "p" ? "ex.: Souv" : "ex.: Pesquisa", text: $textoOutro).foregroundStyle(Souv.texto).campoSouv()
         }
-        .confirmationDialog(horas?.lancado == nil
+        .dialogoSouv(horas?.lancado == nil
                             ? "Lançar \(fmt(horas?.total ?? 0)) de \(dia.formatted(.dateTime.day().month(.twoDigits))) no Journify?"
                             : "Este dia já foi lançado. Lançar de novo?", isPresented: $confirmar) {
             Button(horas?.lancado == nil ? "Lançar" : "Editar as horas já registradas") { lancar() }
@@ -97,7 +97,7 @@ struct HorasTela: View {
             }
             Spacer()
             Button { mudar(-1) } label: { Image(systemName: "chevron.left") }.help("Dia anterior")
-            DatePicker("Dia", selection: $dia, in: ...hoje, displayedComponents: .date).labelsHidden().datePickerStyle(.field)
+            CampoDataSouv(data: $dia, ate: hoje)
             Button { mudar(1) } label: { Image(systemName: "chevron.right") }.help("Próximo dia").disabled(dia >= hoje)
             Button("Hoje") { dia = hoje }.disabled(dia == hoje)
         }
@@ -122,7 +122,7 @@ struct HorasTela: View {
             }
             Spacer()
             Button(h.lancado == nil ? "Lançar no Journify…" : "Lançar de novo…") { confirmar = true }
-                .buttonStyle(.borderedProminent).disabled(vivos.isEmpty)
+                .buttonStyle(.souvPrimario).disabled(vivos.isEmpty)
         }
         if let l = h.lancado { avisoLancado(l, vivos) }
         let semProjeto = vivos.filter { $0.pid == nil }.count
@@ -134,7 +134,7 @@ struct HorasTela: View {
         if let levou {
             HStack {
                 Label(levou.texto, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                Button("Ver \(levou.dia.formatted(.dateTime.day().month(.twoDigits)))") { dia = levou.dia; self.levou = nil }.buttonStyle(.link)
+                Button("Ver \(levou.dia.formatted(.dateTime.day().month(.twoDigits)))") { dia = levou.dia; self.levou = nil }.buttonStyle(.souvLink)
             }
         }
         if h.itens.isEmpty {
@@ -176,12 +176,12 @@ struct HorasTela: View {
                             .frame(width: 84, alignment: .leading)
                             campo(it, "desc", atual: it.desc, dica: "descrição").frame(maxWidth: .infinity, alignment: .leading)
                             Button { novoDia = dia; movendo = it.kid } label: { Image(systemName: "calendar") }
-                                .buttonStyle(.borderless).frame(width: 22)
+                                .buttonStyle(.souvIcone).frame(width: 22)
                                 .disabled(it.reuniao)
                                 .help(it.reuniao ? "Reunião fica no dia em que aconteceu, pela agenda" : "Levar esta linha para outro dia")
                                 .popover(isPresented: Binding(get: { movendo == it.kid }, set: { if !$0 { movendo = nil } })) { mudarDia(it) }
                             Button { ajustar(it, "fora", "1") } label: { Image(systemName: "trash") }
-                                .buttonStyle(.borderless).help("Remover desse dia").frame(width: 22)
+                                .buttonStyle(.souvIcone).help("Remover desse dia").frame(width: 22)
                         }
                         .padding(.horizontal, 12).padding(.vertical, 7)
                         .background(i % 2 == 1 ? Color.secondary.opacity(0.05) : Color.clear)
@@ -196,7 +196,7 @@ struct HorasTela: View {
                     ForEach(fora) { it in
                         HStack {
                             Text("\(it.projeto ?? "?") · \(it.desc)").foregroundStyle(.secondary).lineLimit(1)
-                            Button("Restaurar") { ajustar(it, "fora", "") }.buttonStyle(.link)
+                            Button("Restaurar") { ajustar(it, "fora", "") }.buttonStyle(.souvLink)
                         }
                     }
                 }
@@ -224,18 +224,19 @@ struct HorasTela: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Levar para outro dia").font(.headline)
             Text(it.desc).foregroundStyle(.secondary).lineLimit(2)
-            DatePicker("Dia", selection: $novoDia, in: ...hoje, displayedComponents: .date).datePickerStyle(.graphical).labelsHidden()
+            CalendarioSouv(data: $novoDia, ate: hoje)
             Text("O trabalhado (\(hm(it.trabalhado))) vai junto. Se lá já existe esta mesma linha, os dois somam.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Cancelar") { movendo = nil }
                 Button("Levar para \(novoDia.formatted(.dateTime.day().month(.twoDigits)))") { mover(it, para: novoDia) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.souvPrimario)
                     .disabled(Calendar.current.isDate(novoDia, inSameDayAs: dia))
             }
         }
         .padding(16).frame(width: 300)
+        .background(Souv.superficie).identidadeSouv()
     }
 
     private func mover(_ it: Horas.Item, para d: Date) {
@@ -262,18 +263,18 @@ struct HorasTela: View {
         let pendente = rascunho[k].map { $0 != atual } ?? false
         return HStack(spacing: 4) {
             TextField(dica, text: Binding(get: { rascunho[k] ?? atual }, set: { rascunho[k] = $0 }))
-                .textFieldStyle(.roundedBorder)
                 .focused($focado, equals: k)
                 .onSubmit { salvar(k) }
                 .onExitCommand {
                     rascunho[k] = nil
                     focado = nil
                 }
+                .campoSouv(foco: focado == k)
             if salvando.contains(k) {
                 ProgressView().controlSize(.small).help("Salvando…")
             } else if pendente {
                 Button { salvar(k) } label: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
-                    .buttonStyle(.borderless).help("Salvar (Enter). Esc desfaz.")
+                    .buttonStyle(.souvIcone).help("Salvar (Enter). Esc desfaz.")
             }
         }
     }
