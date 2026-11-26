@@ -34,7 +34,9 @@ case ":$PATH:" in *":$BIN:"*) ;; *) aviso "$BIN não está no PATH. Adicione ao 
 # Não sobrescreve arquivo seu.
 PIPE="$HOME/.jfy/pipeline-Claude"
 if [ -d "$PIPE/.git" ]; then
+  "$DIR/jfy" --agentes-oficial 2>/dev/null  # o modelo que você trocou num agente (pelo app) volta ao oficial para o pull...
   git -C "$PIPE" pull -q --ff-only || aviso "não consegui atualizar $PIPE, segui com a versão atual"
+  "$DIR/jfy" --agentes-aplicar 2>/dev/null  # ...e a sua escolha volta depois dele
 else
   git clone -q https://github.com/Carloscavalcante97/pipeline-Claude.git "$PIPE" || erro "Não consegui clonar a pipeline"
 fi
@@ -140,6 +142,10 @@ EOF
     launchctl bootout "gui/$(id -u)/jfy.swiftbar" 2>/dev/null || true
     launchctl bootstrap "gui/$(id -u)" "$SB" && ok "ícone do jfy na barra de cima, abre junto com o Mac (SwiftBar, plugins em ${PLUG/#$HOME/~})"
   fi
+fi
+# app do jfy para o Mac (app/): o jfy numa janela própria, com uso da IA e chat. Monta com o Swift do Xcode
+if [ -d /Applications/jfy.app ] || [ -d "$HOME/Applications/jfy.app" ] || quer "App do jfy para o Mac (janela própria, uso da IA, chat)? Precisa do Xcode; monta em ~1 min."; then
+  if command -v swift >/dev/null; then "$DIR/app/build.sh" || aviso "não consegui montar o jfy.app"; else aviso "sem o Swift: instale o Xcode e rode de novo"; fi
 fi
 PLIST="$HOME/Library/LaunchAgents/jfy.dia.plist"
 if [ -f "$PLIST" ] || quer "Notificação às 7h (seg a sex) com as reuniões e as tasks no foco? Cria um LaunchAgent."; then
