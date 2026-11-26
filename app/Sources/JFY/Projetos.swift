@@ -210,11 +210,9 @@ struct ProjetosTela: View {
             .help(fav ? "Tirar dos favoritos da barra lateral" : "Favoritar: aparece na barra lateral (até \(Navegacao.maxFavoritos))")
         }
         .linhaSouv(projeto == p.id) { projeto = p.id }
-        .contextMenu {
-            Button(p.nome == nil ? "Configurar projeto…" : "Editar projeto…") {
-                configurando = PedidoProjeto(pid: p.id, nome: p.nome, pastas: p.pastas ?? [])
-            }
-        }
+        .menuSouv([.init(rotulo: p.nome == nil ? "Configurar projeto…" : "Editar projeto…", icone: "pencil") {
+            configurando = PedidoProjeto(pid: p.id, nome: p.nome, pastas: p.pastas ?? [])
+        }])
     }
 
     // ---------- tasks ----------
@@ -975,8 +973,9 @@ struct NovoProjeto: View {
     struct Conferido: Decodable {
         let id: String
         let tasks: Int
-        let exemplo, nome, journify: String?
+        let exemplo, nome, journify, github: String?
         let pastas: [String]
+        let contasGithub: [String]
     }
 
     @State private var link = ""
@@ -985,6 +984,7 @@ struct NovoProjeto: View {
     @State private var pastas: [String] = []
     @State private var semRepo = false
     @State private var nome = ""
+    @State private var conta = ""  // conta do GitHub do projeto; "" = a ativa do gh
     @State private var aviso: String?
     @State private var salvando = false
 
@@ -1059,6 +1059,16 @@ struct NovoProjeto: View {
             secao("3", "Nome no jfy") {
                 TextField("curto, como aparece no menu e na barra (ex.: portal)", text: $nome).textFieldStyle(.roundedBorder)
             }
+            if !semRepo, let contas = conferido?.contasGithub, !contas.isEmpty {
+                secao("4", "Conta do GitHub") {
+                    SouvSelect(opcoes: [.init(valor: "", rotulo: "A ativa do gh (sem conta fixa)")]
+                               + contas.map { .init(valor: $0, rotulo: $0, foto: URL(string: "https://github.com/\($0).png?size=48")) },
+                               selecionado: conta) { conta = $0 }
+                        .frame(maxWidth: 320)
+                    Text("Os commits destas pastas saem com o nome e o email dessa conta, e o push e o gh do Claude usam ela, seja qual for a conta ativa.")
+                        .font(.caption).foregroundStyle(Souv.texto2)
+                }
+            }
             if let aviso { Label(aviso, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).textSelection(.enabled) }
             HStack {
                 Spacer()
@@ -1099,6 +1109,7 @@ struct NovoProjeto: View {
             if let c {
                 conferido = c
                 if nome.isEmpty { nome = c.nome ?? "" }
+                if conta.isEmpty { conta = c.github ?? "" }
                 if pastas.isEmpty && pedido.pid == nil { pastas = c.pastas.filter { !$0.contains("/.jfy/sem-repo/") } }
             } else {
                 aviso = msg
@@ -1127,7 +1138,8 @@ struct NovoProjeto: View {
             salvando = true
             aviso = nil
             struct Salvo: Decodable { let id: String }
-            let d: [String: Any] = ["id": c.id, "nome": nome.trimmingCharacters(in: .whitespaces), "pastas": semRepo ? [] : pastas]
+            let d: [String: Any] = ["id": c.id, "nome": nome.trimmingCharacters(in: .whitespaces), "pastas": semRepo ? [] : pastas,
+                                    "github": semRepo ? "" : conta]
             guard let json = try? JSONSerialization.data(withJSONObject: d), let txt = String(data: json, encoding: .utf8) else { return }
             let (r, msg): (Salvo?, String?) = await JFY.ler(["--projeto-salvar", txt])
             salvando = false

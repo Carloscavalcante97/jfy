@@ -78,6 +78,7 @@ struct SouvSelect<Valor: Hashable>: View {
         let valor: Valor
         let rotulo: String
         var cor: Color?
+        var foto: URL?  // a foto da conta (GitHub), redonda, no lugar da bolinha
         var id: Valor { valor }
     }
 
@@ -109,6 +110,7 @@ struct SouvSelect<Valor: Hashable>: View {
         Button { busca = ""; aberto.toggle() } label: {
             HStack(spacing: 6) {
                 if let c = atual?.cor ?? (atual == nil && rotuloLivre != nil ? corLivre : nil) { Circle().fill(c).frame(width: 8, height: 8) }
+                if let f = atual?.foto { FotoConta(url: f) }
                 Text(atual?.rotulo ?? rotuloLivre ?? vazio)
                     .foregroundStyle(atual == nil && rotuloLivre == nil ? Souv.texto2 : Souv.texto).lineLimit(1)
                 Spacer(minLength: 4)
@@ -130,7 +132,7 @@ struct SouvSelect<Valor: Hashable>: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(visiveis) { o in
-                            LinhaSelect(cor: o.cor, rotulo: o.rotulo, marcado: o.valor == selecionado) { pegar(o) }
+                            LinhaSelect(cor: o.cor, rotulo: o.rotulo, marcado: o.valor == selecionado, foto: o.foto) { pegar(o) }
                         }
                         if visiveis.isEmpty { Text("Nada com \"\(busca)\"").foregroundStyle(Souv.texto2).padding(10) }
                         if let extra {
@@ -156,6 +158,8 @@ struct LinhaSelect: View {
     let rotulo: String
     let marcado: Bool
     var apagado = false
+    var foto: URL?
+    var icone: String?
     let acao: () -> Void
     @State private var sobre = false
 
@@ -163,6 +167,8 @@ struct LinhaSelect: View {
         Button(action: acao) {
             HStack(spacing: 8) {
                 if let cor { Circle().fill(cor).frame(width: 8, height: 8) }
+                if let foto { FotoConta(url: foto) }
+                if let icone { Image(systemName: icone).foregroundStyle(Souv.destaque).frame(width: 16) }
                 Text(rotulo).foregroundStyle(apagado ? Souv.texto2 : Souv.texto).lineLimit(1)
                 Spacer(minLength: 12)
                 if marcado { Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(Souv.destaque) }
@@ -176,7 +182,74 @@ struct LinhaSelect: View {
     }
 }
 
+/// A foto redonda de uma conta (github.com/<login>.png), com um círculo vazio enquanto carrega.
+struct FotoConta: View {
+    let url: URL
+    var tamanho: CGFloat = 18
+
+    var body: some View {
+        AsyncImage(url: url) { $0.resizable() } placeholder: { Circle().fill(Souv.superficie2) }
+            .frame(width: tamanho, height: tamanho).clipShape(Circle())
+    }
+}
+
+/// O menu do clique direito na identidade da Souv: as linhas do select num popover, aberto onde você clicou. O
+/// .contextMenu do SwiftUI é o menu do macOS, que não segue as cores do app.
+struct MenuSouv: ViewModifier {
+    struct Item {
+        let rotulo, icone: String
+        let acao: () -> Void
+    }
+    let itens: [Item]
+    @State private var onde: UnitPoint?
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(CliqueDireito { onde = $0 })
+            .popover(isPresented: Binding(get: { onde != nil }, set: { if !$0 { onde = nil } }),
+                     attachmentAnchor: .point(onde ?? .center), arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(itens.indices, id: \.self) { i in
+                        LinhaSelect(cor: nil, rotulo: itens[i].rotulo, marcado: false, icone: itens[i].icone) {
+                            onde = nil
+                            itens[i].acao()
+                        }
+                    }
+                }
+                .padding(6).frame(minWidth: 200).background(Souv.superficie)
+            }
+    }
+}
+
+/// Pega só o clique direito (e o Control-clique) e diz onde foi, de 0 a 1 na view; o clique normal passa por baixo.
+struct CliqueDireito: NSViewRepresentable {
+    let acao: (UnitPoint) -> Void
+
+    func makeNSView(context: Context) -> Alvo { Alvo() }
+    func updateNSView(_ v: Alvo, context: Context) { v.acao = acao }
+
+    final class Alvo: NSView {
+        var acao: ((UnitPoint) -> Void)?
+
+        private func direito(_ e: NSEvent?) -> Bool {
+            e?.type == .rightMouseDown || (e?.type == .leftMouseDown && e?.modifierFlags.contains(.control) == true)
+        }
+        override func hitTest(_ p: NSPoint) -> NSView? { direito(NSApp.currentEvent) ? super.hitTest(p) : nil }
+        override func rightMouseDown(with e: NSEvent) { abrir(e) }
+        override func mouseDown(with e: NSEvent) { if direito(e) { abrir(e) } }
+
+        private func abrir(_ e: NSEvent) {
+            let p = convert(e.locationInWindow, from: nil)
+            guard bounds.width > 0, bounds.height > 0 else { return }
+            acao?(UnitPoint(x: p.x / bounds.width, y: isFlipped ? p.y / bounds.height : 1 - p.y / bounds.height))
+        }
+    }
+}
+
 extension View {
+    /// O clique direito abre o menu da Souv com estes itens (veja MenuSouv).
+    func menuSouv(_ itens: [MenuSouv.Item]) -> some View { modifier(MenuSouv(itens: itens)) }
+
     /// Uma linha de lista na identidade da Souv: o clique escolhe; a escolhida ganha o fundo Vivid Blue suave e a
     /// barrinha de destaque, e o mouse por cima, um realce leve. Fica no lugar da seleção do List, que pinta com a cor
     /// de destaque do macOS (e cinza fora de foco), não com a do app.

@@ -2,7 +2,7 @@
 # jfy: menu do Journify que manda a task para o Claude Code (/pipeline) e registra o tempo.
 # Roda dentro de um tmux próprio (socket "jfy"): aba 0 = menu, uma aba por task rodando.
 # ponytail: /usr/bin/python3 (o do macOS) de propósito: o Python do python.org costuma vir sem certificados SSL.
-import base64, contextlib, itertools, json, os, re, select, shutil, signal, subprocess, sys, textwrap, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
+import base64, contextlib, itertools, json, os, re, select, shlex, shutil, signal, subprocess, sys, textwrap, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
 from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~/.jfy")
@@ -2379,7 +2379,8 @@ def projeto_validar(ref):
         sys.exit(f"O Journify não deixou ver esse projeto: {e}")
     cfg = load()
     return {"id": pid, "tasks": len(ts), "exemplo": ts[0]["title"] if ts else None,
-            "nome": cfg["projetos"].get(pid, {}).get("nome"), "pastas": repos_de(cfg["projetos"][pid]) if pid in cfg["projetos"] else [],
+            "nome": cfg["projetos"].get(pid, {}).get("nome"), "github": cfg["projetos"].get(pid, {}).get("github"),
+            "contas_github": contas_gh()[1], "pastas": repos_de(cfg["projetos"][pid]) if pid in cfg["projetos"] else [],
             "journify": next((x["nome"] for x in projetos_journify()["projetos"] if x["jfy"] == pid), None)}
 
 
@@ -2402,9 +2403,58 @@ def projeto_salvar(dados):
     if not pastas:
         pastas = [os.path.join(SEM_REPO, pid)]
         os.makedirs(pastas[0], exist_ok=True)
-    cfg["projetos"][pid] = {"nome": nome, "repo": pastas[0], "repos": pastas}
+    conta = (d.get("github") or "").strip()
+    if conta and conta not in contas_gh()[1]:
+        sys.exit(f"A conta {conta} não está no gh deste Mac: adicione em Configurações › GitHub.")
+    if conta:  # antes de gravar: conta sem token não fica salva pela metade
+        ident = identidade_github(conta)
+        # ponytail: pasta que ainda não é repositório fica de fora; salve o projeto de novo depois do clone ou git init
+        for x in pastas:
+            if git(x, "rev-parse", "--git-dir").returncode == 0:
+                conta_no_repo(x, conta, ident)
+    cfg["projetos"][pid] = {"nome": nome, "repo": pastas[0], "repos": pastas, **({"github": conta} if conta else {})}
     save(cfg)
     return {"id": pid, "nome": nome, "pastas": pastas}
+
+
+def token_github(login):
+    """O token de uma conta do gh, sem trocar a conta ativa (que vale para o Mac todo)."""
+    return subprocess.run(["gh", "auth", "token", "-h", "github.com", "-u", login], capture_output=True, text=True).stdout.strip()
+
+
+def identidade_github(login):
+    """(nome, email) dos commits de uma conta: o nome e o email públicos dela ou, sem email público, o noreply do
+    GitHub (o commit aparece como dela do mesmo jeito)."""
+    tok = token_github(login)
+    if not tok:
+        sys.exit(f"Não achei o token da conta {login} no gh: entre de novo nela em Configurações › GitHub.")
+    r = subprocess.run(["gh", "api", "user"], capture_output=True, text=True, env=dict(os.environ, GH_TOKEN=tok))
+    if r.returncode:
+        sys.exit(f"O GitHub não respondeu pela conta {login}: {(r.stderr or r.stdout).strip()[:200]}")
+    u = json.loads(r.stdout)
+    return (u.get("name") or "").strip() or login, u.get("email") or f"{u['id']}+{login}@users.noreply.github.com"
+
+
+def conta_no_repo(pasta, login, ident):
+    """Prende o repositório a uma conta do GitHub, na config dele (vale para as worktrees também): os commits saem com
+    o nome e o email dela e o push usa o token dela, seja qual for a conta ativa do gh. O helper do gh não serve:
+    ele só entrega o token da conta ativa."""
+    if not re.fullmatch(r"[A-Za-z0-9-]+", login):
+        sys.exit(f"Conta do GitHub inválida: {login}")
+    chave, gh_bin = "credential.https://github.com.helper", shlex.quote(shutil.which("gh") or "gh")
+    git(pasta, "config", "--local", "--unset-all", chave)
+    for k, v in (("user.name", ident[0]), ("user.email", ident[1]), ("jfy.github", login), (chave, "")):  # "" zera os helpers globais
+        git(pasta, "config", "--local", "--add" if k == chave else "--replace-all", k, v)
+    git(pasta, "config", "--local", "--add", chave,
+        f'!f() {{ test "$1" = get || return 0; echo username={login}; echo "password=$({gh_bin} auth token -h github.com -u {login})"; }}; f')
+
+
+def env_github(pasta):
+    """O ambiente do Claude numa pasta de projeto com conta do GitHub: o GH_TOKEN dela, para o gh (gh pr create da
+    pipeline) usar a conta do projeto e não a ativa. None: herda o ambiente."""
+    login = git(pasta, "config", "jfy.github").stdout.strip() if os.path.isdir(pasta) else ""
+    tok = login and token_github(login)
+    return dict(os.environ, GH_TOKEN=tok) if tok else None
 
 
 def tasks_json(pid, todas=False):
@@ -3774,7 +3824,7 @@ def pr_abrir(pasta):
               "vêm das linhas 'Journify:' dos commits da branch (git log <base>..HEAD); o resto (template do repo, teto de 8 pontos, "
               "limite de 2 PRs por pessoa, plano de testes por critério da task, push sem --force) vale como lá. Mostre o título e o "
               "corpo e espere eu aprovar antes do gh pr create, e de novo antes de comentar o link nas tasks do Journify.")
-    subprocess.call(["claude", *com_modelo("pr"), pedido], cwd=pasta)
+    subprocess.call(["claude", *com_modelo("pr"), pedido], cwd=pasta, env=env_github(pasta))
 
 
 def app(f, *a):
@@ -3849,7 +3899,8 @@ def configurar(cfg, pid):
     nome = ask(f"Nome do projeto{f' [{padrao}]' if padrao else ''} (0 volta): ", padrao) or pid
     if nome == "0":
         return False
-    cfg["projetos"][pid] = {"nome": nome, "repo": repos[0], "repos": repos}
+    # a conta do GitHub (escolhida no app) fica; repo novo daqui só ganha ela salvando o projeto no app
+    cfg["projetos"][pid] = {"nome": nome, "repo": repos[0], "repos": repos, **({"github": p["github"]} if p.get("github") else {})}
     save(cfg)
     return True
 
@@ -4006,7 +4057,7 @@ def abrir_claude(cwd, contexto, pedido, locks, sid=None, extra=(), atividade="co
     try:
         subprocess.call(["claude", *com_modelo(atividade), "--append-system-prompt", contexto, *extra, "--add-dir", CTX_DIR]
                         + (["--session-id", sid] if sid else [])
-                        + (["--", pedido] if pedido else []), cwd=cwd)
+                        + (["--", pedido] if pedido else []), cwd=cwd, env=env_github(cwd))
     finally:
         for lock in locks or ():
             os.remove(lock)
@@ -5244,6 +5295,17 @@ def selftest():
     for a in (["init", "-q", "-b", "main"], ["config", "user.name", "t"], ["config", "user.email", "t@t"],
               ["commit", "-q", "--allow-empty", "-m", "base"]):
         g(*a)
+    for _ in range(2):  # conta do GitHub do projeto: de novo não duplica o helper
+        conta_no_repo(rp, "fulano", ("Fulano", "1+fulano@users.noreply.github.com"))
+    hs = g("config", "--local", "--get-all", "credential.https://github.com.helper").stdout.split("\n")
+    assert hs[0] == "" and "username=fulano" in hs[1] and "auth token -h github.com -u fulano" in hs[1] and len(hs) == 3, hs
+    assert g("config", "user.email").stdout.strip() == "1+fulano@users.noreply.github.com" and g("config", "jfy.github").stdout.strip() == "fulano"
+    assert env_github("/nao/existe") is None
+    try:
+        conta_no_repo(rp, "x; rm -rf ~", ("x", "x@x"))
+        assert False, "aceitou conta com shell"
+    except SystemExit:
+        pass
     open(os.path.join(rp, "a.txt"), "w").write("a\n")
     open(os.path.join(rp, "b.txt"), "w").write("b\n")
     reais = {"pastas_projetos": globals()["pastas_projetos"]}
