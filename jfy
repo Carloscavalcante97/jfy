@@ -2494,9 +2494,9 @@ def task_mudar(tid, campo, valor, extra=""):
     mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
 
 
-def detalhes_tasks(tids, validade=30 * 60, forcar=False):
+def detalhes_tasks(tids, validade=4 * 3600, forcar=False):
     """O que a lista do MCP não traz e só vem na task inteira (obter_task): os pontos e os anexos. Guarda até 24 h em
-    RUN_DIR/tasks-detalhe.json; cada uso diz quanto aceita (os pontos, 30 min; a aba Arquivos, 24 h), e forcar lê tudo
+    RUN_DIR/tasks-detalhe.json; cada uso diz quanto aceita (os pontos, 4 h; a aba Arquivos, 24 h), e forcar lê tudo
     de novo. Só busca o que falta, 4 por vez; a que falhar tenta de novo, uma por vez (muitas chamadas
     seguidas e o Journify recusa todas). As que o Journify recusou ficam de fora da resposta."""
     from concurrent.futures import ThreadPoolExecutor
@@ -5291,11 +5291,11 @@ def selftest():
         assert False, "enviou sem destinatário"
     except SystemExit:
         pass
-    # detalhe das tasks: o guardado há 1 h vale para a aba Arquivos (24 h), não para os pontos (30 min); forcar lê de novo
+    # detalhe das tasks: o guardado há 5 h vale para a aba Arquivos (24 h), não para os pontos (4 h); forcar lê de novo
     lidas, run_real = [], RUN_DIR
     globals().update(RUN_DIR=os.path.join(run_real, "teste-detalhe"), mcp=lambda tool, **kw: lidas.append(kw["taskId"]) or {"task": {}})
     os.makedirs(RUN_DIR, exist_ok=True)
-    json.dump({"a": {"em": time.time() - 3600, "pontos": 1, "anexos": []}}, open(os.path.join(RUN_DIR, "tasks-detalhe.json"), "w"))
+    json.dump({"a": {"em": time.time() - 5 * 3600, "pontos": 1, "anexos": []}}, open(os.path.join(RUN_DIR, "tasks-detalhe.json"), "w"))
     assert detalhes_tasks(["a"], validade=24 * 3600)["a"]["pontos"] == 1 and lidas == []
     detalhes_tasks(["a"])
     detalhes_tasks(["a"], validade=24 * 3600, forcar=True)
