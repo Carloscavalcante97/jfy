@@ -295,7 +295,7 @@ struct Principal: View {
                 }
                 mostrar(.temas) { TemasTela(ativa: tela == .temas) }
                 mostrar(.configuracoes) { ConfiguracoesTela(ativa: tela == .configuracoes, irParaJFY: irParaJFY) }
-                mostrar(.creditos) { CreditosTela() }
+                mostrar(.creditos) { CreditosTela(ativa: tela == .creditos) }
             }
         }
         .toolbar {
