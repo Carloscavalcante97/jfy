@@ -37,6 +37,8 @@ O `install.sh`:
   - **notificação das 7h**: um LaunchAgent;
   - **app do jfy para o Mac**: monta o `jfy.app` em `/Applications` (precisa do Xcode). Veja [App do Mac](#app-do-mac).
 
+Para atualizar depois: **`jfy --update`**. Ele traz a versão nova do GitHub (`git pull` do branch em que o seu clone está), mostra o que chegou e roda o `install.sh` sem as perguntas dos extras (o que você já ligou é atualizado, o resto fica como está): religa o comando, atualiza a pipeline e remonta o app, se ele estiver instalado. Com o app aberto, ele fecha e abre de novo na versão nova (as tasks continuam no tmux). Já na versão mais nova, não faz nada.
+
 ### 2. Rodar
 
 ```bash
@@ -72,7 +74,7 @@ O jfy também é um app (`jfy.app`): o mesmo jfy do terminal, mais as abas de pr
    - **Horas**: o dia como vai para o Journify; "Lançar no Journify…" faz o lançamento pelo Claude.
    - **Agenda**, **Emails**, **Portas**, **Uso da IA**, **Chat**, **Notificações**, **Temas**, **Configurações** e **Créditos**: veja [App do Mac](#app-do-mac).
 6. **Feche sem medo.** Fechar a janela deixa o app em segundo plano (clique no ícone do Dock para voltar), e as notificações levam direto para a aba certa. ⌘Q encerra o app, mas as tasks continuam rodando no tmux.
-7. **Atualize** depois de um `git pull`: `~/jfy/app/build.sh` (o `install.sh` faz isso sozinho se o app estiver instalado).
+7. **Atualize** com `jfy --update`: traz a versão nova, reinstala e reabre o app.
 
 Se o app abrir sem janela, clique no ícone dele no Dock. Se ele pedir permissões de novo a cada versão, rode `~/jfy/app/build.sh` para recriar a assinatura local.
 
@@ -214,7 +216,7 @@ O `jfy.app` é o jfy numa janela própria, com ícone no Dock e no Spotlight, na
 - **Configurações**: as contas ligadas ao jfy, que valem também no terminal, e o **modelo do Claude de cada atividade** (veja [Modelos do Claude](#modelos-do-claude)). **Google** (Agenda e Gmail): a conta conectada, **Trocar de conta** (o Google deixa escolher outra) e **Desconectar** (revoga o acesso do jfy no Google e zera o que era da conta antiga: não lidos, contatos e eventos vistos). **GitHub**: as contas do `gh`, com a que está em uso; **Usar** troca, **Sair** tira uma conta deste Mac, **Sair de todas** tira todas, e **Adicionar conta** abre o `gh auth login` numa aba (sair não revoga o token no GitHub: isso é em github.com/settings/applications). **Journify**: o MCP conectado (quantas tasks suas ele enxerga e o fim do token, porque o MCP não diz de quem é o token), **Trocar token** (abre as Configurações do Journify; o jfy testa o token novo antes de trocar, então um token recusado não derruba o que funcionava) e **Desconectar**. O que tira acesso pede confirmação.
 - **Créditos**: quem fez o jfy. José Carlos Paiva criou o jfy no terminal; Antonio Cavalcante trouxe a versão app e as melhorias, para deixar o dia a dia de trabalho na Souv mais leve. Com a foto dos dois e o "WE WERE HERE." no fim.
 
-A janela tem um tamanho mínimo, e as colunas laterais (projetos, tasks, repositórios, PRs, emails, conversas) encolhem com ela, para nenhuma tela ficar espremida. Precisa do macOS 15 ou mais novo. Para montar ou atualizar depois de um `git pull`: `./app/build.sh` (o `./install.sh` já faz isso se o app estiver instalado). A assinatura é local, vale para este Mac.
+A janela tem um tamanho mínimo, e as colunas laterais (projetos, tasks, repositórios, PRs, emails, conversas) encolhem com ela, para nenhuma tela ficar espremida. Precisa do macOS 15 ou mais novo. Para atualizar: `jfy --update` (traz a versão nova e remonta o app). Para só remontar o app: `./app/build.sh`. A assinatura é local, vale para este Mac.
 
 ### Notificação das 7h
 

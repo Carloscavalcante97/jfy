@@ -61,7 +61,8 @@ else
 fi
 
 # ---------- extras: cada um pergunta antes; o que já está ligado só é atualizado, sem perguntar de novo ----------
-quer() { local r; read -r -p "  $1 (s/n) [s] " r </dev/tty || return 1; [ "${r:-s}" = s ]; }
+# jfy --update roda sem perguntar: o que já está ligado é atualizado, o resto fica como está
+quer() { [ -n "$JFY_SEM_PERGUNTAS" ] && return 1; local r; read -r -p "  $1 (s/n) [s] " r </dev/tty || return 1; [ "${r:-s}" = s ]; }
 ja() { grep -qs -- "$1" "$HOME/.claude/settings.json"; }
 ajustar() {  # ajustar ia|aviso: liga a barra de uso da IA ou o aviso do Claude no ~/.claude/settings.json
   /usr/bin/python3 - "$1" "$DIR/jfy" <<'EOF'

@@ -1183,6 +1183,32 @@ def entrar():
     subprocess.run(TMUX + ["display-message", "jfy: nenhuma reunião com link pela frente hoje"])
 
 
+def atualizar():
+    """jfy --update: traz a versão nova do git (o branch em que o seu clone está) e reinstala pelo install.sh, sem as
+    perguntas dos extras (o que já está ligado é atualizado; o resto fica como está). O install.sh religa o comando,
+    atualiza a pipeline e remonta o app, se ele estiver instalado. O app aberto fecha e abre de novo na versão nova."""
+    repo, app = os.path.dirname(SELF), ["pgrep", "-f", "jfy.app/Contents/MacOS/JFY"]
+    antes = git(repo, "rev-parse", "HEAD").stdout.strip()
+    if subprocess.run(["git", "-C", repo, "pull", "--ff-only"]).returncode:
+        sys.exit(c("Não consegui buscar a versão nova (o erro do git está acima). Alteração sua no ~/jfy que conflita, "
+                   "ou o branch não segue nenhum do GitHub?", 203))
+    novos = git(repo, "log", "--format=  · %s", f"{antes}..HEAD").stdout.rstrip()
+    if not novos:
+        return print(c("✓", 78, True) + " o jfy já está na versão mais nova")
+    print(c("O que chegou:", 39, True) + "\n" + novos + "\n", flush=True)  # antes da saída do install.sh
+    aberto = subprocess.run(app, capture_output=True).returncode == 0
+    if subprocess.run([os.path.join(repo, "install.sh")], env=dict(os.environ, JFY_SEM_PERGUNTAS="1")).returncode:
+        sys.exit(c("O install.sh parou (o erro está acima). O código novo já está no ~/jfy: rode ~/jfy/install.sh de novo.", 203))
+    if aberto:  # rodando no terminal do app, este processo está no tmux: continua vivo com o app fechado e abre ele de novo
+        subprocess.run(["osascript", "-e", 'tell application id "dev.jfy.mac" to quit'], capture_output=True)
+        for _ in range(40):  # até 10 s para fechar
+            if subprocess.run(app, capture_output=True).returncode:
+                break
+            time.sleep(0.25)
+        subprocess.run(["open", "-b", "dev.jfy.mac"])
+        print(c("✓", 78, True) + " app reaberto na versão nova")
+
+
 def atalhos():
     """Ctrl-b c: todos os comandos do jfy num popup do tmux; qualquer tecla fecha."""
     import termios, tty
@@ -4681,6 +4707,8 @@ def main():
         return sessao(a[1])
     if a[:1] == ["--inicio"]:
         return inicio(a[1])
+    if a[:1] == ["--update"]:  # busca a versão nova no git e reinstala
+        return atualizar()
     if a[:1] == ["--relogio"]:
         return relogio()
     if a[:1] == ["--pausar"]:  # Ctrl-b p
