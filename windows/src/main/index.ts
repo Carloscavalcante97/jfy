@@ -93,6 +93,16 @@ function criarJanela() {
     }
   })
   janela.on('closed', () => (janela = null))
+  // o corretor do Chromium, em português: sublinha o erro de ortografia nos campos e, no clique direito, as sugestões
+  janela.webContents.session.setSpellCheckerLanguages(['pt-BR'])
+  janela.webContents.on('context-menu', (_e, p) => {
+    if (!p.isEditable || !p.misspelledWord) return
+    Menu.buildFromTemplate([
+      ...p.dictionarySuggestions.slice(0, 5).map((s) => ({ label: s, click: () => janela?.webContents.replaceMisspelling(s) })),
+      ...(p.dictionarySuggestions.length ? [{ type: 'separator' as const }] : []),
+      { label: 'Adicionar ao dicionário', click: () => janela?.webContents.session.addWordToSpellCheckerDictionary(p.misspelledWord) }
+    ]).popup()
+  })
   janela.webContents.setWindowOpenHandler(({ url }) => {
     if (/^(https?|mailto):/i.test(url)) shell.openExternal(url)
     return { action: 'deny' }

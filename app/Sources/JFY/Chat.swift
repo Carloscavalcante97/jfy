@@ -1,7 +1,9 @@
+import AppKit
 import SwiftUI
 
 /// Chat do time do Journify: as conversas entre colaboradores. O app só desenha; quem fala com o Journify (pelo MCP) é
-/// o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida lá), `--chat <id> <texto>` (envia).
+/// o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida lá), `--chat <id> <texto> [ids]` (envia,
+/// avisando quem foi marcado com @) e `--chat-ia` (o Melhorar, pelo Claude).
 struct ChatTela: View {
     /// Só busca com a tela à vista: abrir uma conversa marca como lida no Journify, e ninguém leu nada com a tela escondida.
     let ativa: Bool
@@ -9,6 +11,7 @@ struct ChatTela: View {
 
     struct Mensagem: Decodable, Identifiable, Equatable {
         let id, autor, texto: String
+        let autorId: String?  // a que você acabou de mandar não tem
         let quando: String?
         let minha: Bool?
     }
@@ -26,12 +29,30 @@ struct ChatTela: View {
         let ultima: Ultima?
     }
 
+    /// Quem dá para marcar com @.
+    struct Pessoa: Identifiable, Hashable { let id, nome: String }
+
+    private static let maxFixas = 3  // por tipo: 3 diretas e 3 grupos
+    private static let emojis = ["👍", "🙏", "😂", "✅", "🎉", "❤️", "👀", "🚀", "🔥", "😅", "🤝", "💡"]
+
+    @AppStorage("chat.aba") private var aba = "direta"  // "direta" ou "canal" (os grupos)
+    @AppStorage("chat.favoritas") private var fixasTxt = ""  // ids das fixadas, um por linha, na ordem em que foram fixadas
     @State private var conversas: [Conversa] = []
     @State private var selecionada: String?
     @State private var mensagens: [Mensagem] = []
     @State private var texto = ""
     @State private var enviando = false
-    @State private var erroEnvio: String?
+    @State private var melhorando = false
+    @State private var desfazer: (antes: String, depois: String, nota: String)?  // o Desfazer do Melhorar e do Corrigir
+    @State private var corrigindo = false
+    @State private var corretorOk = false  // o LanguageTool está instalado neste computador (Configurações)?
+    @AppStorage("chat.corrigirAoEnviar") private var corrigirAoEnviar = false
+    @State private var marcados: [Pessoa] = []  // escolhidos na sugestão do @
+    @State private var fechadaEm: String?  // o texto quando o Esc fechou a sugestão do @ (reabre quando o texto muda)
+    @State private var paleta = false
+    @State private var sobre: String?  // a conversa com o mouse em cima: mostra a estrela
+    @State private var avisoFixa: String?
+    @State private var erro: String?
     @State private var fora: String?  // por que o chat não carregou (sem rede, MCP sem token…)
     @FocusState private var focado: Bool
 
@@ -73,41 +94,109 @@ struct ChatTela: View {
             nav.abrirConversa = nil
             selecionada = cid
             await carregarConversas()
+            if let c = conversas.first(where: { $0.id == cid }) { aba = tipo(c) }  // para ela aparecer na lista
         }
     }
 
     // ---------- lista de conversas ----------
+    private func tipo(_ c: Conversa) -> String { c.tipo == "canal" ? "canal" : "direta" }
+    private var fixas: [String] { fixasTxt.split(separator: "\n").map(String.init) }
+
+    /// As da aba: as fixadas primeiro (na ordem em que foram fixadas) e o resto na ordem do Journify. Fixada que sumiu
+    /// da lista fica guardada e só não aparece.
+    private var daAba: (fixadas: [Conversa], resto: [Conversa]) {
+        let doTipo = conversas.filter { tipo($0) == aba }
+        let fixadas = Array(fixas.compactMap { id in doTipo.first { $0.id == id } }.prefix(Self.maxFixas))
+        return (fixadas, doTipo.filter { !fixadas.contains($0) })
+    }
+
+    private func rotulo(_ nome: String, _ t: String) -> String {
+        let n = conversas.filter { tipo($0) == t }.reduce(0) { $0 + ($1.naoLidas ?? 0) }
+        return n > 0 ? "\(nome) · \(n)" : nome
+    }
+
     private var lista: some View {
-        List(conversas) { c in
-            HStack(alignment: .top, spacing: 10) {
-                Avatar(nome: c.nome, canal: c.tipo == "canal")
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(c.nome).fontWeight((c.naoLidas ?? 0) > 0 ? .semibold : .regular).lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text(hora(c.ultima?.quando)).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(c.ultima.map { ($0.autor.map { "\($0): " } ?? "") + $0.texto } ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer(minLength: 4)
-                        if let n = c.naoLidas, n > 0 {
-                            Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Capsule().fill(Souv.primaria))
+        let (fixadas, resto) = daAba
+        return VStack(alignment: .leading, spacing: 6) {
+            Segmentos(selecao: $aba, opcoes: [.init(valor: "direta", rotulo: rotulo("Diretas", "direta")),
+                                              .init(valor: "canal", rotulo: rotulo("Grupos", "canal"))], cheio: true)
+                .padding([.horizontal, .top], 10)
+            if let avisoFixa {
+                Text(avisoFixa).font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+            }
+            List {
+                if fixadas.isEmpty {
+                    ForEach(resto) { linha($0) }
+                } else {
+                    Section("Fixadas") { ForEach(fixadas) { linha($0) } }
+                    Section("Conversas") { ForEach(resto) { linha($0) } }
+                }
+            }
+            .listStyle(.sidebar)
+            .listaSouv()
+        }
+        .background(Souv.superficie)
+        .onChange(of: aba) { avisoFixa = nil }
+    }
+
+    private func linha(_ c: Conversa) -> some View {
+        let fixa = fixas.contains(c.id)
+        return HStack(alignment: .top, spacing: 10) {
+            Avatar(nome: c.nome, canal: c.tipo == "canal")
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(c.nome).fontWeight((c.naoLidas ?? 0) > 0 ? .semibold : .regular).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if fixa || sobre == c.id {
+                        Button { alternarFixa(c) } label: {
+                            Image(systemName: fixa ? "star.fill" : "star").foregroundStyle(fixa ? Souv.destaque : Souv.texto2)
                         }
+                        .buttonStyle(.souvIcone).font(.caption)
+                        .help(fixa ? "Tirar do topo" : "Fixar no topo (até 3 diretas e 3 grupos)")
+                    }
+                    Text(hora(c.ultima?.quando)).font(.caption2).foregroundStyle(.secondary)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(c.ultima.map { ($0.autor.map { "\($0): " } ?? "") + $0.texto } ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    if let n = c.naoLidas, n > 0 {
+                        Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Capsule().fill(Souv.primaria))
                     }
                 }
             }
-            .padding(.vertical, 4)
-            .linhaSouv(selecionada == c.id) { selecionada = c.id }
         }
-        .listStyle(.sidebar)
-        .listaSouv()
+        .padding(.vertical, 4)
+        .onHover { sobre = $0 ? c.id : sobre == c.id ? nil : sobre }
+        .linhaSouv(selecionada == c.id) { selecionada = c.id }
+        .menuSouv {
+            Button(fixa ? "Tirar do topo" : "Fixar no topo", systemImage: fixa ? "star.slash" : "star") { alternarFixa(c) }
+        }
+    }
+
+    private func alternarFixa(_ c: Conversa) {
+        var f = fixas
+        if let i = f.firstIndex(of: c.id) {
+            f.remove(at: i)
+        } else if conversas.filter({ tipo($0) == tipo(c) && f.contains($0.id) }).count >= Self.maxFixas {
+            // só contam as que estão na lista: uma fixada que sumiu não ocupa a vaga
+            avisoFixa = tipo(c) == "canal" ? "Até 3 conversas fixas em grupos (e 3 em diretas): tire uma para fixar esta."
+                : "Até 3 conversas fixas em diretas (e 3 em grupos): tire uma para fixar esta."
+            return
+        } else {
+            f.append(c.id)
+        }
+        avisoFixa = nil
+        fixasTxt = f.joined(separator: "\n")
     }
 
     // ---------- uma conversa ----------
     private func conversa(_ c: Conversa) -> some View {
-        VStack(spacing: 0) {
+        // quem escreveu na conversa: o "@Nome" deles fica em destaque nas mensagens
+        let nomes = Set(mensagens.filter { $0.autorId != nil }.map(\.autor)).sorted { $0.count > $1.count }
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Avatar(nome: c.nome, canal: c.tipo == "canal")
                 Text(c.nome).font(.headline)
@@ -120,8 +209,17 @@ struct ChatTela: View {
                     LazyVStack(alignment: .leading, spacing: 4) {
                         ForEach(Array(mensagens.enumerated()), id: \.element.id) { i, m in
                             // o nome do autor só na primeira de uma sequência dele
-                            Linha(m: m, mostrarAutor: m.minha != true && (i == 0 || mensagens[i - 1].autor != m.autor))
+                            Linha(m: m, mostrarAutor: m.minha != true && (i == 0 || mensagens[i - 1].autor != m.autor), nomes: nomes)
                                 .id(m.id)
+                                .menuSouv {
+                                    if c.membro != false {
+                                        Button("Responder", systemImage: "arrowshape.turn.up.left") { responder(m) }
+                                    }
+                                    Button("Copiar texto", systemImage: "doc.on.doc") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(m.texto, forType: .string)
+                                    }
+                                }
                         }
                     }
                     .padding(16)
@@ -130,8 +228,8 @@ struct ChatTela: View {
                     if let u = mensagens.last { proxy.scrollTo(u.id, anchor: .bottom) }
                 }
             }
-            if let erroEnvio {
-                Label(erroEnvio, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
+            if let erro {
+                Label(erro, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
             }
             Divider()
@@ -139,21 +237,196 @@ struct ChatTela: View {
                 Label("Você não participa desta conversa: só leitura.", systemImage: "eye")
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(14)
             } else {
-                HStack(alignment: .bottom, spacing: 10) {
-                    TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
-                        .textFieldStyle(.plain).lineLimit(1...6).focused($focado).onSubmit(enviar)
-                    Button(action: enviar) {
-                        if enviando { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
-                    .disabled(!podeEnviar)
-                    .help("Enviar (Enter)")
-                }
-                .padding(14)
+                escrever(c)
             }
         }
         .onAppear { focado = true }
+    }
+
+    private func escrever(_ c: Conversa) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if consulta != nil { sugestoes }
+            if melhorando {
+                Text("O Claude está melhorando a mensagem…").font(.caption).foregroundStyle(Souv.texto2)
+            } else if let d = desfazer, d.depois == texto {
+                HStack(spacing: 6) {
+                    Text(d.nota).foregroundStyle(Souv.texto2)
+                    Button("Desfazer") { texto = d.antes; desfazer = nil; focado = true }.buttonStyle(.souvLink)
+                }
+                .font(.caption)
+            }
+            HStack(alignment: .bottom, spacing: 10) {
+                Button { paleta.toggle() } label: { Label("Emojis", systemImage: "face.smiling").labelStyle(.iconOnly).font(.title3) }
+                    .buttonStyle(.souvIcone).disabled(melhorando).help("Emojis")
+                    .popover(isPresented: $paleta, arrowEdge: .top) { paletaEmojis }
+                TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
+                    .textFieldStyle(.plain).lineLimit(1...6).focused($focado).disabled(melhorando || corrigindo)
+                    .onSubmit { if let p = sugeridas.first { mencionar(p) } else { enviar() } }  // Enter: escolhe a sugestão do @ ou envia
+                    .onKeyPress(.return, phases: .down) { k in
+                        // Shift+Enter quebra a linha onde está o cursor; o Enter sozinho segue para o onSubmit
+                        guard k.modifiers.contains(.shift) else { return .ignored }
+                        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
+                        return .handled
+                    }
+                    .onKeyPress(.escape) {
+                        guard consulta != nil else { return .ignored }
+                        fechadaEm = texto
+                        return .handled
+                    }
+                Button { Task { await corrigir() } } label: {
+                    if corrigindo { ProgressView().controlSize(.small) } else {
+                        Label("Corrigir o português", systemImage: "textformat.abc.dottedunderline").labelStyle(.iconOnly).font(.title3)
+                    }
+                }
+                .buttonStyle(.souvIcone)
+                .disabled(!podeMelhorar || !corretorOk)
+                .help(corretorOk ? "Corrige o português sem IA, neste Mac (crase, concordância, acentos)"
+                      : "Corrigir o português: instale o corretor em Configurações")
+                Button(action: melhorar) {
+                    if melhorando { ProgressView().controlSize(.small) } else {
+                        Label("Melhorar com o Claude", systemImage: "sparkles").labelStyle(.iconOnly).font(.title3)
+                    }
+                }
+                .buttonStyle(.souvIcone)
+                .disabled(!podeMelhorar)
+                .help("Melhora a mensagem com o Claude (usa tokens)")
+                Button(action: enviar) {
+                    if enviando { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
+                .disabled(!podeEnviar)
+                .help("Enviar (Enter; Shift+Enter quebra a linha)")
+            }
+            if corretorOk { Toggle("Corrigir ao enviar (sem IA)", isOn: $corrigirAoEnviar).font(.caption).foregroundStyle(Souv.texto2) }
+        }
+        .padding(14)
+        .task {  // o Corrigir só aparece com o corretor instalado
+            struct Corretor: Decodable { let instalado: Bool }
+            let (r, _): (Corretor?, String?) = await JFY.ler(["--corretor-json"])
+            corretorOk = r?.instalado ?? false
+        }
+    }
+
+    private var paletaEmojis: some View {
+        // ponytail: o emoji vai para o fim do texto (o TextField do SwiftUI não diz onde está o cursor). Reagir a uma
+        // mensagem com emoji não existe no MCP do Journify ainda.
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(34), spacing: 2), count: 6), spacing: 2) {
+            ForEach(Self.emojis, id: \.self) { e in
+                Button { texto += e; paleta = false; focado = true } label: {
+                    Text(e).font(.title2).frame(width: 34, height: 34).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+        .background(Souv.superficie)
+    }
+
+    // ---------- @ ----------
+    /// Quem dá para marcar com @, quem falou por último primeiro. ponytail: o MCP do Journify não lista os membros da
+    /// conversa, então são os que escreveram nas mensagens carregadas (as 100 últimas), sem você; os membros de verdade
+    /// quando o MCP listar.
+    private var pessoas: [Pessoa] {
+        var vistos = Set<String>()
+        return mensagens.reversed().compactMap { m in
+            guard m.minha != true, let id = m.autorId, vistos.insert(id).inserted else { return nil }
+            return Pessoa(id: id, nome: m.autor)
+        }
+    }
+
+    private func bate(_ nome: String, _ q: String) -> Bool {
+        q.isEmpty || nome.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    /// O que vem depois do último @ do campo enquanto ainda pode ser um nome: o @ no começo ou depois de um espaço (um
+    /// email não abre a lista), sem quebra de linha e, com espaço, só se ainda bate com alguém ("@Ana Pa").
+    private var consulta: String? {
+        guard texto != fechadaEm, let i = texto.lastIndex(of: "@"),
+              i == texto.startIndex || texto[texto.index(before: i)].isWhitespace else { return nil }
+        let q = String(texto[texto.index(after: i)...])
+        guard !q.contains(where: \.isNewline) else { return nil }
+        return !q.contains(where: \.isWhitespace) || pessoas.contains(where: { bate($0.nome, q) }) ? q : nil
+    }
+
+    private var sugeridas: [Pessoa] { consulta.map { q in pessoas.filter { bate($0.nome, q) } } ?? [] }
+
+    @ViewBuilder private var sugestoes: some View {
+        if pessoas.isEmpty {
+            Label("Ninguém para sugerir: só aparece quem já escreveu nesta conversa", systemImage: "at")
+                .font(.caption).foregroundStyle(Souv.texto2)
+        } else if !sugeridas.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(sugeridas.prefix(6)) { p in
+                    LinhaSelect(cor: Avatar.cor(p.nome), rotulo: p.nome, marcado: false) { mencionar(p) }
+                }
+            }
+            .padding(4)
+            .frame(maxWidth: 280, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Souv.superficie))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Souv.borda))
+        }
+    }
+
+    /// Troca o "@texto" do fim do campo por "@Nome ".
+    private func mencionar(_ p: Pessoa) {
+        guard let i = texto.lastIndex(of: "@") else { return }
+        texto = String(texto[..<i]) + "@\(p.nome) "
+        if !marcados.contains(p) { marcados.append(p) }
+        focado = true
+    }
+
+    // ---------- responder, melhorar ----------
+    /// O MCP do Journify ainda não responde em thread: a resposta leva a mensagem citada ("> Autor: trecho") no começo.
+    private func responder(_ m: Mensagem) {
+        let corpo = m.texto.split(separator: "\n").filter { !$0.hasPrefix("> ") }.joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        let trecho = corpo.count > 80 ? corpo.prefix(80).trimmingCharacters(in: .whitespaces) + "…" : corpo
+        texto = "> \(m.autor): \(trecho)\n\n" + texto
+        focado = true
+    }
+
+    private var podeMelhorar: Bool { !melhorando && !corrigindo && !enviando && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    /// O Corrigir, sem IA e sem tokens: o LanguageTool deste Mac (ortografia, acentos, crase, concordância, mas/mais).
+    /// Devolve quantas correções fez.
+    @discardableResult private func corrigir() async -> Int {
+        guard podeMelhorar, corretorOk else { return 0 }
+        let antes = texto
+        corrigindo = true
+        erro = nil
+        struct Correcao: Decodable { let texto: String; let correcoes: [Item]; struct Item: Decodable { let de, para: String } }
+        let (r, msg): (Correcao?, String?) = await JFY.ler(["--corrigir"], entrada: antes)
+        corrigindo = false
+        DispatchQueue.main.async { focado = true }
+        guard texto == antes else { return 0 }  // o campo mudou no meio: não pisa no que está lá
+        guard let r else { erro = msg; return 0 }
+        let n = r.correcoes.count
+        if n > 0 {
+            texto = r.texto
+            desfazer = (antes, r.texto, (n == 1 ? "1 correção" : "\(n) correções") + " do corretor" + (corrigirAoEnviar ? ": Enter de novo envia." : "."))
+        }
+        return n
+    }
+
+    private func melhorar() {
+        guard podeMelhorar else { return }
+        let antes = texto
+        melhorando = true
+        erro = nil
+        Task {
+            struct Texto: Decodable { let texto: String }
+            let (r, msg): (Texto?, String?) = await JFY.ler(["--chat-ia"], entrada: antes)
+            melhorando = false
+            DispatchQueue.main.async { focado = true }  // depois de o campo voltar a ficar ativo
+            guard texto == antes else { return }  // o campo mudou no meio (Responder): não pisa no que está lá
+            if let r {
+                texto = r.texto
+                desfazer = (antes, r.texto, "Melhorada pelo Claude.")
+            } else {
+                erro = msg
+            }
+        }
     }
 
     private func desconectado(_ motivo: String) -> some View {
@@ -167,7 +440,7 @@ struct ChatTela: View {
     }
 
     // ---------- jfy --chat ----------
-    private var podeEnviar: Bool { !enviando && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var podeEnviar: Bool { !enviando && !melhorando && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private func carregarConversas() async {
         let r = await JFY.rodar(["--chat"])
@@ -178,7 +451,10 @@ struct ChatTela: View {
         }
         fora = nil
         conversas = lista
-        if selecionada == nil || !lista.contains(where: { $0.id == selecionada }) { selecionada = lista.first?.id }
+        if selecionada == nil || !lista.contains(where: { $0.id == selecionada }) {
+            let (fixadas, resto) = daAba
+            selecionada = (fixadas + resto).first?.id
+        }
     }
 
     private func carregarMensagens(_ cid: String) async {
@@ -189,20 +465,33 @@ struct ChatTela: View {
     }
 
     private func enviar() {
+        // corrigir ao enviar: com correção, ela aparece no campo e o próximo Enter envia (nada sai sem você ver)
+        if corrigirAoEnviar && corretorOk && desfazer?.depois != texto {
+            Task { if await corrigir() == 0 { enviarAgora() } }
+            return
+        }
+        enviarAgora()
+    }
+
+    private func enviarAgora() {
         let t = texto.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let cid = selecionada, !t.isEmpty, !enviando,
+        guard let cid = selecionada, !t.isEmpty, !enviando, !melhorando, !corrigindo,
               conversas.first(where: { $0.id == cid })?.membro != false else { return }
+        // avisa quem foi escolhido no @, se o "@Nome" ainda está no texto e a pessoa é desta conversa
+        let ids = marcados.filter { t.contains("@" + $0.nome) && pessoas.contains($0) }.map(\.id)
         enviando = true
-        erroEnvio = nil
+        erro = nil
+        desfazer = nil
         texto = ""
         Task {
-            let r = await JFY.rodar(["--chat", cid, t])
+            let r = await JFY.rodar(["--chat", cid, t] + (ids.isEmpty ? [] : [ids.joined(separator: ",")]))
             enviando = false
             if r.status == 0, let m: Mensagem = decodificar(r.saida) {
+                marcados = []
                 if selecionada == cid { mensagens.append(m) }
             } else {
                 texto = t  // não perde o que foi escrito
-                erroEnvio = motivo(r)
+                erro = motivo(r)
             }
         }
     }
@@ -222,6 +511,7 @@ struct ChatTela: View {
     private struct Linha: View {
         let m: Mensagem
         let mostrarAutor: Bool
+        let nomes: [String]  // os "@Nome" que ficam em destaque
         var body: some View {
             let minha = m.minha == true
             VStack(alignment: minha ? .trailing : .leading, spacing: 2) {
@@ -230,27 +520,67 @@ struct ChatTela: View {
                 }
                 HStack(alignment: .bottom, spacing: 6) {
                     if minha { Spacer(minLength: 80); Text(hora(m.quando)).font(.caption2).foregroundStyle(.tertiary) }
-                    Text(m.texto)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 12).padding(.vertical, 7)
-                        .foregroundStyle(minha ? Color.white : Color.primary)
-                        .background(RoundedRectangle(cornerRadius: 14).fill(minha ? Souv.primaria : Color.secondary.opacity(0.12)))
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(blocos.enumerated()), id: \.offset) { _, b in
+                            if b.citacao {
+                                HStack(spacing: 6) {
+                                    Capsule().fill(minha ? Color.white.opacity(0.6) : Souv.destaque).frame(width: 3)
+                                    Text(b.texto).foregroundStyle(minha ? Color.white.opacity(0.8) : Souv.texto2)
+                                }
+                                .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                Text(destacado(b.texto, minha: minha))
+                            }
+                        }
+                    }
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .foregroundStyle(minha ? Color.white : Color.primary)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(minha ? Souv.primaria : Color.secondary.opacity(0.12)))
                     if !minha { Text(hora(m.quando)).font(.caption2).foregroundStyle(.tertiary); Spacer(minLength: 80) }
                 }
             }
             .frame(maxWidth: .infinity, alignment: minha ? .trailing : .leading)
+        }
+
+        /// As linhas que começam com "> " (a citação do Responder) num bloco à parte; o resto, o texto.
+        private var blocos: [(citacao: Bool, texto: String)] {
+            var r: [(citacao: Bool, texto: String)] = []
+            for l in m.texto.split(separator: "\n", omittingEmptySubsequences: false) {
+                let c = l.hasPrefix("> "), t = String(c ? l.dropFirst(2) : l)
+                if r.last?.citacao == c { r[r.count - 1].texto += "\n" + t } else { r.append((c, t)) }
+            }
+            let limpos = r.map { (citacao: $0.citacao, texto: $0.texto.trimmingCharacters(in: .newlines)) }.filter { !$0.texto.isEmpty }
+            return limpos.isEmpty ? [(false, m.texto)] : limpos
+        }
+
+        /// O "@Nome" de quem escreveu na conversa em destaque. Na sua bolha (Vivid Blue) a cor de destaque sumiria no
+        /// claro: lá fica só o semibold.
+        private func destacado(_ s: String, minha: Bool) -> AttributedString {
+            var a = AttributedString(s)
+            for n in nomes {
+                var de = a.startIndex
+                while de < a.endIndex, let r = a[de...].range(of: "@" + n) {
+                    a[r].font = .body.weight(.semibold)
+                    if !minha { a[r].foregroundColor = Souv.destaque }
+                    de = r.upperBound
+                }
+            }
+            return a
         }
     }
 
     private struct Avatar: View {
         let nome: String
         let canal: Bool
+
+        /// Cor estável pelo nome (o hashValue do Swift muda a cada execução).
+        static func cor(_ nome: String) -> Color { SERIES[nome.unicodeScalars.reduce(0) { $0 + Int($1.value) } % SERIES.count] }
+
         var body: some View {
             let iniciais = canal ? "#" : nome.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased()
-            // cor estável pelo nome (o hashValue do Swift muda a cada execução)
-            let cor = SERIES[nome.unicodeScalars.reduce(0) { $0 + Int($1.value) } % SERIES.count]
             Text(iniciais).font(.caption.bold()).foregroundStyle(.white)
-                .frame(width: 30, height: 30).background(Circle().fill(cor))
+                .frame(width: 30, height: 30).background(Circle().fill(Self.cor(nome)))
         }
     }
 }

@@ -4073,6 +4073,150 @@ PEDIDO_EMAIL = {
 }
 
 
+# ---------- corretor de português sem IA: o LanguageTool rodando no próprio computador ----------
+# Opcional (~250 MB com o Java): no Mac pelo Homebrew (o install.sh pergunta), no Windows em ~/.jfy/languagetool (o app
+# instala por Configurações). Nada sai do computador e não gasta tokens. Pega ortografia, acento, crase, concordância,
+# vírgula e palavras confundidas (mas/mais, a/há); não reescreve frase (isso é o Melhorar, com o Claude).
+LT_PORTA, LT_DIR = 8081, os.path.join(HOME, "languagetool")
+LT_ZIP = "https://languagetool.org/download/LanguageTool-stable.zip"
+# o que o Corrigir não aplica: sugestão de estilo e de tipografia (aspas curvas, travessão) não é erro
+LT_FORA = {"STYLE", "TYPOGRAPHY", "REDUNDANCY", "REPETITIONS_STYLE", "REGIONALISMS", "PLAIN_ENGLISH"}
+
+
+def corretor_java():
+    """O java do LanguageTool no Windows: o do PATH ou o que o winget pôs (Temurin), que o app aberto ainda não vê."""
+    import glob
+    achados = sorted(glob.glob(os.path.expandvars(r"%ProgramFiles%\Eclipse Adoptium\*\bin\java.exe"))) if WIN else []
+    return shutil.which("java") or (achados[-1] if achados else None)
+
+
+def corretor_cmd():
+    """O comando que sobe o servidor do LanguageTool (sem a porta), ou None se ele não está instalado."""
+    import glob
+    brew = next((x for x in ("/opt/homebrew/opt/languagetool/bin/languagetool-server",
+                             "/usr/local/opt/languagetool/bin/languagetool-server") if os.path.exists(x)), None)
+    if brew:
+        return [brew]
+    jar = next(iter(sorted(glob.glob(os.path.join(LT_DIR, "*", "languagetool-server.jar")))), None)
+    java = corretor_java() if jar else None
+    # ponytail: 512 MB de memória bastam para o português; o servidor fica aberto até o computador desligar
+    return [java, "-Xmx512m", "-cp", jar, "org.languagetool.server.HTTPServer"] if java else None
+
+
+def corretor_vivo():
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"http://127.0.0.1:{LT_PORTA}/v2/languages", timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def corretor_subir():
+    """Sobe o servidor, se ainda não está de pé, e espera ele responder (a primeira vez leva uns segundos)."""
+    if corretor_vivo():
+        return
+    cmd = corretor_cmd()
+    if not cmd:
+        sys.exit("O corretor de português não está instalado: Configurações › Corretor de português.")
+    log = open(os.path.join(RUN_DIR, "languagetool.log"), "a")
+    subprocess.Popen([*cmd, "--port", str(LT_PORTA), "--allow-origin"], stdin=subprocess.DEVNULL, stdout=log, stderr=log, **FUNDO)
+    for _ in range(90):
+        time.sleep(0.5)
+        if corretor_vivo():
+            return
+    sys.exit("O corretor de português demorou para abrir. Tente de novo em instantes.")
+
+
+def corrigir(texto=None):
+    """jfy --corrigir, com o texto no stdin: o português corrigido pelo LanguageTool local. Devolve {texto, correcoes:
+    [{de, para, motivo}]}. Aplica a 1ª sugestão de cada erro, menos estilo e tipografia, e não mexe em @menção, link
+    nem em nome com maiúscula (o dicionário não conhece nome de gente e trocaria "Fabriely" por outra palavra)."""
+    texto = sys.stdin.read() if texto is None else texto
+    if not texto.strip():
+        return {"texto": texto, "correcoes": []}
+    corretor_subir()
+    # duas passadas: com a ortografia errada o LanguageTool não entende a frase ("Vou a reuniao as 14h" não acusa a
+    # crase); depois de acertar os acentos, a segunda acha crase, mas/mais e concordância
+    out, corr = texto, []
+    for _ in range(2):
+        out, mais = uma_correcao(out)
+        corr += mais
+        if not mais:
+            break
+    return {"texto": out, "correcoes": corr}
+
+
+def uma_correcao(texto):
+    """Uma passada do LanguageTool: (texto corrigido, [{de, para, motivo}])."""
+    dados = urllib.parse.urlencode({"text": texto, "language": "pt-BR"}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{LT_PORTA}/v2/check", dados)
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=60) as r:
+        achados = json.load(r).get("matches", [])
+    # o LanguageTool conta posições em UTF-16 (o emoji vale 2): converte para a posição do Python
+    py, u = {}, 0
+    for i, ch in enumerate(texto):
+        py[u] = i
+        u += len(ch.encode("utf-16-le")) // 2
+    py[u] = len(texto)
+    protegido = [(m.start(), m.end()) for m in re.finditer(r"@\S+|https?://\S+|www\.\S+|`[^`]*`", texto)]
+    out, corr, limite = texto, [], len(texto) + 1
+    for m in sorted(achados, key=lambda m: m["offset"], reverse=True):
+        a, b = py.get(m["offset"]), py.get(m["offset"] + m["length"])
+        reps = m.get("replacements") or []
+        cat = ((m.get("rule") or {}).get("category") or {}).get("id")
+        if a is None or b is None or not reps or b > limite or cat in LT_FORA:
+            continue
+        de = texto[a:b]
+        if any(a < y and b > x for x, y in protegido) or (cat == "TYPOS" and de[:1].isupper()):
+            continue
+        out, limite = out[:a] + reps[0]["value"] + out[b:], a
+        corr.append({"de": de, "para": reps[0]["value"], "motivo": m.get("message") or ""})
+    return out, corr[::-1]
+
+
+def corretor_json():
+    """Configurações: se o corretor está instalado e de pé."""
+    return {"instalado": bool(corretor_cmd()), "rodando": corretor_vivo(), "onde": "homebrew" if not WIN else LT_DIR}
+
+
+def corretor_instalar():
+    """Configurações › Corretor de português › Instalar, numa aba do jfy: no Mac, o Homebrew (traz o Java junto); no
+    Windows, o Java pelo winget e o LanguageTool do site oficial em ~/.jfy/languagetool (~250 MB no total)."""
+    import zipfile
+    if not na_aba():  # chamado pelo app: a instalação mostra o andamento numa aba do jfy
+        return abrir_aba("Corretor: instalar", "corretor", "--corretor-instalar")
+    if not WIN:
+        if not shutil.which("brew"):
+            print(c("Falta o Homebrew (https://brew.sh).", 203))
+        else:
+            subprocess.call(["brew", "install", "languagetool"])
+    else:
+        if not corretor_java():
+            if shutil.which("winget"):
+                subprocess.call(["winget", "install", "--id", "EclipseAdoptium.Temurin.21.JRE", "-e", "--source", "winget",
+                                 "--accept-package-agreements", "--accept-source-agreements"])
+            else:
+                print(c("Falta o winget (o Instalador de Aplicativos, na Microsoft Store) para instalar o Java.", 203))
+        if not corretor_cmd() and corretor_java():
+            os.makedirs(LT_DIR, exist_ok=True)
+            zipa = os.path.join(LT_DIR, "languagetool.zip")
+            print("Baixando o LanguageTool (~250 MB)…", flush=True)
+            with urllib.request.urlopen(LT_ZIP, timeout=60) as r, open(zipa, "wb") as f:
+                total, feito = int(r.headers.get("Content-Length") or 0), 0
+                while bloco := r.read(1 << 20):
+                    f.write(bloco)
+                    feito += len(bloco)
+                    if total:
+                        print(f"\r  {feito * 100 // total}%", end="", flush=True)
+            print("\nAbrindo o pacote…", flush=True)
+            with zipfile.ZipFile(zipa) as z:
+                z.extractall(LT_DIR)
+            os.remove(zipa)
+    ok = bool(corretor_cmd())
+    print(c("Corretor de português instalado." if ok else "O corretor não ficou instalado: veja as mensagens acima.", 78 if ok else 203))
+    ask(dim("\nEnter fecha esta aba. Volte às Configurações do app."))
+
+
 def chat_ia():
     """jfy --chat-ia, com a mensagem no stdin: o "Melhorar" do chat pelo Claude (claude -p, sem ferramentas). Deixa a
     mensagem mais clara e natural, no mesmo tom de conversa de trabalho, sem inventar e sem mexer nas @menções e nos
@@ -4103,6 +4247,8 @@ def email_ia(mid, modo, rascunho="", contexto=""):
         sys.exit("Use gerar, corrigir ou melhorar.")
     if modo != "gerar" and not rascunho.strip():
         sys.exit("Escreva o rascunho antes de pedir para corrigir ou melhorar.")
+    if modo == "corrigir" and corretor_cmd():  # com o corretor instalado: sem IA, sem tokens, nada sai do computador
+        return corrigir(rascunho)
     if not mid and modo == "gerar" and not contexto.strip():
         sys.exit("Diga no contexto o que o email precisa dizer.")
     e = email_json(mid) if mid else None  # sem mid: email novo, do zero
@@ -5325,6 +5471,8 @@ def main():
         return login()
     if a[:1] == ["--gh-instalar"]:  # primeiros passos do app, numa aba
         return gh_instalar()
+    if a[:1] == ["--corretor-instalar"]:  # Configurações do app, numa aba
+        return corretor_instalar()
     if a[:1] == ["--statusline"]:  # statusLine do Claude Code no Windows
         return statusline()
     # abas do app (app/): JSON no stdout, erro como mensagem
@@ -5347,7 +5495,7 @@ def main():
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
                 "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir,
                 "--arquivo-enviar": arquivo_enviar, "--formularios-json": formularios_json, "--formulario-json": formulario_json,
-                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia,
+                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia, "--corrigir": corrigir, "--corretor-json": corretor_json,
                 "--instalar-windows": instalar_windows}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
@@ -5974,6 +6122,27 @@ def selftest():
         assert False, "enviou sem destinatário"
     except SystemExit:
         pass
+    # corretor: posição do LanguageTool em UTF-16 (o emoji vale 2), sem mexer em @menção, link, nome com maiúscula, estilo
+    t = "😀 Oi @Joao, voce viu https://x.y/z? Maria disse que e bom."
+    u16 = lambda frag: len(t[:t.index(frag)].encode("utf-16-le")) // 2
+    m = lambda frag, rep, cat: {"offset": u16(frag), "length": len(frag), "replacements": [{"value": rep}], "message": "m",
+                                "rule": {"category": {"id": cat}}}
+    falso = [m("voce", "você", "TYPOS"), m("@Joao", "@João", "TYPOS"), m("x.y", "x. y", "TYPOGRAPHY"), m("Maria", "Mária", "TYPOS"),
+             m("e bom", "é bom", "GRAMMAR"), m("Oi", "Olá", "STYLE")]
+
+    class Resposta(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+    abridor_real = urllib.request.build_opener
+    urllib.request.build_opener = lambda *a: type("A", (), {"open": lambda self, req, timeout=0: Resposta(json.dumps({"matches": falso}).encode())})()
+    try:
+        out, corr = uma_correcao(t)
+    finally:
+        urllib.request.build_opener = abridor_real
+    assert out == "😀 Oi @Joao, você viu https://x.y/z? Maria disse que é bom." and [c["de"] for c in corr] == ["voce", "e bom"], (out, corr)
     # pontos: obter_tasks em lotes de 100 (antes, uma task por vez); sem estimativa fica de fora
     lotes, mcp_real = [], globals()["mcp"]
     globals()["mcp"] = lambda tool, **kw: lotes.append(len(kw["taskIds"])) or {"tasks": [
