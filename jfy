@@ -2141,6 +2141,7 @@ MODELOS = [  # (id, nome, para que serve, padrão do jfy)
     ("fechamento", "Fechar a task", "handoff e memória ao sair; no modelo da conversa, aproveita o cache", "conversa"),
     ("email", "Emails", "gerar, corrigir e melhorar respostas", "sonnet"),
     ("chat", "Chat", "melhorar a mensagem antes de mandar", "haiku"),
+    ("correcao", "Corrigir o português", "chat e emails, nos bastidores", "haiku"),
     ("commit", "Mensagem de commit", "pelas regras do committer", "sonnet"),
     ("pr", "Abrir PR", "pelas regras do pr-creator", "sonnet"),
 ]
@@ -4073,154 +4074,183 @@ PEDIDO_EMAIL = {
 }
 
 
-# ---------- corretor de português sem IA: o LanguageTool rodando no próprio computador ----------
-# Opcional (~250 MB com o Java): no Mac pelo Homebrew (o install.sh pergunta), no Windows em ~/.jfy/languagetool (o app
-# instala por Configurações). Nada sai do computador e não gasta tokens. Pega ortografia, acento, crase, concordância,
-# vírgula e palavras confundidas (mas/mais, a/há); não reescreve frase (isso é o Melhorar, com o Claude).
-LT_PORTA, LT_DIR = 8081, os.path.join(HOME, "languagetool")
-LT_ZIP = "https://languagetool.org/download/LanguageTool-stable.zip"
-# o que o Corrigir não aplica: sugestão de estilo e de tipografia (aspas curvas, travessão) não é erro
-LT_FORA = {"STYLE", "TYPOGRAPHY", "REDUNDANCY", "REPETITIONS_STYLE", "REGIONALISMS", "PLAIN_ENGLISH"}
+# ---------- corretor de português: o Claude (Haiku) do plano da pessoa, nos bastidores ----------
+# Um Claude Code fica aberto em segundo plano (claude -p em stream-json): cada correção é só uma mensagem nova, sem abrir
+# o Claude de novo (~1 a 2,5 s com o Haiku). Leve de propósito: sem ferramentas, sem MCP, sem os settings do usuário (nenhum
+# hook roda, nenhum plugin carrega), um prompt curto no lugar do do Claude Code e sem salvar sessão nenhuma. O --bare
+# seria mais rápido, mas só aceita chave de API, e aqui é o plano da pessoa. O texto nunca vai para disco.
+CORRETOR = os.path.join(RUN_DIR, "corretor.json")  # porta, token e pid do servidor que está de pé
+REGRAS_CORRECAO = ("Você corrige mensagens de trabalho (chat e email) em português do Brasil. Corrija só erros de ortografia, "
+                   "acentuação, crase, concordância, pontuação e palavras confundidas (mas/mais, e/é, a/há). Não reescreva, não "
+                   "troque palavras certas, não mude o tom, a ordem nem as quebras de linha e não acrescente nada. Mantenha "
+                   "@menções, links, nomes, números e código exatamente como estão. Cada mensagem é independente das anteriores. "
+                   "Devolva a mensagem corrigida no campo texto.")
+ESQUEMA_CORRECAO = '{"type":"object","properties":{"texto":{"type":"string"}},"required":["texto"]}'
+PROTEGIDO = re.compile(r"@\S+|https?://\S+|www\.\S+|`[^`]*`|\d+")
 
 
-def corretor_java():
-    """O java do LanguageTool no Windows: o do PATH ou o que o winget pôs (Temurin), que o app aberto ainda não vê."""
-    import glob
-    achados = sorted(glob.glob(os.path.expandvars(r"%ProgramFiles%\Eclipse Adoptium\*\bin\java.exe"))) if WIN else []
-    return shutil.which("java") or (achados[-1] if achados else None)
+def trocas_correcao(orig, novo):
+    """As palavras que a correção trocou, [{de, para}], ou None se ela não serve: mexeu em @menção, link, número ou código,
+    mudou as quebras de linha ou trocou palavras demais (cara de reescrita, não de correção). A conta de "demais" é sem
+    acento, sem maiúscula e sem pontuação: "reuniao" → "reunião" e "a" → "à" não contam como palavra trocada."""
+    import difflib
+    if novo is None or not novo.strip():
+        return None
+    if sorted(PROTEGIDO.findall(orig)) != sorted(PROTEGIDO.findall(novo)) or orig.count("\n") != novo.count("\n"):
+        return None
+    norm = lambda w: re.sub(r"[^\w]", "", unicodedata.normalize("NFD", w.lower()).encode("ascii", "ignore").decode())
+    a, b = orig.split(), novo.split()
+    if abs(len(a) - len(b)) > max(2, len(a) // 4) or difflib.SequenceMatcher(a=[norm(x) for x in a], b=[norm(x) for x in b],
+                                                                              autojunk=False).ratio() < 0.6:
+        return None
+    sm = difflib.SequenceMatcher(a=a, b=b, autojunk=False)
+    return [{"de": " ".join(a[i1:i2]), "para": " ".join(b[j1:j2])} for op, i1, i2, j1, j2 in sm.get_opcodes() if op != "equal"]
 
 
-def corretor_cmd():
-    """O comando que sobe o servidor do LanguageTool (sem a porta), ou None se ele não está instalado."""
-    import glob
-    brew = next((x for x in ("/opt/homebrew/opt/languagetool/bin/languagetool-server",
-                             "/usr/local/opt/languagetool/bin/languagetool-server") if os.path.exists(x)), None)
-    if brew:
-        return [brew]
-    jar = next(iter(sorted(glob.glob(os.path.join(LT_DIR, "*", "languagetool-server.jar")))), None)
-    java = corretor_java() if jar else None
-    # ponytail: 512 MB de memória bastam para o português; o servidor fica aberto até o computador desligar
-    return [java, "-Xmx512m", "-cp", jar, "org.languagetool.server.HTTPServer"] if java else None
+def corretor_servidor():
+    """jfy --corretor-servidor (o --corrigir sobe sozinho, em segundo plano): HTTP em 127.0.0.1 com token, um Claude aberto
+    corrigindo um texto por vez. Recomeça o Claude a cada 15 correções (cada mensagem carrega as anteriores) e sai depois
+    de 10 min sem uso. O que já foi corrigido fica só na memória dele, para o mesmo texto não ir duas vezes."""
+    import http.server, secrets, threading
+    pasta = os.path.join(RUN_DIR, "corretor")  # vazia: nenhum CLAUDE.md de projeto entra
+    os.makedirs(pasta, exist_ok=True)
+    st, trava, cache = {"proc": None, "n": 0, "uso": time.time()}, threading.Lock(), {}
+
+    def fechar():
+        if st["proc"] and st["proc"].poll() is None:
+            st["proc"].kill()
+        st["proc"] = None
+
+    def abrir():
+        if st["proc"] is None or st["proc"].poll() is not None or st["n"] >= 15:
+            fechar()
+            st["n"] = 0
+            st["proc"] = subprocess.Popen(
+                ["claude", "-p", *com_modelo("correcao"), "--tools", "", "--strict-mcp-config", "--setting-sources", "project",
+                 "--disable-slash-commands", "--no-session-persistence", "--input-format", "stream-json",
+                 "--output-format", "stream-json", "--verbose", "--json-schema", ESQUEMA_CORRECAO, "--system-prompt", REGRAS_CORRECAO],
+                cwd=pasta, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                bufsize=1, env=dict(os.environ, JFY_SEM_AVISO="1"), **({"creationflags": 0x08000000} if WIN else {}))
+
+    def perguntar(texto):
+        abrir()
+        p, resp = st["proc"], {}
+
+        def ler():
+            p.stdin.write(json.dumps({"type": "user", "message": {"role": "user", "content": texto}}) + "\n")
+            p.stdin.flush()
+            for linha in p.stdout:
+                m = json.loads(linha)
+                if m.get("type") == "result":
+                    resp.update(m)
+                    return
+        t = threading.Thread(target=ler, daemon=True)
+        t.start()
+        t.join(25)
+        if not resp:  # travou, fechou ou o plano recusou: o próximo pedido abre um Claude novo
+            fechar()
+            raise RuntimeError("o Claude não respondeu a correção")
+        st["n"] += 1
+        if resp.get("is_error") or resp.get("subtype") != "success":
+            raise RuntimeError(str(resp.get("result") or "o Claude não corrigiu")[:200])
+        return (resp.get("structured_output") or {}).get("texto")
+
+    class Pedido(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass  # nada do texto vai para log
+
+        def do_POST(self):
+            if self.headers.get("Authorization") != f"Bearer {token}":
+                return self.responder(401, {"erro": "token"})
+            corpo = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            st["uso"] = time.time()
+            try:
+                with trava:
+                    if self.path == "/aquecer":
+                        abrir()
+                        return self.responder(200, {"ok": True})
+                    orig = corpo.get("texto") or ""
+                    if orig not in cache:
+                        # só o miolo vai para o Claude: ele não devolve a quebra de linha do fim (os apps mandam o texto
+                        # com uma), e a trava das quebras descartava tudo. As pontas voltam como vieram
+                        miolo = orig.strip()
+                        antes, depois = orig[:len(orig) - len(orig.lstrip())], orig[len(orig.rstrip()):]
+                        novo = perguntar(miolo)
+                        trocas = trocas_correcao(miolo, novo)
+                        cache[orig] = ({"texto": antes + novo.strip() + depois, "trocas": trocas} if trocas is not None
+                                       else {"texto": orig, "trocas": [], "descartada": True})
+                        if len(cache) > 300:
+                            cache.pop(next(iter(cache)))
+                    return self.responder(200, cache[orig])
+            except Exception as e:
+                return self.responder(500, {"erro": str(e)[:200]})
+
+        def responder(self, cod, d):
+            dados = json.dumps(d, ensure_ascii=False).encode()
+            self.send_response(cod)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(dados)))
+            self.end_headers()
+            self.wfile.write(dados)
+
+    token = secrets.token_hex(16)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Pedido)
+    json.dump({"porta": srv.server_port, "token": token, "pid": os.getpid()}, open(CORRETOR, "w"))
+
+    def ocioso():
+        while time.time() - st["uso"] < 600:
+            time.sleep(15)
+        fechar()
+        srv.shutdown()
+    threading.Thread(target=ocioso, daemon=True).start()
+    srv.serve_forever()
+    with contextlib.suppress(OSError, ValueError):
+        if json.load(open(CORRETOR)).get("pid") == os.getpid():
+            os.remove(CORRETOR)
 
 
-def corretor_vivo():
-    try:
-        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(f"http://127.0.0.1:{LT_PORTA}/v2/languages", timeout=1):
-            return True
-    except OSError:
-        return False
+def corretor_chamar(rota, dados=None, espera=30):
+    """Fala com o servidor do corretor; se ele não está de pé, sobe em segundo plano e tenta de novo."""
+    for tentativa in range(2):
+        try:
+            info = json.load(open(CORRETOR))
+            req = urllib.request.Request(f"http://127.0.0.1:{info['porta']}/{rota}", json.dumps(dados or {}).encode(),
+                                         {"Authorization": f"Bearer {info['token']}", "Content-Type": "application/json"})
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=espera) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:  # o servidor respondeu com o erro (o Claude não corrigiu)
+            sys.exit(json.loads(e.read() or b"{}").get("erro") or f"o corretor recusou ({e.code})")
+        except (OSError, ValueError, KeyError):
+            if tentativa:
+                sys.exit("O corretor não abriu. Tente de novo em instantes.")
+            with contextlib.suppress(OSError):
+                os.remove(CORRETOR)
+            subprocess.Popen([*EU, "--corretor-servidor"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=open(os.path.join(RUN_DIR, "corretor.log"), "a"), **FUNDO)
+            for _ in range(50):  # o servidor sobe em menos de 1 s; o Claude dele abre na primeira correção
+                time.sleep(0.1)
+                if os.path.exists(CORRETOR):
+                    break
 
 
-def corretor_subir():
-    """Sobe o servidor, se ainda não está de pé, e espera ele responder (a primeira vez leva uns segundos)."""
-    if corretor_vivo():
-        return
-    cmd = corretor_cmd()
-    if not cmd:
-        sys.exit("O corretor de português não está instalado: Configurações › Corretor de português.")
-    log = open(os.path.join(RUN_DIR, "languagetool.log"), "a")
-    subprocess.Popen([*cmd, "--port", str(LT_PORTA), "--allow-origin"], stdin=subprocess.DEVNULL, stdout=log, stderr=log, **FUNDO)
-    for _ in range(90):
-        time.sleep(0.5)
-        if corretor_vivo():
-            return
-    sys.exit("O corretor de português demorou para abrir. Tente de novo em instantes.")
+def corrigir(espera="20"):
+    """jfy --corrigir [segundos], com o texto no stdin: {texto, trocas: [{de, para}]} (descartada: a correção do Claude
+    não passou nas travas, e o texto volta como estava). Texto com menos de 3 palavras nem vai."""
+    texto = sys.stdin.read()
+    if len(texto.split()) < 3:
+        return {"texto": texto, "trocas": []}
+    return corretor_chamar("corrigir", {"texto": texto}, espera=float(espera))
 
 
-def corrigir(texto=None):
-    """jfy --corrigir, com o texto no stdin: o português corrigido pelo LanguageTool local. Devolve {texto, correcoes:
-    [{de, para, motivo}]}. Aplica a 1ª sugestão de cada erro, menos estilo e tipografia, e não mexe em @menção, link
-    nem em nome com maiúscula (o dicionário não conhece nome de gente e trocaria "Fabriely" por outra palavra)."""
-    texto = sys.stdin.read() if texto is None else texto
-    if not texto.strip():
-        return {"texto": texto, "correcoes": []}
-    corretor_subir()
-    # duas passadas: com a ortografia errada o LanguageTool não entende a frase ("Vou a reuniao as 14h" não acusa a
-    # crase); depois de acertar os acentos, a segunda acha crase, mas/mais e concordância
-    out, corr = texto, []
-    for _ in range(2):
-        out, mais = uma_correcao(out)
-        corr += mais
-        if not mais:
-            break
-    return {"texto": out, "correcoes": corr}
-
-
-def uma_correcao(texto):
-    """Uma passada do LanguageTool: (texto corrigido, [{de, para, motivo}])."""
-    dados = urllib.parse.urlencode({"text": texto, "language": "pt-BR"}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{LT_PORTA}/v2/check", dados)
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=60) as r:
-        achados = json.load(r).get("matches", [])
-    # o LanguageTool conta posições em UTF-16 (o emoji vale 2): converte para a posição do Python
-    py, u = {}, 0
-    for i, ch in enumerate(texto):
-        py[u] = i
-        u += len(ch.encode("utf-16-le")) // 2
-    py[u] = len(texto)
-    protegido = [(m.start(), m.end()) for m in re.finditer(r"@\S+|https?://\S+|www\.\S+|`[^`]*`", texto)]
-    out, corr, limite = texto, [], len(texto) + 1
-    for m in sorted(achados, key=lambda m: m["offset"], reverse=True):
-        a, b = py.get(m["offset"]), py.get(m["offset"] + m["length"])
-        reps = m.get("replacements") or []
-        cat = ((m.get("rule") or {}).get("category") or {}).get("id")
-        if a is None or b is None or not reps or b > limite or cat in LT_FORA:
-            continue
-        de = texto[a:b]
-        if any(a < y and b > x for x, y in protegido) or (cat == "TYPOS" and de[:1].isupper()):
-            continue
-        out, limite = out[:a] + reps[0]["value"] + out[b:], a
-        corr.append({"de": de, "para": reps[0]["value"], "motivo": m.get("message") or ""})
-    return out, corr[::-1]
-
-
-def corretor_json():
-    """Configurações: se o corretor está instalado e de pé."""
-    return {"instalado": bool(corretor_cmd()), "rodando": corretor_vivo(), "onde": "homebrew" if not WIN else LT_DIR}
-
-
-def corretor_instalar():
-    """Configurações › Corretor de português › Instalar, numa aba do jfy: no Mac, o Homebrew (traz o Java junto); no
-    Windows, o Java pelo winget e o LanguageTool do site oficial em ~/.jfy/languagetool (~250 MB no total)."""
-    import zipfile
-    if not na_aba():  # chamado pelo app: a instalação mostra o andamento numa aba do jfy
-        return abrir_aba("Corretor: instalar", "corretor", "--corretor-instalar")
-    if not WIN:
-        if not shutil.which("brew"):
-            print(c("Falta o Homebrew (https://brew.sh).", 203))
-        else:
-            subprocess.call(["brew", "install", "languagetool"])
-    else:
-        if not corretor_java():
-            if shutil.which("winget"):
-                subprocess.call(["winget", "install", "--id", "EclipseAdoptium.Temurin.21.JRE", "-e", "--source", "winget",
-                                 "--accept-package-agreements", "--accept-source-agreements"])
-            else:
-                print(c("Falta o winget (o Instalador de Aplicativos, na Microsoft Store) para instalar o Java.", 203))
-        if not corretor_cmd() and corretor_java():
-            os.makedirs(LT_DIR, exist_ok=True)
-            zipa = os.path.join(LT_DIR, "languagetool.zip")
-            print("Baixando o LanguageTool (~250 MB)…", flush=True)
-            with urllib.request.urlopen(LT_ZIP, timeout=60) as r, open(zipa, "wb") as f:
-                total, feito = int(r.headers.get("Content-Length") or 0), 0
-                while bloco := r.read(1 << 20):
-                    f.write(bloco)
-                    feito += len(bloco)
-                    if total:
-                        print(f"\r  {feito * 100 // total}%", end="", flush=True)
-            print("\nAbrindo o pacote…", flush=True)
-            with zipfile.ZipFile(zipa) as z:
-                z.extractall(LT_DIR)
-            os.remove(zipa)
-    ok = bool(corretor_cmd())
-    print(c("Corretor de português instalado." if ok else "O corretor não ficou instalado: veja as mensagens acima.", 78 if ok else 203))
-    ask(dim("\nEnter fecha esta aba. Volte às Configurações do app."))
+def corretor_aquecer():
+    """jfy --corretor-aquecer: o app chama quando a pessoa começa a escrever, e a primeira correção já acha o Claude aberto."""
+    return corretor_chamar("aquecer", espera=20)
 
 
 def chat_ia():
     """jfy --chat-ia, com a mensagem no stdin: o "Melhorar" do chat pelo Claude (claude -p, sem ferramentas). Deixa a
     mensagem mais clara e natural, no mesmo tom de conversa de trabalho, sem inventar e sem mexer nas @menções e nos
-    links. Corrigir o português sem IA (sem gastar tokens) é outro caminho, ainda em decisão."""
+    links. Só corrigir os erros é o --corrigir (o corretor dos bastidores)."""
     texto = sys.stdin.read().strip()
     if not texto:
         sys.exit("Escreva a mensagem antes de pedir para melhorar.")
@@ -4247,8 +4277,8 @@ def email_ia(mid, modo, rascunho="", contexto=""):
         sys.exit("Use gerar, corrigir ou melhorar.")
     if modo != "gerar" and not rascunho.strip():
         sys.exit("Escreva o rascunho antes de pedir para corrigir ou melhorar.")
-    if modo == "corrigir" and corretor_cmd():  # com o corretor instalado: sem IA, sem tokens, nada sai do computador
-        return corrigir(rascunho)
+    if modo == "corrigir":  # o corretor dos bastidores (Haiku, processo já aberto): mais rápido e barato que um claude -p
+        return corretor_chamar("corrigir", {"texto": rascunho}, espera=60)
     if not mid and modo == "gerar" and not contexto.strip():
         sys.exit("Diga no contexto o que o email precisa dizer.")
     e = email_json(mid) if mid else None  # sem mid: email novo, do zero
@@ -5471,8 +5501,8 @@ def main():
         return login()
     if a[:1] == ["--gh-instalar"]:  # primeiros passos do app, numa aba
         return gh_instalar()
-    if a[:1] == ["--corretor-instalar"]:  # Configurações do app, numa aba
-        return corretor_instalar()
+    if a[:1] == ["--corretor-servidor"]:  # o corretor de português em segundo plano (o --corrigir sobe sozinho)
+        return corretor_servidor()
     if a[:1] == ["--statusline"]:  # statusLine do Claude Code no Windows
         return statusline()
     # abas do app (app/): JSON no stdout, erro como mensagem
@@ -5495,7 +5525,7 @@ def main():
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
                 "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir,
                 "--arquivo-enviar": arquivo_enviar, "--formularios-json": formularios_json, "--formulario-json": formulario_json,
-                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia, "--corrigir": corrigir, "--corretor-json": corretor_json,
+                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia, "--corrigir": corrigir, "--corretor-aquecer": corretor_aquecer,
                 "--instalar-windows": instalar_windows}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
@@ -6122,27 +6152,14 @@ def selftest():
         assert False, "enviou sem destinatário"
     except SystemExit:
         pass
-    # corretor: posição do LanguageTool em UTF-16 (o emoji vale 2), sem mexer em @menção, link, nome com maiúscula, estilo
-    t = "😀 Oi @Joao, voce viu https://x.y/z? Maria disse que e bom."
-    u16 = lambda frag: len(t[:t.index(frag)].encode("utf-16-le")) // 2
-    m = lambda frag, rep, cat: {"offset": u16(frag), "length": len(frag), "replacements": [{"value": rep}], "message": "m",
-                                "rule": {"category": {"id": cat}}}
-    falso = [m("voce", "você", "TYPOS"), m("@Joao", "@João", "TYPOS"), m("x.y", "x. y", "TYPOGRAPHY"), m("Maria", "Mária", "TYPOS"),
-             m("e bom", "é bom", "GRAMMAR"), m("Oi", "Olá", "STYLE")]
-
-    class Resposta(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            pass
-    abridor_real = urllib.request.build_opener
-    urllib.request.build_opener = lambda *a: type("A", (), {"open": lambda self, req, timeout=0: Resposta(json.dumps({"matches": falso}).encode())})()
-    try:
-        out, corr = uma_correcao(t)
-    finally:
-        urllib.request.build_opener = abridor_real
-    assert out == "😀 Oi @Joao, você viu https://x.y/z? Maria disse que é bom." and [c["de"] for c in corr] == ["voce", "e bom"], (out, corr)
+    # corretor: aceita correção de acento, crase e mas/mais; descarta se mexeu em @menção, link, número ou reescreveu
+    t = "vou a reuniao as 14h com @Joao, mais nao sei"
+    assert trocas_correcao(t, "vou à reunião às 14h com @Joao, mas não sei") == [
+        {"de": "a reuniao as", "para": "à reunião às"}, {"de": "mais nao", "para": "mas não"}], trocas_correcao(t, "vou à reunião às 14h com @Joao, mas não sei")
+    for ruim in ("vou à reunião às 14h com @João, mas não sei", "vou à reunião às 15h com @Joao, mas não sei",
+                 "amanhã eu confirmo com o João se a reunião continua", "", None):
+        assert trocas_correcao(t, ruim) is None, ruim
+    assert trocas_correcao("a\nb c d", "a b c d") is None  # quebra de linha não some
     # pontos: obter_tasks em lotes de 100 (antes, uma task por vez); sem estimativa fica de fora
     lotes, mcp_real = [], globals()["mcp"]
     globals()["mcp"] = lambda tool, **kw: lotes.append(len(kw["taskIds"])) or {"tasks": [

@@ -3,7 +3,7 @@
 // --login, --google-sair, --github-conta, --github-sair, --github-login, --journify-token, --journify-sair,
 // --modelos-json, --modelo, --agentes-json, --agente-modelo); vale também para o jfy no terminal.
 import { useEffect, useState, type ReactNode } from 'react'
-import { CircleUser, Cpu, GitBranch, ListChecks, Mail, Plus, SpellCheck, Users } from 'lucide-react'
+import { CircleUser, Cpu, GitBranch, ListChecks, Mail, Plus, Users } from 'lucide-react'
 import { api, fazer, ler } from '../jfy'
 import { irPara, passos, sessaoMudou } from '../estado'
 import { Aviso, Botao, Campo, Carregando, FotoConta, Select, confirmar } from '../souv'
@@ -100,13 +100,11 @@ export default function Configuracoes({ ativa }: { ativa: boolean }) {
     if (ag) setAgentes(ag)
   }
   /** Devolve as contas lidas: quem acabou de entrar no Google confere a conta nova sem esperar o estado redesenhar. */
-  // o corretor de português sem IA (LanguageTool neste computador): o Corrigir do chat e dos emails
-  const [corretor, setCorretor] = useState<{ instalado: boolean; rodando: boolean } | null>(null)
   const carregar = async () => {
     const [c, msg] = await ler<Contas>(['--contas-json'])
     if (c) setContas(c)
     else setAviso(msg)
-    await Promise.all([lerModelos(), lerAgentes(), ler<{ instalado: boolean; rodando: boolean }>(['--corretor-json']).then(([cr]) => cr && setCorretor(cr))])
+    await Promise.all([lerModelos(), lerAgentes()])
     return c
   }
   useEffect(() => {
@@ -311,31 +309,6 @@ export default function Configuracoes({ ativa }: { ativa: boolean }) {
               </div>
             )}
           </Cartao>
-
-          {corretor && (
-            <Cartao titulo="Corretor de português" icone={<SpellCheck size={20} />} subtitulo="Sem IA e sem gastar tokens: roda neste computador (LanguageTool)">
-              <Estado ok={corretor.instalado}>
-                {corretor.instalado
-                  ? 'Instalado: o Corrigir do chat e dos emails usa ele.'
-                  : 'Não instalado: o Corrigir dos emails usa o Claude, e o do chat fica desligado.'}
-              </Estado>
-              <span className="texto2">
-                Corrige ortografia, acentos, crase, concordância e mas/mais. Não reescreve a frase: isso é o Melhorar, com o Claude.
-              </span>
-              {!corretor.instalado && (
-                <div>
-                  {/* o Java pelo winget e o LanguageTool (~250 MB no total): o andamento aparece numa aba do jfy */}
-                  <Botao tipo="primario" onClick={async () => {
-                    const e = await fazer(['--corretor-instalar'])
-                    if (e) setAviso(e)
-                    else irPara('jfy')
-                  }}>
-                    Instalar (uns 250 MB, com o Java)
-                  </Botao>
-                </div>
-              )}
-            </Cartao>
-          )}
 
           {modelos && (
             <Cartao titulo="Modelos do Claude" icone={<Cpu size={20} />} subtitulo="Qual modelo o Claude usa em cada atividade do jfy">

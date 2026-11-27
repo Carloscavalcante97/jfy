@@ -62,9 +62,6 @@ struct ConfiguracoesTela: View {
     }
 
     @State private var contas: Contas?
-    @State private var corretor: Corretor?
-    /// O corretor de português sem IA (LanguageTool neste computador): o Corrigir do chat e dos emails.
-    struct Corretor: Decodable { let instalado, rodando: Bool }
     @State private var aviso: String?
     @State private var feito: String?
     @State private var ocupado: String?  // "google", "github" ou "journify" enquanto o jfy trabalha
@@ -110,7 +107,6 @@ struct ConfiguracoesTela: View {
                         google(c.google)
                         github(c.github)
                         journify(c.journify)
-                        if let cr = corretor { cartaoCorretor(cr) }
                         if let m = modelos { cartaoModelos(m) }
                         if let ag = agentes, !ag.agentes.isEmpty { cartaoAgentes(ag) }
                     }
@@ -303,25 +299,6 @@ struct ConfiguracoesTela: View {
         if let m { modelos = m }
         let (ag, _): (Agentes?, String?) = await JFY.ler(["--agentes-json"])
         if let ag { agentes = ag }
-        let (cr, _): (Corretor?, String?) = await JFY.ler(["--corretor-json"])
-        if let cr { corretor = cr }
-    }
-
-    // ---------- corretor de português ----------
-    private func cartaoCorretor(_ cr: Corretor) -> some View {
-        cartao("Corretor de português", "textformat.abc", "Sem IA e sem gastar tokens: roda neste computador (LanguageTool)") {
-            estado(cr.instalado, cr.instalado ? "Instalado: o Corrigir do chat e dos emails usa ele."
-                   : "Não instalado: o Corrigir dos emails usa o Claude, e o do chat fica desligado.")
-            Text("Corrige ortografia, acentos, crase, concordância e mas/mais. Não reescreve a frase: isso é o Melhorar, com o Claude.")
-                .font(.callout).foregroundStyle(Souv.texto2)
-            if !cr.instalado {
-                // a instalação (Homebrew, ~250 MB com o Java) mostra o andamento numa aba do jfy
-                Button("Instalar (uns 250 MB, com o Java)") {
-                    Task { if let e = await JFY.fazer(["--corretor-instalar"]) { aviso = e } else { irParaJFY() } }
-                }
-                .buttonStyle(.souvPrimario)
-            }
-        }
     }
 
     // ---------- agentes da pipeline ----------

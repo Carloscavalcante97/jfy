@@ -28,7 +28,8 @@ enum JFY {
                     return cont.resume(returning: (-1, "", "Não consegui rodar \(script): \(error.localizedDescription)"))
                 }
                 if let entrada {
-                    inn.fileHandleForWriting.write(Data((entrada + "\n").utf8))
+                    // sem "\n" no fim: o --corrigir descarta a correção que muda as quebras de linha do texto
+                    inn.fileHandleForWriting.write(Data(entrada.utf8))
                     try? inn.fileHandleForWriting.close()
                 }
                 // ponytail: lê a saída toda antes do erro; o stderr do jfy é curto, então o pipe não enche
@@ -64,6 +65,15 @@ extension JFY {
         let msg = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
         return r.status == 0 ? nil : msg.isEmpty ? "jfy \(args[0]) falhou (código \(r.status))" : msg
     }
+
+    /// Abre o Claude do corretor antes da primeira correção (o chat e os emails chamam quando a pessoa vai escrever),
+    /// sem esperar. No máximo 1 vez a cada 5 min: o corretor fica de pé 10 min depois do último uso.
+    @MainActor static func aquecerCorretor() {
+        guard Date().timeIntervalSince(aquecidoEm) > 300 else { return }
+        aquecidoEm = Date()
+        Task { _ = await rodar(["--corretor-aquecer"]) }
+    }
+    @MainActor private static var aquecidoEm = Date.distantPast
 }
 
 /// "AAAA-MM-DD" do dia local, e de volta. O .iso8601 do Swift usa UTC: no Brasil, "25/11" virava 24/11 às 21h

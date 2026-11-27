@@ -1,10 +1,11 @@
 // Tela "Chat" (app/Sources/JFY/Chat.swift no Mac): o chat do time do Journify. A tela só desenha; quem fala com o
 // Journify (pelo MCP) é o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida),
-// `--chat <id> <texto> [ids marcados]` (envia) e `--chat-ia` (melhora a mensagem pelo Claude). Mensagem nova vira
-// notificação pelo vigia, e o clique abre a conversa aqui.
+// `--chat <id> <texto> [ids marcados]` (envia), `--chat-ia` (melhora a mensagem pelo Claude) e `--corrigir` (o corretor
+// de português, o Claude Haiku nos bastidores; `--corretor-aquecer` abre ele antes). Mensagem nova vira notificação
+// pelo vigia, e o clique abre a conversa aqui.
 import { useEffect, useRef, useState } from 'react'
-import { CircleAlert, CircleArrowUp, Copy, Eye, MessagesSquare, Reply, Smile, Sparkles, SpellCheck, Star, StarOff } from 'lucide-react'
-import { api, ler } from '../jfy'
+import { Check, CircleAlert, CircleArrowUp, Copy, Eye, MessagesSquare, Reply, Smile, Sparkles, SpellCheck, Star, StarOff, X } from 'lucide-react'
+import { api, aquecerCorretor, ler } from '../jfy'
 import { atendido, loja, nav } from '../estado'
 import { Avatar as AvatarPessoa } from '../avatar'
 import { Aviso, Botao, Caixa, Carregando, Flutuante, Linha, Segmentos, Selo, fmtHora, menuContexto } from '../souv'
@@ -20,6 +21,10 @@ type Resultado = { status: number; saida: string; erro: string }
 type Tipo = 'direta' | 'canal'
 type Pessoa = { id: string; nome: string }
 type Favoritas = { diretas: string[]; grupos: string[] }
+type Troca = { de: string; para: string }
+// a correção do Claude para o texto exato `de` (sem trocas: nada a corrigir, ou o motor descartou). dispensada: o ✕,
+// ou já aplicada; a faixa não volta para esse texto
+type Correcao = { de: string; texto: string; trocas: Troca[]; dispensada?: boolean }
 
 const tipoDe = (c: Conversa): Tipo => (c.tipo === 'canal' ? 'canal' : 'direta')
 const abaLembrada = loja<Tipo>('direta', 'chat.aba')
@@ -29,7 +34,7 @@ const MAX_FIXAS = 3
 const favoritas = loja<Favoritas>({ diretas: [], grupos: [] }, 'chat.favoritas')
 const chaveFav = (t: Tipo) => (t === 'canal' ? 'grupos' : 'diretas')
 const EMOJIS = ['👍', '🙏', '😂', '✅', '🎉', '❤️', '👀', '🚀', '🔥', '😅', '🤝', '💡']
-// passar o corretor ao apertar Enter: com correção, ela aparece no campo e o próximo Enter envia
+// corrigir ao enviar: a correção pronta vai na hora; sem ela, espera até 5 s e manda como está (nunca trava o envio)
 const CORRIGIR_AO_ENVIAR = loja(false, 'chat.corrigirAoEnviar')
 
 const semAcento = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
@@ -80,15 +85,18 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   const [marcados, setMarcados] = useState<Pessoa[]>([])
   const [melhorando, setMelhorando] = useState(false)
   const [antes, setAntes] = useState<string | null>(null) // o texto de antes do Claude (ou do corretor), para o Desfazer
-  // quem mexeu no texto: o Claude (Melhorar) ou o corretor (Corrigir, com quantas correções)
+  // quem mexeu no texto: o Melhorar ou o corretor (Corrigir, Aplicar ou Tab, com quantas correções)
   const [quemMexeu, setQuemMexeu] = useState<{ claude: true } | { correcoes: number }>({ claude: true })
-  const [corretorOk, setCorretorOk] = useState(false) // o LanguageTool está instalado neste computador?
-  const [corrigindo, setCorrigindo] = useState(false)
+  const [correcao, setCorrecao] = useState<Correcao | null>(null) // a última que voltou dos bastidores
+  const [corrigindo, setCorrigindo] = useState<'botao' | 'envio' | null>(null) // o Corrigir, ou o envio esperando a correção
+  const [recado, setRecado] = useState<string | null>(null) // "Nada para corrigir.", por uns segundos
   const corrigirAoEnviar = CORRIGIR_AO_ENVIAR.use()
   const [erroIa, setErroIa] = useState<string | null>(null)
   const [paleta, setPaleta] = useState<HTMLElement | null>(null) // os emojis abertos, presos ao botão
   const sel = useRef(selecionada)
   sel.current = selecionada
+  const textoAtual = useRef(texto) // a resposta do corretor só vale se o campo ainda tem o texto que foi
+  textoAtual.current = texto
   const campo = useRef<HTMLTextAreaElement>(null)
   const rolagem = useRef<HTMLDivElement>(null)
 
@@ -154,7 +162,20 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   useEffect(() => void (ativa && campo.current?.focus()), [selecionada, ativa])
 
   const soLeitura = c?.membro === false
-  const podeEnviar = !enviando && !melhorando && !!texto.trim() && !soLeitura
+  const podeEnviar = !enviando && !melhorando && !corrigindo && !!texto.trim() && !soLeitura
+  // a faixa "N correções" acima do campo: a correção é deste texto, tem troca e ninguém dispensou
+  const faixa = correcao?.de === texto && correcao.trocas.length && !correcao.dispensada && !melhorando && !corrigindo ? correcao : null
+
+  // a primeira correção já acha o Claude do corretor aberto
+  useEffect(() => void (ativa && selecionada && !soLeitura && aquecerCorretor()), [ativa, selecionada, soLeitura])
+
+  // a correção nos bastidores: 1,5 s depois da última tecla, com 3 palavras ou mais. Não corrige de novo o texto que
+  // já tem resposta, nem o que saiu de uma correção. Erro aqui fica quieto: o Corrigir e o envio mostram o deles
+  useEffect(() => {
+    if (soLeitura || texto.trim().split(/\s+/).length < 3 || correcao?.de === texto || correcao?.texto === texto) return
+    const t = setTimeout(() => pedirCorrecao(texto), 1_500)
+    return () => clearTimeout(t)
+  }, [texto, soLeitura])
 
   // ponytail: o MCP do Journify não lista os membros da conversa; o @ sugere quem escreveu nas mensagens carregadas (as
   // 100 últimas), da mais recente para a mais antiga. Os membros de verdade quando o MCP der a lista
@@ -214,27 +235,40 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     trocar(novo, novo.length)
   }
 
-  useEffect(() => {
-    if (ativa) ler<{ instalado: boolean }>(['--corretor-json']).then(([r]) => setCorretorOk(!!r?.instalado))
-  }, [ativa])
+  /** O corretor (Claude Haiku, nos bastidores). Guarda a resposta só se o campo ainda tem o mesmo texto: uma resposta
+   * atrasada não apaga a do texto novo. */
+  async function pedirCorrecao(t: string): Promise<[Correcao | null, string | null]> {
+    const [r, msg] = await ler<{ texto: string; trocas: Troca[] }>(['--corrigir'], t).catch((): [null, null] => [null, null])
+    const c = r && { de: t, texto: r.texto, trocas: r.trocas }
+    if (c && textoAtual.current === t) setCorrecao(c)
+    return [c, msg]
+  }
 
-  /** O Corrigir, sem IA e sem tokens: o LanguageTool deste computador (ortografia, acentos, crase, concordância,
-   * mas/mais). Devolve quantas correções fez (0: nada para corrigir; null: deu erro). */
-  async function corrigir(): Promise<number | null> {
+  /** Troca o campo pela correção, com o Desfazer de sempre. */
+  function aplicar(x: Correcao) {
+    trocar(x.texto, x.texto.length)
+    setAntes(x.de)
+    setQuemMexeu({ correcoes: x.trocas.length })
+    setCorrecao({ ...x, dispensada: true })
+  }
+
+  /** O Corrigir: usa a correção pronta deste texto ou pede uma agora, e aplica. */
+  async function corrigir() {
     const t = texto
-    if (!t.trim() || corrigindo || melhorando || enviando) return null
-    setCorrigindo(true)
+    if (!t.trim() || corrigindo || melhorando || enviando) return
     setErroIa(null)
-    const [r, msg] = await ler<{ texto: string; correcoes: unknown[] }>(['--corrigir'], t)
-    setCorrigindo(false)
-    if (!r) return setErroIa(msg ?? 'O corretor não respondeu.'), null
-    if (r.correcoes.length) {
-      setTexto(r.texto)
-      setAntes(t)
-      setQuemMexeu({ correcoes: r.correcoes.length })
-    } else setErroIa(null)
+    let x = correcao?.de === t ? correcao : null
+    if (!x) {
+      setCorrigindo('botao') // o campo fica só leitura, como no Melhorar: a correção não atropela o que fosse digitado
+      const [r, msg] = await pedirCorrecao(t)
+      setCorrigindo(null)
+      if (!r) return setErroIa(msg ?? 'O corretor não respondeu.')
+      x = r
+    }
+    if (x.trocas.length) return aplicar(x)
+    setRecado('Nada para corrigir.')
+    setTimeout(() => setRecado(null), 2_500)
     campo.current?.focus()
-    return r.correcoes.length
   }
 
   async function melhorar() {
@@ -248,6 +282,7 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     setTexto(r.texto)
     setAntes(t)
     setQuemMexeu({ claude: true })
+    setCorrecao({ de: r.texto, texto: r.texto, trocas: [] }) // o texto do Claude não passa pelo corretor
     campo.current?.focus()
   }
 
@@ -266,11 +301,22 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   }
 
   async function enviar() {
-    const t = texto.trim()
+    let t = texto
     const cid = selecionada
-    if (!cid || !t || enviando || melhorando || corrigindo || soLeitura) return
-    // corrigir ao enviar: com correções, elas vão para o campo e o próximo Enter envia (nada sai sem você ver)
-    if (corrigirAoEnviar && corretorOk && antes === null && (await corrigir())) return
+    if (!cid || !t.trim() || enviando || melhorando || corrigindo || soLeitura) return
+    // corrigir ao enviar: a correção pronta deste texto vai na hora; sem ela, espera até 5 s e, sem resposta, vai como
+    // está. Não mexe no que você já corrigiu ou melhorou (o Desfazer à vista) nem no que você dispensou no ✕
+    if (corrigirAoEnviar && antes === null) {
+      let x = correcao?.de === t ? correcao : null
+      if (!x) {
+        setCorrigindo('envio')
+        const espera = new Promise<null>((ok) => setTimeout(ok, 5_000, null))
+        x = await Promise.race([pedirCorrecao(t).then(([r]) => r), espera])
+        setCorrigindo(null)
+      }
+      if (x && !x.dispensada) t = x.texto
+    }
+    t = t.trim()
     // os marcados cujo "@Nome" ainda está no texto: o Journify avisa cada um, como no app
     const ids = marcados.filter((p) => new RegExp(`@${escapar(p.nome)}${depoisDoNome}`, 'u').test(t)).map((p) => p.id)
     setEnviando(true)
@@ -300,6 +346,8 @@ export default function Chat({ ativa }: { ativa: boolean }) {
       }
       if (sugestoes.length && (e.key === 'Enter' || e.key === 'Tab')) return e.preventDefault(), escolher(sugestoes[idx])
     }
+    // Tab com a faixa à vista (e sem a lista do @) aplica a correção
+    if (faixa && !listaMencao && e.key === 'Tab' && !e.shiftKey) return e.preventDefault(), aplicar(faixa)
     // Enter envia; Shift+Enter quebra a linha
     if (e.key === 'Enter' && !e.shiftKey) (e.preventDefault(), enviar())
   }
@@ -417,11 +465,33 @@ export default function Chat({ ativa }: { ativa: boolean }) {
               {'claude' in quemMexeu ? (
                 <><Sparkles size={12} /> Melhorada pelo Claude.</>
               ) : (
-                <><SpellCheck size={12} /> {quemMexeu.correcoes === 1 ? '1 correção' : `${quemMexeu.correcoes} correções`} do corretor
-                  {corrigirAoEnviar ? ': Enter de novo envia.' : '.'}</>
+                <><SpellCheck size={12} /> {quemMexeu.correcoes === 1 ? '1 correção' : `${quemMexeu.correcoes} correções`} do Claude.</>
               )}
               <Botao tipo="link" onClick={() => trocar(antes, antes.length)}>Desfazer</Botao>
             </span>
+          )}
+          {recado && (
+            <span className="texto2 pequeno-texto linha-h ch-nota">
+              <SpellCheck size={12} /> {recado}
+            </span>
+          )}
+          {faixa && !soLeitura && (
+            <div className="texto2 pequeno-texto ch-faixa">
+              <Check size={12} className="ch-faixa-ok" />
+              <span className="ch-faixa-n">{faixa.trocas.length === 1 ? '1 correção' : `${faixa.trocas.length} correções`}</span>
+              {faixa.trocas.slice(0, 3).map((x, i) => (
+                <span key={i} className="ch-troca" title={`${x.de} → ${x.para}`}>
+                  <s>{x.de}</s> → <strong>{x.para}</strong>
+                </span>
+              ))}
+              {faixa.trocas.length > 3 && <span>+{faixa.trocas.length - 3}</span>}
+              <span className="espaco" />
+              <Botao tipo="link" onClick={() => aplicar(faixa)}>Aplicar</Botao>
+              <span className="ch-faixa-dica">Tab aplica</span>
+              <Botao tipo="icone" title="Dispensar" aria-label="Dispensar" onClick={() => setCorrecao({ ...faixa, dispensada: true })}>
+                <X size={12} />
+              </Botao>
+            </div>
           )}
           {soLeitura ? (
             <div className="ch-escrever ch-so-leitura texto2">
@@ -450,13 +520,13 @@ export default function Chat({ ativa }: { ativa: boolean }) {
                 rows={Math.min(6, texto.split('\n').length)}
                 placeholder={`Mensagem para ${c.nome}`}
                 value={texto}
-                readOnly={melhorando} // o texto do Claude não atropela o que fosse digitado enquanto ele trabalha
+                readOnly={melhorando || !!corrigindo} // o texto do Claude não atropela o que fosse digitado enquanto ele trabalha
                 onChange={(e) => (editar(e.target.value), verMencao(e.target))}
                 onSelect={(e) => verMencao(e.currentTarget)}
                 onBlur={() => setMencao(null)}
                 onKeyDown={teclas}
               />
-              <Botao tipo="icone" title="Emoji (Win+. abre o seletor do sistema)" disabled={melhorando} onClick={(e) => setPaleta(paleta ? null : e.currentTarget)}>
+              <Botao tipo="icone" title="Emoji (Win+. abre o seletor do sistema)" disabled={melhorando || !!corrigindo} onClick={(e) => setPaleta(paleta ? null : e.currentTarget)}>
                 <Smile size={20} />
               </Botao>
               {paleta && (
@@ -470,24 +540,34 @@ export default function Chat({ ativa }: { ativa: boolean }) {
               )}
               <Botao
                 tipo="icone"
-                title={corretorOk ? 'Corrige o português sem IA, neste computador (crase, concordância, acentos)' : 'Corrigir o português: instale o corretor em Configurações'}
-                disabled={!corretorOk || !texto.trim() || corrigindo || melhorando || enviando}
+                title="Corrige o português com o Claude (Haiku, quase sem custo)"
+                disabled={!texto.trim() || !!corrigindo || melhorando || enviando}
                 onClick={corrigir}
               >
-                {corrigindo ? <Carregando tamanho={20} /> : <SpellCheck size={20} />}
+                {corrigindo === 'botao' ? <Carregando tamanho={20} /> : <SpellCheck size={20} />}
               </Botao>
-              <Botao tipo="icone" title="Melhora a mensagem com o Claude (usa tokens)" disabled={!texto.trim() || melhorando || corrigindo || enviando} onClick={melhorar}>
+              <Botao tipo="icone" title="Melhora a mensagem com o Claude (usa tokens)" disabled={!texto.trim() || melhorando || !!corrigindo || enviando} onClick={melhorar}>
                 {melhorando ? <Carregando tamanho={20} /> : <Sparkles size={20} />}
               </Botao>
               <button type="button" className={`ch-enviar ${podeEnviar ? 'pode' : ''}`} disabled={!podeEnviar} title="Enviar (Enter)" onClick={enviar}>
-                {enviando ? <Carregando /> : <CircleArrowUp size={24} />}
+                {corrigindo === 'envio' ? (
+                  <span className="texto2 pequeno-texto linha-h ch-esperando"><Carregando /> Corrigindo…</span>
+                ) : enviando ? (
+                  <Carregando />
+                ) : (
+                  <CircleArrowUp size={24} />
+                )}
               </button>
             </div>
           )}
-          {!soLeitura && corretorOk && (
+          {!soLeitura && (
             <span className="ch-nota">
-              <Caixa marcado={corrigirAoEnviar} mudar={CORRIGIR_AO_ENVIAR.set}>
-                <span className="texto2 pequeno-texto">Corrigir ao enviar (sem IA)</span>
+              <Caixa
+                marcado={corrigirAoEnviar}
+                mudar={CORRIGIR_AO_ENVIAR.set}
+                title="Antes de sair, o Claude corrige o português. Se a correção demorar mais de 5 s, a mensagem vai como está"
+              >
+                <span className="texto2 pequeno-texto">Corrigir ao enviar</span>
               </Caixa>
             </span>
           )}

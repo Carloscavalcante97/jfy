@@ -26,3 +26,13 @@ export async function fazer(args: string[], entrada?: string): Promise<string | 
   const r = await api.jfy(args, entrada)
   return r.status === 0 ? null : r.erro.trim() || `jfy ${args[0]} falhou (código ${r.status})`
 }
+
+// o Claude do corretor (Haiku) fica aberto nos bastidores e fecha com 10 min parado: aquecer mais de 1 vez a cada 5 min
+// não adianta nada, e cada vez é um processo do jfy
+let aquecido = 0
+/** Abre o Claude do corretor antes da primeira correção (sem esperar a resposta). */
+export function aquecerCorretor() {
+  if (Date.now() - aquecido < 5 * 60_000) return
+  aquecido = Date.now()
+  void api.jfy(['--corretor-aquecer']).catch(() => {})
+}

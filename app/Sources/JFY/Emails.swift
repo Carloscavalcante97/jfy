@@ -337,6 +337,7 @@ struct EmailsTela: View {
                 AvisoAssinatura(url: lista?.url.map { $0.replacingOccurrences(of: "#inbox", with: "#settings/general") })
             }
         }
+        .task(id: e.id) { JFY.aquecerCorretor() }  // o Corrigir já acha o Claude do corretor aberto
     }
 
     private var vazia: Bool { resposta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -639,7 +640,10 @@ struct NovoEmail: View {
                  + "O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
                 .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
         }
-        .task { let (a, _): (Assinatura?, String?) = await JFY.ler(["--email-assinatura"]); assinatura = a }
+        .task {
+            JFY.aquecerCorretor()  // o Corrigir já acha o Claude do corretor aberto
+            let (a, _): (Assinatura?, String?) = await JFY.ler(["--email-assinatura"]); assinatura = a
+        }
         .padding(20)
         .frame(width: 660)
         .background(Souv.fundo)

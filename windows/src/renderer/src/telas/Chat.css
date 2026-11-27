@@ -45,6 +45,16 @@
 .ch-erro, .ch-nota { padding: 0 16px 6px; }
 .ch-nota .botao.link { font-size: inherit; }
 .ch-aviso-campo { padding: 0 14px 6px; }
+/* a correção que voltou dos bastidores, logo acima do campo: discreta, uma linha só */
+.ch-faixa { display: flex; align-items: center; gap: 8px; padding: 0 16px 6px; min-width: 0; white-space: nowrap; }
+.ch-faixa-ok { color: #00B894; flex: none; }
+.ch-faixa-n { flex: none; }
+.ch-troca { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 200px; }
+.ch-troca strong { color: var(--texto); font-weight: 600; }
+.ch-faixa .botao.link { font-size: inherit; }
+.ch-faixa .botao.icone { padding: 2px; }
+.ch-faixa-dica { color: color-mix(in srgb, var(--texto2) 70%, transparent); }
+.ch-esperando { gap: 5px; white-space: nowrap; }
 .ch-escrever { position: relative; display: flex; align-items: flex-end; gap: 10px; padding: 14px; border-top: 1px solid var(--borda); }
 .ch-escrever textarea {
   flex: 1; resize: none; border: 0; outline: none; background: none; color: var(--texto); font: 13px 'Roboto'; line-height: 1.4;

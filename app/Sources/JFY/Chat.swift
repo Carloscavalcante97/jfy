@@ -3,7 +3,7 @@ import SwiftUI
 
 /// Chat do time do Journify: as conversas entre colaboradores. O app só desenha; quem fala com o Journify (pelo MCP) é
 /// o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida lá), `--chat <id> <texto> [ids]` (envia,
-/// avisando quem foi marcado com @) e `--chat-ia` (o Melhorar, pelo Claude).
+/// avisando quem foi marcado com @), `--chat-ia` (o Melhorar, pelo Claude) e `--corrigir` (o corretor, nos bastidores).
 struct ChatTela: View {
     /// Só busca com a tela à vista: abrir uma conversa marca como lida no Journify, e ninguém leu nada com a tela escondida.
     let ativa: Bool
@@ -32,6 +32,14 @@ struct ChatTela: View {
     /// Quem dá para marcar com @.
     struct Pessoa: Identifiable, Hashable { let id, nome: String }
 
+    /// O `jfy --corrigir`: o texto corrigido e as palavras trocadas (descartada: a correção mudou demais e não vale).
+    struct Correcao: Decodable {
+        struct Troca: Decodable { let de, para: String }
+        let texto: String
+        let trocas: [Troca]
+        var descartada: Bool? = nil
+    }
+
     private static let maxFixas = 3  // por tipo: 3 diretas e 3 grupos
     private static let emojis = ["👍", "🙏", "😂", "✅", "🎉", "❤️", "👀", "🚀", "🔥", "😅", "🤝", "💡"]
 
@@ -44,8 +52,11 @@ struct ChatTela: View {
     @State private var enviando = false
     @State private var melhorando = false
     @State private var desfazer: (antes: String, depois: String, nota: String)?  // o Desfazer do Melhorar e do Corrigir
-    @State private var corrigindo = false
-    @State private var corretorOk = false  // o LanguageTool está instalado neste computador (Configurações)?
+    @State private var corrigindo = false  // o botão Corrigir esperando o corretor
+    @State private var pronta: (de: String, c: Correcao)?  // a correção que o corretor devolveu e o texto que foi para ele
+    @State private var dispensada: String?  // o texto em que a faixa da correção foi fechada (volta quando o texto muda)
+    @State private var aguardando: String?  // o envio esperando a correção (o Corrigir ao enviar), no máximo 5 s
+    @State private var nota: String?  // "Nada para corrigir.", por uns segundos
     @AppStorage("chat.corrigirAoEnviar") private var corrigirAoEnviar = false
     @State private var marcados: [Pessoa] = []  // escolhidos na sugestão do @
     @State private var fechadaEm: String?  // o texto quando o Esc fechou a sugestão do @ (reabre quando o texto muda)
@@ -84,6 +95,7 @@ struct ChatTela: View {
         }
         .task(id: "\(selecionada ?? "")|\(ativa)") {
             guard let cid = selecionada, ativa else { return }
+            JFY.aquecerCorretor()  // a primeira correção já acha o Claude aberto
             while !Task.isCancelled {
                 await carregarMensagens(cid)
                 try? await Task.sleep(for: .seconds(5))
@@ -251,16 +263,21 @@ struct ChatTela: View {
             } else if let d = desfazer, d.depois == texto {
                 HStack(spacing: 6) {
                     Text(d.nota).foregroundStyle(Souv.texto2)
-                    Button("Desfazer") { texto = d.antes; desfazer = nil; focado = true }.buttonStyle(.souvLink)
+                    // dispensada: a faixa não volta oferecendo a correção que você acabou de desfazer
+                    Button("Desfazer") { texto = d.antes; dispensada = d.antes; desfazer = nil; focado = true }.buttonStyle(.souvLink)
                 }
                 .font(.caption)
+            } else if let c = faixa {
+                faixaCorrecao(c)
+            } else if let nota {
+                Text(nota).font(.caption).foregroundStyle(Souv.texto2)
             }
             HStack(alignment: .bottom, spacing: 10) {
                 Button { paleta.toggle() } label: { Label("Emojis", systemImage: "face.smiling").labelStyle(.iconOnly).font(.title3) }
                     .buttonStyle(.souvIcone).disabled(melhorando).help("Emojis")
                     .popover(isPresented: $paleta, arrowEdge: .top) { paletaEmojis }
                 TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
-                    .textFieldStyle(.plain).lineLimit(1...6).focused($focado).disabled(melhorando || corrigindo)
+                    .textFieldStyle(.plain).lineLimit(1...6).focused($focado).disabled(melhorando || corrigindo || aguardando != nil)
                     .onSubmit { if let p = sugeridas.first { mencionar(p) } else { enviar() } }  // Enter: escolhe a sugestão do @ ou envia
                     .onKeyPress(.return, phases: .down) { k in
                         // Shift+Enter quebra a linha onde está o cursor; o Enter sozinho segue para o onSubmit
@@ -273,15 +290,19 @@ struct ChatTela: View {
                         fechadaEm = texto
                         return .handled
                     }
+                    .onKeyPress(.tab) {  // com a faixa da correção à vista, o Tab aplica
+                        guard let c = faixa else { return .ignored }
+                        aplicar(c)
+                        return .handled
+                    }
                 Button { Task { await corrigir() } } label: {
                     if corrigindo { ProgressView().controlSize(.small) } else {
                         Label("Corrigir o português", systemImage: "textformat.abc.dottedunderline").labelStyle(.iconOnly).font(.title3)
                     }
                 }
                 .buttonStyle(.souvIcone)
-                .disabled(!podeMelhorar || !corretorOk)
-                .help(corretorOk ? "Corrige o português sem IA, neste Mac (crase, concordância, acentos)"
-                      : "Corrigir o português: instale o corretor em Configurações")
+                .disabled(!podeMelhorar)
+                .help("Corrige o português com o Claude (Haiku, quase sem custo)")
                 Button(action: melhorar) {
                     if melhorando { ProgressView().controlSize(.small) } else {
                         Label("Melhorar com o Claude", systemImage: "sparkles").labelStyle(.iconOnly).font(.title3)
@@ -291,21 +312,43 @@ struct ChatTela: View {
                 .disabled(!podeMelhorar)
                 .help("Melhora a mensagem com o Claude (usa tokens)")
                 Button(action: enviar) {
-                    if enviando { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    if aguardando != nil {
+                        HStack(spacing: 4) { ProgressView().controlSize(.small); Text("Corrigindo…").font(.caption) }
+                    } else if enviando {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    }
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
                 .disabled(!podeEnviar)
                 .help("Enviar (Enter; Shift+Enter quebra a linha)")
             }
-            if corretorOk { Toggle("Corrigir ao enviar (sem IA)", isOn: $corrigirAoEnviar).font(.caption).foregroundStyle(Souv.texto2) }
+            Toggle("Corrigir ao enviar", isOn: $corrigirAoEnviar).font(.caption).foregroundStyle(Souv.texto2)
         }
         .padding(14)
-        .task {  // o Corrigir só aparece com o corretor instalado
-            struct Corretor: Decodable { let instalado: Bool }
-            let (r, _): (Corretor?, String?) = await JFY.ler(["--corretor-json"])
-            corretorOk = r?.instalado ?? false
+        .task(id: texto) {  // nos bastidores: 1,5 s depois de parar de digitar, sem carregando e sem erro na tela
+            let t = texto
+            guard pronta?.de != t, palavras(t) >= 3 else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            if !Task.isCancelled { _ = await correcao(t) }
         }
+    }
+
+    /// A faixa acima do campo quando a correção dos bastidores achou algo: "✓ 2 correções · de → para · Aplicar".
+    private func faixaCorrecao(_ c: Correcao) -> some View {
+        let n = c.trocas.count
+        return HStack(spacing: 8) {
+            Label(n == 1 ? "1 correção" : "\(n) correções", systemImage: "checkmark").foregroundStyle(Souv.destaque)
+            Text(c.trocas.prefix(3).map { "\($0.de) → \($0.para)" }.joined(separator: " · ") + (n > 3 ? " +\(n - 3)" : ""))
+                .foregroundStyle(Souv.texto2).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 4)
+            Button("Aplicar") { aplicar(c) }.buttonStyle(.souvLink)
+            Text("Tab aplica").foregroundStyle(.tertiary)
+            Button { dispensada = texto } label: { Image(systemName: "xmark") }.buttonStyle(.souvIcone).help("Dispensar")
+        }
+        .font(.caption)
     }
 
     private var paletaEmojis: some View {
@@ -388,25 +431,47 @@ struct ChatTela: View {
 
     private var podeMelhorar: Bool { !melhorando && !corrigindo && !enviando && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-    /// O Corrigir, sem IA e sem tokens: o LanguageTool deste Mac (ortografia, acentos, crase, concordância, mas/mais).
-    /// Devolve quantas correções fez.
-    @discardableResult private func corrigir() async -> Int {
-        guard podeMelhorar, corretorOk else { return 0 }
+    private func palavras(_ t: String) -> Int { t.split(whereSeparator: \.isWhitespace).count }
+
+    /// A correção da faixa, se ela vale para o texto do campo agora.
+    private var faixa: Correcao? {
+        guard let p = pronta, p.de == texto, !p.c.trocas.isEmpty, dispensada != texto else { return nil }
+        return p.c
+    }
+
+    /// A correção do Claude para `t`: a pronta, se é deste texto, ou pede ao corretor (texto repetido volta de lá na hora).
+    /// Só guarda se o campo ainda tem `t`: resposta de um texto que já mudou não vale.
+    private func correcao(_ t: String) async -> (Correcao?, String?) {
+        if let p = pronta, p.de == t { return (p.c, nil) }
+        let (r, msg): (Correcao?, String?) = await JFY.ler(["--corrigir"], entrada: t)
+        if let r, texto == t { pronta = (t, r) }
+        return (r, msg)
+    }
+
+    /// Troca o texto pelo corrigido, com o Desfazer. O corrigido já fica com a correção pronta (vazia): não volta ao corretor.
+    private func aplicar(_ c: Correcao) {
+        let antes = texto, n = c.trocas.count
+        texto = c.texto
+        pronta = (c.texto, Correcao(texto: c.texto, trocas: []))
+        desfazer = (antes, c.texto, (n == 1 ? "1 correção" : "\(n) correções") + " do Claude.")
+        focado = true
+    }
+
+    /// O botão Corrigir: corrige já e aplica (a correção dos bastidores, se já chegou, sai na hora).
+    private func corrigir() async {
+        guard podeMelhorar else { return }
         let antes = texto
         corrigindo = true
         erro = nil
-        struct Correcao: Decodable { let texto: String; let correcoes: [Item]; struct Item: Decodable { let de, para: String } }
-        let (r, msg): (Correcao?, String?) = await JFY.ler(["--corrigir"], entrada: antes)
+        let (r, msg) = await correcao(antes)
         corrigindo = false
         DispatchQueue.main.async { focado = true }
-        guard texto == antes else { return 0 }  // o campo mudou no meio: não pisa no que está lá
-        guard let r else { erro = msg; return 0 }
-        let n = r.correcoes.count
-        if n > 0 {
-            texto = r.texto
-            desfazer = (antes, r.texto, (n == 1 ? "1 correção" : "\(n) correções") + " do corretor" + (corrigirAoEnviar ? ": Enter de novo envia." : "."))
-        }
-        return n
+        guard texto == antes else { return }  // o campo mudou no meio: não pisa no que está lá
+        guard let r else { erro = msg; return }
+        if !r.trocas.isEmpty { return aplicar(r) }
+        let n = r.descartada == true ? "O Claude mudou demais: ficou como estava." : "Nada para corrigir."
+        nota = n
+        Task { try? await Task.sleep(for: .seconds(2.5)); if nota == n { nota = nil } }
     }
 
     private func melhorar() {
@@ -440,7 +505,9 @@ struct ChatTela: View {
     }
 
     // ---------- jfy --chat ----------
-    private var podeEnviar: Bool { !enviando && !melhorando && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var podeEnviar: Bool {
+        !enviando && !melhorando && !corrigindo && aguardando == nil && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     private func carregarConversas() async {
         let r = await JFY.rodar(["--chat"])
@@ -464,13 +531,24 @@ struct ChatTela: View {
         }
     }
 
+    /// Com o Corrigir ao enviar, vai o texto corrigido: na hora, se a correção dos bastidores já chegou; senão espera por
+    /// ela até 5 s ("Corrigindo…") e, passado o prazo ou com erro, vai como está. Nunca segura o envio.
     private func enviar() {
-        // corrigir ao enviar: com correção, ela aparece no campo e o próximo Enter envia (nada sai sem você ver)
-        if corrigirAoEnviar && corretorOk && desfazer?.depois != texto {
-            Task { if await corrigir() == 0 { enviarAgora() } }
-            return
+        let t = texto, cid = selecionada
+        guard podeEnviar else { return }
+        guard corrigirAoEnviar, palavras(t) >= 3 else { return enviarAgora() }
+        if let p = pronta, p.de == t { texto = p.c.texto; return enviarAgora() }
+        aguardando = t
+        func fim(_ corrigido: String?) {
+            guard aguardando == t else { return }  // a correção ou o prazo já resolveu
+            aguardando = nil
+            DispatchQueue.main.async { focado = true }
+            guard selecionada == cid else { return }  // trocou de conversa no meio: o texto fica no campo
+            if let corrigido { texto = corrigido }
+            enviarAgora()
         }
-        enviarAgora()
+        Task { fim(await correcao(t).0?.texto) }
+        Task { try? await Task.sleep(for: .seconds(5)); fim(nil) }
     }
 
     private func enviarAgora() {

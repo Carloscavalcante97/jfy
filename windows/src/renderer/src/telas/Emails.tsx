@@ -6,7 +6,7 @@ import {
   Check, Image as IconeFoto, ListFilter, Paperclip, RefreshCw, Search, Signature, Sparkles, SquarePen, Tag,
   TriangleAlert
 } from 'lucide-react'
-import { api, fazer, ler } from '../jfy'
+import { aquecerCorretor, api, fazer, ler } from '../jfy'
 import { atendido, loja, nav, selos } from '../estado'
 import {
   AreaTexto, Aviso, Bolinha, Botao, BotaoContexto, CampoEmails, Carregando, Campo, Flutuante, Linha, Modal, Segmentos,
@@ -381,6 +381,7 @@ function Responder(p: {
   const vazia = !resposta.trim()
   const semDestino = modo === 'encaminhar' && !para.includes('@')
   const ocupado = escrevendo !== null
+  useEffect(aquecerCorretor, []) // o Corrigir já acha o Claude do corretor aberto
 
   async function ia(m: string) {
     setEscrevendo(m)
@@ -625,6 +626,7 @@ function NovoEmail({ fechar, enviado }: { fechar: () => void; enviado: (t: strin
 
   useEffect(() => {
     ler<{ tem: boolean; url: string }>(['--email-assinatura']).then(([a]) => setAssinatura(a))
+    aquecerCorretor() // o Corrigir já acha o Claude do corretor aberto
   }, [])
 
   async function ia(m: string) {
