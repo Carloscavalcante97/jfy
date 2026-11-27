@@ -44,6 +44,7 @@ ORDEM = ["em_progresso", "priorizado", "em_aberto", "criando_escopo", "em_revisa
          "pendente_validacao", "bloqueado", "finalizado_validacao"]
 JANELA = 7  # dias: prazo até aqui (ou vencido) entra no foco do menu principal
 BRANCH_OK = re.compile(r"^(feature|bugfix|hotfix|release)/[a-z0-9._-]+$")
+TETO_PR = 8  # pontos de tasks por PR; a /pipeline confere de novo antes de abrir o PR
 
 # ---------- cores e temas ----------
 PALETA = [39, 214, 170, 78, 141, 203, 51, 220, 117, 209]
@@ -1144,8 +1145,14 @@ def ler_emails():
                     ids, metas = [], []
                     ask(c(f" {n} email(s) marcados como lidos. Enter volta.", 78))
                 except Exception as e:
-                    ask(c(f" Gmail: {e}\n" + (" Rode jfy --login de novo: o jfy agora pede licença para marcar como lido.\n"
-                                                if "403" in str(e) else "") + " Enter volta.", 203))
+                    if "403" not in str(e):
+                        ask(c(f" Gmail: {e}\n Enter volta.", 203))
+                    # login de antes do gmail.modify: o Google só deixa ler. Refaz aqui mesmo (abre o navegador)
+                    elif escolha(c(" O seu login do Google é de antes do \"marcar como lido\" e só deixa ler.", 214)
+                                 + "\n Enter faz o login de novo agora (abre o navegador), 0 volta. ", "") != "0":
+                        login()
+                        tok = google_token()
+                        ask(c(" Aperte t de novo. Enter volta.", 78))
             continue
         n = op.lstrip("o")
         if not (n.isdigit() and 1 <= int(n) <= len(ids)):
@@ -2819,9 +2826,9 @@ def task_mudar(tid, campo, valor, extra=""):
     mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
 
 
-def detalhes_tasks(tids, validade=30 * 60, forcar=False):
+def detalhes_tasks(tids, validade=4 * 3600, forcar=False):
     """O que a lista do MCP não traz e só vem na task inteira (obter_task): os pontos e os anexos. Guarda até 24 h em
-    RUN_DIR/tasks-detalhe.json; cada uso diz quanto aceita (os pontos, 30 min; a aba Arquivos, 24 h), e forcar lê tudo
+    RUN_DIR/tasks-detalhe.json; cada uso diz quanto aceita (os pontos, 4 h; a aba Arquivos, 24 h), e forcar lê tudo
     de novo. Só busca o que falta, 4 por vez; a que falhar tenta de novo, uma por vez (muitas chamadas
     seguidas e o Journify recusa todas). As que o Journify recusou ficam de fora da resposta."""
     from concurrent.futures import ThreadPoolExecutor
@@ -4307,18 +4314,49 @@ def base(repo, tipo="feature"):
     return "HEAD"
 
 
-def garantir_branch(repo, titulo, tipo=None):
-    """Devolve o tipo escolhido, para o próximo repo da mesma task não perguntar de novo."""
+def pontos(tk):
+    return (tk.get("estimate") or {}).get("value") or 0
+
+
+def tasks_da_branch(repo, atual):
+    """Ids das tasks já commitadas na branch: as linhas 'Journify: <id>' que o committer da pipeline põe nos commits."""
+    log = git(repo, "log", base(repo, atual.split("/")[0]) + "..HEAD", "--format=%(trailers:key=Journify,valueonly)")
+    return list(dict.fromkeys(log.stdout.split()))
+
+
+def garantir_branch(repo, task, tipo=None):
+    """Branch gitflow para a task. Se a branch atual já é gitflow mas a task passaria o teto de pontos do PR, oferece outra.
+    Devolve o tipo escolhido, para o próximo repo da mesma task não perguntar de novo."""
     atual = git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-    if not atual or BRANCH_OK.match(atual):
+    if not atual:
         return tipo
+    pts = pontos(task)
+    if BRANCH_OK.match(atual):
+        if pts > TETO_PR:  # ponytail: sozinha não cabe em branch nenhuma; a tela da task e a /pipeline pedem para dividir
+            return tipo
+        feitas = []
+        for i in tasks_da_branch(repo, atual):
+            if i != task["id"]:
+                try:
+                    feitas.append(mcp("obter_task", taskId=i)["task"])
+                except Exception:
+                    pass  # task apagada ou sem acesso: não conta
+        total = pts + sum(map(pontos, feitas))
+        if total <= TETO_PR:
+            return tipo
+        print(c(f"{os.path.basename(repo)}: a branch {atual} já tem {total - pts:g} de {TETO_PR} pontos. "
+                f"Com esta task ({pts:g}) passa do teto do PR:", 203))
+        for t in feitas:
+            print(dim(f"  {pontos(t):g} pts  {t['title']}"))
+        msg = "Abra o PR dela e comece esta task numa branch nova:"
+    else:
+        msg = f"{os.path.basename(repo)}: branch atual '{atual}' não é gitflow. Criar a branch da task:"
     if not tipo:
-        op = escolha(f"{os.path.basename(repo)}: branch atual '{atual}' não é gitflow. Criar a branch da task:\n"
-                     f"  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "123") or "1"
+        op = escolha(f"{msg}\n  1 feature  2 bugfix  (saem da develop atualizada)   3 hotfix (sai da main)   0 não criar\n> [1] ", "123") or "1"
         tipo = {"0": "nenhum", "2": "bugfix", "3": "hotfix"}.get(op, "feature")
     if tipo == "nenhum":
         return tipo
-    nova = f"{tipo}/{slug(titulo)}"
+    nova = f"{tipo}/{slug(task['title'])}"
     if git(repo, "switch", nova).returncode != 0:
         subprocess.run(["git", "switch", "--no-track", "-c", nova, base(repo, tipo)], cwd=repo)
     return tipo
@@ -4483,7 +4521,7 @@ def rodar(tid, modo="pipeline"):
     tipo = None
     for p in pastas if modo == "pipeline" else ():
         if not p.startswith(WT_DIR):  # worktree já nasce na branch da task
-            tipo = garantir_branch(p, task["title"], tipo)
+            tipo = garantir_branch(p, task, tipo)
     inicio(tid)
     arq = os.path.join(RUN_DIR, tid + ".extra")  # escrito pela tela_task
     notas = ""
@@ -4659,8 +4697,8 @@ def blocos_task(cfg, t, full, largura):
     ind.append(dim("sem prazo") if n is None else c("prazo " + date.fromisoformat(t["dueDate"][:10]).strftime("%d/%m"), 250)
                + (" · " + tag_prazo(t) if n <= JANELA else ""))
     topo += ["", "   ".join(ind)]
-    if pts and pts > 8:
-        topo.append(c("acima de 8 pontos: o fluxo pede dividir a task antes", 203))
+    if pts and pts > TETO_PR:
+        topo.append(c(f"acima de {TETO_PR} pontos: não cabe num PR, divida a task antes", 203))
     anexos, coms, base = tk.get("attachments") or [], full.get("comments") or [], []
     imgs = [i for i, x in enumerate(anexos, 1) if (x.get("contentType") or "").startswith("image/")]
     docs = [f"{c(f'a{i}', 39, True)} {x.get('name', '?')}"[:largura + 20] for i, x in enumerate(anexos, 1) if i not in imgs]
@@ -5700,11 +5738,11 @@ def selftest():
         assert False, "enviou sem destinatário"
     except SystemExit:
         pass
-    # detalhe das tasks: o guardado há 1 h vale para a aba Arquivos (24 h), não para os pontos (30 min); forcar lê de novo
+    # detalhe das tasks: o guardado há 5 h vale para a aba Arquivos (24 h), não para os pontos (4 h); forcar lê de novo
     lidas, run_real = [], RUN_DIR
     globals().update(RUN_DIR=os.path.join(run_real, "teste-detalhe"), mcp=lambda tool, **kw: lidas.append(kw["taskId"]) or {"task": {}})
     os.makedirs(RUN_DIR, exist_ok=True)
-    json.dump({"a": {"em": time.time() - 3600, "pontos": 1, "anexos": []}}, open(os.path.join(RUN_DIR, "tasks-detalhe.json"), "w"))
+    json.dump({"a": {"em": time.time() - 5 * 3600, "pontos": 1, "anexos": []}}, open(os.path.join(RUN_DIR, "tasks-detalhe.json"), "w"))
     assert detalhes_tasks(["a"], validade=24 * 3600)["a"]["pontos"] == 1 and lidas == []
     detalhes_tasks(["a"])
     detalhes_tasks(["a"], validade=24 * 3600, forcar=True)
@@ -5796,6 +5834,21 @@ def selftest():
             chat(*args)
         assert json.loads(buf.getvalue()) == saida, (args, buf.getvalue())
     globals().update(reais)
+    # teto do PR: a task nova soma com as já commitadas na branch; passou de 8, oferece branch nova
+    rp = os.path.join(RUN_DIR, "teste-repo")
+    os.makedirs(rp)
+    for a in (["init", "-q", "-b", "develop"], ["commit", "-q", "--allow-empty", "-m", "base"],
+              ["switch", "-q", "-c", "feature/x"], ["commit", "-q", "--allow-empty", "-m", "feat: a\n\nJournify: T1"]):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t", *a], cwd=rp, check=True)
+    reais = {k: globals()[k] for k in ("mcp", "escolha")}  # escolha é global mais abaixo: nome direto aqui é SyntaxError
+    globals().update(mcp=lambda nome, **k: {"task": {"id": k["taskId"], "title": k["taskId"], "estimate": {"value": 5}}},
+                     escolha=lambda *a, **k: "1")
+    garantir_branch(rp, {"id": "T2", "title": "cabe", "estimate": {"value": 3}})  # 5 + 3 = 8: fica
+    assert git(rp, "branch", "--show-current").stdout.strip() == "feature/x"
+    garantir_branch(rp, {"id": "T3", "title": "passa", "estimate": {"value": 4}})  # 5 + 4 = 9: branch nova
+    assert git(rp, "branch", "--show-current").stdout.strip() == "feature/passa"
+    globals().update(reais)
+    shutil.rmtree(rp)
     # primeiros passos: o que já está feito não pergunta nada; o que falta é guiado e p pula
     global PASSOS, escolha, save, limpar
     salvo, feitos, respostas = {}, [], iter(["p", ""])
