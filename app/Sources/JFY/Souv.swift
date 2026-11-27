@@ -687,3 +687,32 @@ struct CampoDataSouv: View {
         data = Calendar.current.date(bySettingHour: h ?? c.hour ?? 0, minute: m ?? c.minute ?? 0, second: 0, of: data) ?? data
     }
 }
+
+
+/// Dica que aparece na hora, em cima do botão de ícone. A do sistema (.help) demora 1 a 2 s e não aparece com o botão
+/// desativado: no ícone sozinho, parecia não existir. `alinhamento`: .topTrailing no último botão da linha (não sai da janela).
+struct DicaSouv: ViewModifier {
+    let texto: String
+    var alinhamento: Alignment = .top
+    @State private var aberta = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { aberta = $0 }
+            .overlay(alignment: alinhamento) {
+                if aberta {
+                    Text(texto).font(.caption).foregroundStyle(Souv.texto).fixedSize()
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Souv.superficie, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Souv.borda))
+                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                        .offset(y: -32)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+extension View {
+    func dicaSouv(_ texto: String, alinhamento: Alignment = .top) -> some View { modifier(DicaSouv(texto: texto, alinhamento: alinhamento)) }
+}

@@ -287,7 +287,7 @@ struct ChatTela: View {
             }
             HStack(alignment: .bottom, spacing: 10) {
                 Button { paleta.toggle() } label: { Label("Emojis", systemImage: "face.smiling").labelStyle(.iconOnly).font(.title3) }
-                    .buttonStyle(.souvIcone).disabled(melhorando).help("Emojis")
+                    .buttonStyle(.souvIcone).disabled(melhorando).dicaSouv("Emojis")
                     .popover(isPresented: $paleta, arrowEdge: .top) { paletaEmojis }
                 TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...6).focused($focado).disabled(melhorando || corrigindo)
@@ -315,7 +315,7 @@ struct ChatTela: View {
                 }
                 .buttonStyle(.souvIcone)
                 .disabled(!podeMelhorar)
-                .help("Corrige o português com o Claude (Haiku, quase sem custo)")
+                .dicaSouv("Corrigir o português")
                 Button(action: melhorar) {
                     if melhorando { ProgressView().controlSize(.small) } else {
                         Label("Melhorar com o Claude", systemImage: "sparkles").labelStyle(.iconOnly).font(.title3)
@@ -323,7 +323,7 @@ struct ChatTela: View {
                 }
                 .buttonStyle(.souvIcone)
                 .disabled(!podeMelhorar)
-                .help("Melhora a mensagem com o Claude (usa tokens)")
+                .dicaSouv("Melhorar o texto com o Claude")
                 Button {
                     // padrão: a próxima hora cheia
                     programarPara = Calendar.current.nextDate(after: Date(), matching: DateComponents(minute: 0, second: 0),
@@ -334,7 +334,7 @@ struct ChatTela: View {
                 }
                 .buttonStyle(.souvIcone)
                 .disabled(!podeEnviar)
-                .help("Programar envio")
+                .dicaSouv("Programar envio")
                 .popover(isPresented: $programando, arrowEdge: .top) { escolherHora }
                 Button(action: enviar) {
                     if enviando {
@@ -346,7 +346,7 @@ struct ChatTela: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
                 .disabled(!podeEnviar)
-                .help("Enviar (Enter; Shift+Enter quebra a linha)")
+                .dicaSouv("Enviar (Enter)", alinhamento: .topTrailing)
             }
         }
         .padding(14)

@@ -643,9 +643,11 @@ export default function Chat({ ativa }: { ativa: boolean }) {
                 onBlur={() => setMencao(null)}
                 onKeyDown={teclas}
               />
-              <Botao tipo="icone" title="Emoji (Win+. abre o seletor do sistema)" disabled={melhorando || corrigindo} onClick={(e) => setPaleta(paleta ? null : e.currentTarget)}>
-                <Smile size={20} />
-              </Botao>
+              <span className="ch-dica" data-dica="Emojis">
+                <Botao tipo="icone" aria-label="Emojis" disabled={melhorando || corrigindo} onClick={(e) => setPaleta(paleta ? null : e.currentTarget)}>
+                  <Smile size={20} />
+                </Botao>
+              </span>
               {paleta && (
                 <Flutuante ancora={paleta} fechar={() => setPaleta(null)}>
                   <div className="ch-emojis">
@@ -655,26 +657,27 @@ export default function Chat({ ativa }: { ativa: boolean }) {
                   </div>
                 </Flutuante>
               )}
-              <Botao
-                tipo="icone"
-                title="Corrige o português com o Claude (Haiku, quase sem custo)"
-                disabled={!texto.trim() || corrigindo || melhorando || enviando}
-                onClick={corrigir}
-              >
-                {corrigindo ? <Carregando tamanho={20} /> : <SpellCheck size={20} />}
-              </Botao>
-              <Botao tipo="icone" title="Melhora a mensagem com o Claude (usa tokens)" disabled={!texto.trim() || melhorando || corrigindo || enviando} onClick={melhorar}>
-                {melhorando ? <Carregando tamanho={20} /> : <Sparkles size={20} />}
-              </Botao>
-              <Botao
-                tipo="icone"
-                title="Programar envio"
-                disabled={!podeEnviar}
-                // abre na próxima hora cheia
-                onClick={(e) => (setQuando(emPonto(0, new Date().getHours() + 1)), setRelogio(relogio ? null : e.currentTarget))}
-              >
-                <Clock size={20} />
-              </Botao>
+              <span className="ch-dica" data-dica="Corrigir o português">
+                <Botao tipo="icone" aria-label="Corrigir o português" disabled={!texto.trim() || corrigindo || melhorando || enviando} onClick={corrigir}>
+                  {corrigindo ? <Carregando tamanho={20} /> : <SpellCheck size={20} />}
+                </Botao>
+              </span>
+              <span className="ch-dica" data-dica="Melhorar o texto com o Claude">
+                <Botao tipo="icone" aria-label="Melhorar o texto com o Claude" disabled={!texto.trim() || melhorando || corrigindo || enviando} onClick={melhorar}>
+                  {melhorando ? <Carregando tamanho={20} /> : <Sparkles size={20} />}
+                </Botao>
+              </span>
+              <span className="ch-dica" data-dica="Programar envio">
+                <Botao
+                  tipo="icone"
+                  aria-label="Programar envio"
+                  disabled={!podeEnviar}
+                  // abre na próxima hora cheia
+                  onClick={(e) => (setQuando(emPonto(0, new Date().getHours() + 1)), setRelogio(relogio ? null : e.currentTarget))}
+                >
+                  <Clock size={20} />
+                </Botao>
+              </span>
               {relogio && (
                 <Flutuante ancora={relogio} fechar={() => setRelogio(null)} largura={250}>
                   <div className="lista-menu">
@@ -695,9 +698,11 @@ export default function Chat({ ativa }: { ativa: boolean }) {
                   </div>
                 </Flutuante>
               )}
-              <button type="button" className={`ch-enviar ${podeEnviar ? 'pode' : ''}`} disabled={!podeEnviar} title="Enviar (Enter)" onClick={enviar}>
-                {enviando ? <Carregando /> : <CircleArrowUp size={24} />}
-              </button>
+              <span className="ch-dica direita" data-dica="Enviar (Enter)">
+                <button type="button" className={`ch-enviar ${podeEnviar ? 'pode' : ''}`} disabled={!podeEnviar} aria-label="Enviar" onClick={enviar}>
+                  {enviando ? <Carregando /> : <CircleArrowUp size={24} />}
+                </button>
+              </span>
             </div>
           )}
         </div>
