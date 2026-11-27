@@ -131,3 +131,24 @@ export function useACada(f: () => void, ms: number, ativo = true) {
 
 // ---------- os números da barra lateral: cada tela põe o seu (emails não lidos, notificações novas, portas abertas) ----------
 export const selos = loja<{ emails: number; notificacoes: number; portas: number }>({ emails: 0, notificacoes: 0, portas: 0 })
+
+// ---------- sessão (Login.swift): os primeiros passos e o aviso "a conta do Google mudou, confira a sessão" ----------
+export const passos = loja('', 'primeirosPassos.estado') // "" nunca feito, "feito", "refazer"
+export const sessaoVersao = loja(0)
+/** Quem mexe na conta do Google (Configurações) chama isto, e o portão confere a sessão de novo. */
+export const sessaoMudou = () => sessaoVersao.set((v) => v + 1)
+
+// ---------- contatos (sugestões dos campos de email: Emails e Agenda), lidos uma vez do jfy ----------
+export type Contato = { email: string; nome: string }
+export const contatos = loja<Contato[]>([])
+let contatosPedidos = false
+export async function carregarContatos() {
+  if (contatosPedidos) return
+  contatosPedidos = true
+  const r = await api.jfy(['--contatos-json'])
+  try {
+    if (r.status === 0) contatos.set(JSON.parse(r.saida))
+  } catch {
+    /* sem contatos: o campo funciona sem sugestão */
+  }
+}

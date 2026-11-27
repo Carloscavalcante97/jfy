@@ -6,10 +6,10 @@ import {
   type TextareaHTMLAttributes
 } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Calendar as IconeCalendario, LoaderCircle } from 'lucide-react'
+import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Calendar as IconeCalendario, LoaderCircle, PlusCircle } from 'lucide-react'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { loja } from './estado'
+import { alternarNaCesta, carregarContatos, cesta, contatos, loja, naCesta, type ItemContexto } from './estado'
 
 // ---------- botões e campos ----------
 type TipoBotao = 'secundario' | 'primario' | 'perigo' | 'link' | 'icone'
@@ -457,4 +457,81 @@ export function TextoRico({ texto, className }: { texto: string | null | undefin
   if (!texto) return null
   const html = pareceHtml(texto) ? texto : (marked.parse(texto, { async: false, breaks: true }) as string)
   return <div className={`texto-rico ${className ?? ''}`} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
+}
+
+// ---------- cesta de contexto: o botão "Contexto" e a linha do clique direito ----------
+/** "+ Contexto" no topo de uma task, documento, reunião, email ou PR. */
+export function BotaoContexto({ item, pequeno }: { item: ItemContexto; pequeno?: boolean }) {
+  cesta.use()
+  const dentro = naCesta(item)
+  return (
+    <Botao pequeno={pequeno} onClick={() => alternarNaCesta(item)}
+      title={dentro ? 'Tirar da cesta de contexto' : 'Pôr na cesta de contexto, para mandar ao Claude'}>
+      {dentro ? <CheckCircle2 size={13} className="destaque" /> : <PlusCircle size={13} />}
+      {dentro ? 'No contexto' : 'Contexto'}
+    </Botao>
+  )
+}
+/** O mesmo, como item de menu do clique direito (linhas de arquivo, link, documento). */
+export const itemMenuContexto = (item: ItemContexto): ItemMenu => ({
+  rotulo: naCesta(item) ? 'Tirar do contexto' : 'Adicionar ao contexto',
+  acao: () => alternarNaCesta(item)
+})
+
+// ---------- campo de emails (Para, Cc, convidados, "Reunião com…") ----------
+/** Emails separados por vírgula: enquanto você digita, sugere os contatos que batem (nome ou email); o clique troca o
+ * que está sendo digitado pelo email escolhido, como o Gmail. Enter fecha o email digitado (`aoEnter` recebe o texto,
+ * para a Agenda virar uma pessoa). */
+export function CampoEmails({ rotulo, texto, mudar, aoEnter, largura }: {
+  rotulo: string
+  texto: string
+  mudar: (t: string) => void
+  aoEnter?: (t: string) => void
+  largura?: number | string
+}) {
+  const lista = contatos.use()
+  const [focado, setFocado] = useState(false)
+  useEffect(() => void carregarContatos(), [])
+  const digitando = (texto.split(',').pop() ?? '').trim().toLowerCase()
+  const ja = new Set(texto.toLowerCase().split(',').map((x) => x.trim()))
+  const sugestoes = focado && digitando.length >= 2
+    ? lista.filter((c) => !ja.has(c.email) && (c.email.includes(digitando) || c.nome.toLowerCase().includes(digitando))).slice(0, 6)
+    : []
+  const escolher = (email: string) => {
+    const partes = texto.split(',').map((x) => x.trim())
+    partes[partes.length - 1] = email
+    const novo = partes.filter(Boolean).join(', ') + ', '
+    mudar(novo)
+    aoEnter?.(novo)
+  }
+  return (
+    <div className="campo-emails" style={{ width: largura }}>
+      <div className="linha-h">
+        <span className="texto2 rotulo-campo">{rotulo}</span>
+        <Campo
+          placeholder="emails, separados por vírgula"
+          value={texto}
+          onChange={(e) => mudar(e.target.value)}
+          onFocus={() => setFocado(true)}
+          onBlur={() => setTimeout(() => setFocado(false), 150)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return
+            e.preventDefault()
+            if (sugestoes[0]) escolher(sugestoes[0].email)
+            else if (digitando.includes('@')) (mudar(texto + ', '), aoEnter?.(texto + ', '))
+          }}
+        />
+      </div>
+      {sugestoes.length > 0 && (
+        <div className="sugestoes">
+          {sugestoes.map((c) => (
+            <button type="button" key={c.email} onMouseDown={(e) => (e.preventDefault(), escolher(c.email))}>
+              <span>{c.nome || c.email}</span>
+              {c.nome && <span className="texto2">{c.email}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }

@@ -249,3 +249,14 @@ h1, h2, h3 { font-family: 'Lexend', sans-serif; font-weight: 300; margin: 0; }
 .medidor .trilho { width: 70px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--texto2) 22%, transparent); overflow: hidden; }
 .medidor .trilho span { display: block; height: 100%; border-radius: 3px; }
 .medidor strong { font-variant-numeric: tabular-nums; }
+
+/* ---------- campo de emails ---------- */
+.campo-emails { position: relative; display: grid; gap: 2px; }
+.campo-emails .rotulo-campo { min-width: 64px; flex: none; }
+.campo-emails .sugestoes {
+  margin-left: 72px; display: grid; background: var(--superficie); border: 1px solid var(--borda); border-radius: 6px; overflow: hidden;
+}
+.campo-emails .sugestoes button {
+  display: flex; gap: 8px; padding: 4px 8px; border: 0; background: none; color: var(--texto); font: 13px 'Roboto'; text-align: left; cursor: pointer;
+}
+.campo-emails .sugestoes button:hover { background: color-mix(in srgb, var(--primaria) 14%, transparent); }
