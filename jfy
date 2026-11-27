@@ -741,6 +741,14 @@ def vivo(pid):
         return True
 
 
+def apagar_pasta(p):
+    """shutil.rmtree que apaga também arquivo só-leitura: no Windows, os objetos do git são, e o rmtree para neles."""
+    def de_novo(apagar, caminho, _):
+        os.chmod(caminho, 0o700)
+        apagar(caminho)
+    shutil.rmtree(p, **({"onexc": de_novo} if sys.version_info >= (3, 12) else {"onerror": de_novo}))
+
+
 def paginar(texto):
     """less -R quando existe; no Windows (sem less), o texto inteiro e Enter para voltar: a aba do app rola."""
     if shutil.which("less"):
@@ -5766,7 +5774,7 @@ def selftest():
     worktree_acao(rp, "remover", os.path.realpath(wt) if not os.path.isdir(wt) else lista[1]["pasta"])
     assert len(worktrees(rp)) == 1 and not os.path.exists(wt)
     globals().update(reais)
-    shutil.rmtree(rp)
+    apagar_pasta(rp)
     # agenda: dia inteiro vai com o fim no dia seguinte (como o Google quer), quem já respondeu mantém a resposta,
     # você não some da lista e a chamada do Meet só é pedida quando o evento ainda não tem
     ce = corpo_evento({"titulo": "Daily", "dia_inteiro": True, "ini": "2026-11-25", "fim": "2026-11-25", "meet": True})
