@@ -31,12 +31,13 @@ setInterval(lerCaixa, 10_000)
 
 // ---------- o que o jfy devolve ----------
 type Item = { id: string; de: string; assunto: string; ts: number; email?: string; lido?: boolean; importante?: boolean }
-type Lista = { conta?: string; url?: string; total: number; mais: boolean; nao_lidos?: number; emails: Item[] }
+// cache: a lista guardada; mudou: a busca achou algo diferente da guardada (o mesmo vale para o Email aberto)
+type Lista = { conta?: string; url?: string; total: number; mais: boolean; nao_lidos?: number; emails: Item[]; cache?: boolean; mudou?: boolean }
 type Anexo = { nome: string; tipo: string; parte: string; tamanho: number }
 type Mensagem = { id: string; de: string; data: string; texto: string; eu: boolean; anexos?: Anexo[] }
 type Email = {
   id: string; de: string; para: string; data: string; assunto: string; texto: string; link: string; cc?: string
-  anexos: Anexo[]; lido: boolean; tem_assinatura: boolean; conversa: Mensagem[]
+  anexos: Anexo[]; lido: boolean; tem_assinatura: boolean; conversa: Mensagem[]; cache?: boolean; mudou?: boolean
 }
 type Feito = { para: string; cc: string }
 
@@ -100,24 +101,39 @@ export default function Emails({ ativa }: { ativa: boolean }) {
   const sel = useRef(selecao)
   sel.current = selecao
 
+  // a lista guardada aparece na hora (o vigia do jfy a mantém em dia de 2 em 2 min); a busca roda por trás e só troca
+  // a lista quando achou algo novo
   async function carregar() {
     const c = caixaLista.get()
+    const [g, msgG] = await ler<Lista>(['--emails-json', c, 'cache'])
+    if (caixaLista.get() !== c) return // trocou de caixa no meio: vale a resposta da nova
+    if (g) setLista(g)
+    if (!g?.cache) {
+      setAviso(msgG) // sem lista guardada, o jfy já buscou
+      lerCaixa()
+      return
+    }
     setCarregando(true)
     const [l, msg] = await ler<Lista>(['--emails-json', c])
     setCarregando(false)
-    if (caixaLista.get() !== c) return // trocou de caixa no meio: vale a resposta da nova
-    if (l) setLista(l)
+    if (caixaLista.get() !== c) return
+    if (l?.mudou) setLista(l)
     setAviso(msg)
     lerCaixa() // o jfy acabou de guardar o total: o selo acompanha
   }
 
+  // o email aberto da última vez aparece na hora; a leitura de verdade só troca quando mudou (resposta nova, lido)
   async function abrir(id = sel.current) {
     if (!id) return setEmail(null)
+    const [g, msgG] = await ler<Email>(['--email-json', id, 'cache'])
+    if (sel.current !== id) return
+    setEmail(g)
+    if (msgG) setAviso(msgG)
+    if (!g?.cache) return
     const [e, msg] = await ler<Email>(['--email-json', id])
-    if (sel.current === id) {
-      setEmail(e)
-      if (msg) setAviso(msg)
-    }
+    if (sel.current !== id) return
+    if (e?.mudou) setEmail(e)
+    if (msg) setAviso(msg)
   }
 
   async function agir(args: string[]) {

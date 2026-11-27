@@ -899,6 +899,10 @@ def login():
     cfg["google"]["conta"] = conta
     cfg["google"]["escopos"] = tok.get("scope", "")  # o que a pessoa liberou: sem o Drive, a cesta manda só o link
     save(cfg)
+    for arq in (ITENS_EMAIL, lista_email_guardada("nao_lidos"), lista_email_guardada("importantes"), os.path.join(HOME, "assinatura.json")):
+        with contextlib.suppress(OSError):  # pode ter trocado de conta: os emails guardados são da outra
+            os.remove(arq)
+    shutil.rmtree(CORPO_EMAIL, ignore_errors=True)
     try:
         n, m = len(agenda_google()), len(gmail_nao_lidos(tok["access_token"]))
         print(c(f"Google conectado: {n} reunião(ões) hoje, {m} email(s) não lido(s) na Principal.", 78))
@@ -1264,7 +1268,7 @@ def vigiar():
         os.utime(trava)  # trava largada por um vigia que morreu
     try:
         st = json.load(open(VIGIAS)) if os.path.exists(VIGIAS) else {}
-        for vigia in (vigiar_prs, vigiar_agenda, vigiar_chat):
+        for vigia in (vigiar_prs, vigiar_agenda, vigiar_chat, vigiar_emails):
             try:
                 vigia(st)
             except Exception as e:  # sem rede, sem gh, sem Google: tenta de novo na próxima
@@ -2711,6 +2715,14 @@ def chat_enviar(cid, texto, mencoes=""):
             "quando": m.get("em") or datetime.now().astimezone().isoformat(timespec="seconds"), "minha": True}
 
 
+def vigiar_emails(st):
+    """Atualiza as duas caixas da aba Emails por trás (só o email novo vai ao Gmail): a aba abre na hora, com a lista
+    de no máximo 2 min atrás, e a busca da aba quase nunca muda alguma coisa."""
+    if load().get("google"):
+        for caixa in ("nao_lidos", "importantes"):
+            emails_json(caixa)
+
+
 def vigiar_chat(st):
     """Mensagem nova numa conversa (não lida) vira notificação, e o clique abre a conversa no app. A primeira vez só
     guarda o que já estava lá."""
@@ -3818,29 +3830,103 @@ def gmail_item(tok, mid):
             "assunto": h.get("subject") or "(sem assunto)", "lido": "UNREAD" not in rotulos, "importante": "IMPORTANT" in rotulos}
 
 
-def emails_json(caixa="nao_lidos"):
+ITENS_EMAIL = os.path.join(HOME, "emails-itens.json")  # remetente, assunto e data de cada email já visto (não mudam)
+
+
+def lista_email_guardada(caixa):
+    return os.path.join(HOME, f"emails-{caixa}.json")
+
+
+def gravar_json(arq, d):
+    """Grava inteiro ou nada: o vigia (de 2 em 2 min) e o app escrevem os mesmos arquivos do email."""
+    tmp = f"{arq}.{os.getpid()}.tmp"
+    json.dump(d, open(tmp, "w"), ensure_ascii=False)
+    os.replace(tmp, arq)
+
+
+def lido_na_lista_guardada(ids, lido):
+    """Marcar lido/não lido no app já vale para a lista guardada (ids None: todos): reabrir a aba não mostra o velho."""
+    for caixa in ("nao_lidos", "importantes"):
+        with contextlib.suppress(OSError, ValueError, KeyError):
+            d = json.load(open(lista_email_guardada(caixa)))
+            for e in d["emails"]:
+                if ids is None or e["id"] in ids:
+                    e["lido"] = lido
+            gravar_json(lista_email_guardada(caixa), d)
+    for mid in ids or []:  # e o email aberto guardado (ponytail: o "marcar todos" deixa os abertos para a próxima leitura)
+        arq = os.path.join(CORPO_EMAIL, re.sub(r"[^\w-]", "", mid) + ".json")
+        with contextlib.suppress(OSError, ValueError):
+            gravar_json(arq, dict(json.load(open(arq)), lido=lido))
+
+
+def emails_json(caixa="nao_lidos", modo=""):
     """Aba Emails: os não lidos da Principal, ou os importantes (como a pasta Importantes do Gmail, sem os que você
     enviou), os 50 mais novos com remetente e assunto, e o total (até 100). O total de não lidos vai sempre junto:
-    é o selo da barra lateral."""
+    é o selo da barra lateral.
+    Com modo "cache", devolve na hora a última lista guardada (o app mostra enquanto a busca de verdade roda por trás);
+    sem guardada, busca. A busca guarda a lista e diz se ela "mudou" desde a última: o app só redesenha quando muda.
+    O remetente, o assunto e a data de cada email ficam guardados por id: só o email novo vai ao Gmail. O lido/não lido
+    vem sempre da busca da vez."""
     from concurrent.futures import ThreadPoolExecutor
     if caixa not in ("nao_lidos", "importantes"):
         sys.exit("Use nao_lidos ou importantes.")
+    arq = lista_email_guardada(caixa)
+    try:
+        antes = json.load(open(arq))
+    except (OSError, ValueError):
+        antes = None
+    if modo == "cache" and antes:
+        return dict(antes, cache=True)
     tok = caixa_google()
     nao_lidos = gmail_nao_lidos(tok)
     guardar_ids(nao_lidos)
     if caixa == "nao_lidos":
-        ids = nao_lidos
+        ids, sem_ler = nao_lidos, set(nao_lidos)
     else:
-        q = urllib.parse.urlencode({"q": "is:important -in:sent -in:chats", "maxResults": 100})
-        ids = [m["id"] for m in http_json(f"{GMAIL}?{q}", token=tok).get("messages", [])]
+        busca = lambda q: [m["id"] for m in http_json(f"{GMAIL}?{urllib.parse.urlencode({'q': q, 'maxResults': 100})}",
+                                                       token=tok).get("messages", [])]
+        ids, sem_ler = busca("is:important -in:sent -in:chats"), set(busca("is:important is:unread -in:sent -in:chats"))
+    try:
+        guardados = json.load(open(ITENS_EMAIL))
+    except (OSError, ValueError):
+        guardados = {}
+    novos = [i for i in ids[:50] if i not in guardados]
     with ThreadPoolExecutor(8) as ex:
-        itens = list(ex.map(lambda i: gmail_item(tok, i), ids[:50]))
-    return {"conta": conta_gmail(tok), "url": url_gmail(conta_gmail(tok)), "total": len(ids), "mais": len(ids) >= 100,
-            "nao_lidos": len(nao_lidos), "emails": itens}
+        guardados.update(zip(novos, ex.map(lambda i: gmail_item(tok, i), novos)))
+    itens = [dict(guardados[i], lido=i not in sem_ler) for i in ids[:50]]
+    # ponytail: guarda os 1000 mais novos; email mais antigo que isso, se aparecer de novo, é buscado de novo
+    gravar_json(ITENS_EMAIL, dict(sorted(guardados.items(), key=lambda kv: -kv[1].get("ts", 0))[:1000]))
+    r = {"conta": conta_gmail(tok), "url": url_gmail(conta_gmail(tok)), "total": len(ids), "mais": len(ids) >= 100,
+         "nao_lidos": len(nao_lidos), "emails": itens, "em": time.time()}
+    marca = lambda x: (x["total"], x["nao_lidos"], [(e["id"], e["lido"]) for e in x["emails"]]) if x else None
+    gravar_json(arq, r)
+    return dict(r, mudou=marca(r) != marca(antes))
 
 
-def email_json(mid):
-    """Um email inteiro (o texto; o html vira texto). Só lê: continua não lido no Gmail."""
+CORPO_EMAIL = os.path.join(HOME, "emails-abertos")  # os emails já abertos no app (um arquivo por email)
+
+
+def email_json(mid, modo=""):
+    """Um email inteiro (o texto; o html vira texto). Só lê: continua não lido no Gmail. Com modo "cache", devolve na
+    hora o que foi lido da última vez (o app mostra e confere por trás); a leitura de verdade guarda e diz se "mudou"
+    (resposta nova na conversa, lido ou não lido). Guarda os 100 abertos por último."""
+    arq = os.path.join(CORPO_EMAIL, re.sub(r"[^\w-]", "", mid) + ".json")
+    try:
+        antes = json.load(open(arq))
+    except (OSError, ValueError):
+        antes = None
+    if modo == "cache" and antes:
+        return dict(antes, cache=True)
+    r = email_lido(mid)
+    os.makedirs(CORPO_EMAIL, exist_ok=True)
+    gravar_json(arq, r)
+    velhos = sorted(os.scandir(CORPO_EMAIL), key=lambda x: x.stat().st_mtime)[:-100]
+    for v in velhos:
+        os.remove(v.path)
+    return dict(r, mudou=r != antes)
+
+
+def email_lido(mid):
     tok = caixa_google()
     m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
     h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
@@ -3865,12 +3951,14 @@ def email_acao(mid, acao):
     http_json(f"{GMAIL}/batchModify", token=tok, corpo={"ids": [mid], campo: ["UNREAD"]})
     st = json.load(open(EMAIL)) if os.path.exists(EMAIL) else {}
     guardar_ids([i for i in st.get("ids", []) if i != mid] + ([mid] if acao == "nao_lido" else []))
+    lido_na_lista_guardada({mid}, acao == "lido")
 
 
 def emails_lidos():
     """Marca como lidos todos os não lidos da Principal (o t do leitor de emails)."""
     n = marcar_lidos(caixa_google())
     guardar_ids([])
+    lido_na_lista_guardada(None, True)
     return {"marcados": n}
 
 
@@ -3897,20 +3985,30 @@ def portas_encerrar_todas():
         sys.exit("Não consegui encerrar: " + ", ".join(falhas))
 
 
-def assinatura_gmail(tok):
-    """A assinatura padrão do Gmail (HTML), ou "" quando não há assinatura marcada como padrão."""
+def assinatura_gmail(tok, forcar=False):
+    """A assinatura padrão do Gmail (HTML), ou "" quando não há assinatura marcada como padrão. Guardada por 6 h em
+    ~/.jfy/assinatura.json: o email aberto e o envio pediam ao Gmail toda vez."""
+    arq = os.path.join(HOME, "assinatura.json")
+    try:
+        st = json.load(open(arq))
+        if not forcar and time.time() - st["em"] < 6 * 3600:
+            return st["assinatura"]
+    except (OSError, ValueError, KeyError):
+        pass
     try:
         r = http_json(GMAIL.rsplit("/", 1)[0] + "/settings/sendAs", token=tok)
-        return next((a.get("signature") or "" for a in r.get("sendAs", []) if a.get("isDefault")), "")
+        assinatura = next((a.get("signature") or "" for a in r.get("sendAs", []) if a.get("isDefault")), "")
     except Exception:
         return ""
+    json.dump({"em": time.time(), "assinatura": assinatura}, open(arq, "w"), ensure_ascii=False)
+    return assinatura
 
 
 def email_assinatura():
     """O app confere antes de enviar: tem assinatura padrão no Gmail? A API só enxerga a que está marcada como padrão
     (Configurações › Geral › Padrões de assinatura); as outras assinaturas com nome ficam invisíveis para ela."""
     tok = caixa_google()
-    return {"tem": bool(assinatura_gmail(tok)), "url": url_gmail(conta_gmail(tok), "settings/general")}
+    return {"tem": bool(assinatura_gmail(tok, forcar=True)), "url": url_gmail(conta_gmail(tok), "settings/general")}
 
 
 def enderecos(cabecalho):
@@ -5815,6 +5913,25 @@ def selftest():
     caixa["erro"] = True
     st = json.load(open(EMAIL)); st.update(checado=0, chegou=0); json.dump(st, open(EMAIL, "w"))
     assert "erro" in email_barra() and time.time() - json.load(open(EMAIL))["checado"] < 5
+    os.remove(EMAIL)
+    # aba Emails: a lista guardada abre sem ir ao Gmail; a busca só pede o email novo e diz se mudou
+    global HOME, ITENS_EMAIL, caixa_google, gmail_item, conta_gmail, url_gmail
+    import tempfile
+    home_antes, HOME = HOME, tempfile.mkdtemp()
+    ITENS_EMAIL, buscados = os.path.join(HOME, "emails-itens.json"), []
+    caixa_google, conta_gmail, url_gmail = lambda: "tok", lambda tok: "eu@x", lambda *a: "u"
+    gmail_item = lambda tok, mid: (buscados.append(mid), {"id": mid, "ts": int(mid, 16), "de": "Ana", "email": "a@x",
+                                                          "assunto": "Oi", "lido": False, "importante": False})[1]
+    caixa["ids"] = ["b", "a"]
+    assert emails_json("nao_lidos")["mudou"] and buscados == ["b", "a"]
+    assert emails_json("nao_lidos", "cache")["cache"] and buscados == ["b", "a"]  # da lista guardada: nada vai ao Gmail
+    caixa["ids"] = ["c", "b", "a"]
+    assert emails_json("nao_lidos")["mudou"] and buscados == ["b", "a", "c"]  # só o novo
+    assert not emails_json("nao_lidos")["mudou"]
+    lido_na_lista_guardada({"b"}, True)
+    assert [e["lido"] for e in emails_json("nao_lidos", "cache")["emails"]] == [False, True, False]
+    shutil.rmtree(HOME)
+    HOME, ITENS_EMAIL = home_antes, os.path.join(home_antes, "emails-itens.json")
     os.remove(EMAIL)
     # reuniões: o que você deu (no app) vale sobre o palpite pelo título; nome livre vira o projeto da linha
     global REUNIOES, reunioes_do_dia

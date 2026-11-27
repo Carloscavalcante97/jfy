@@ -28,6 +28,7 @@ struct EmailsTela: View {
     @ObservedObject var nav: Navegacao
 
     struct Lista: Decodable {
+        let mudou, cache: Bool?  // cache: a lista guardada; mudou: a busca achou algo diferente da guardada
         struct Item: Decodable, Identifiable, Hashable {
             let id, de, assunto: String
             let ts: Double
@@ -46,6 +47,7 @@ struct EmailsTela: View {
     enum Grupo: String, CaseIterable { case data = "Data", remetente = "Remetente", nenhum = "Sem grupo" }
 
     struct Email: Decodable {
+        let mudou, cache: Bool?  // o mesmo da Lista, para o email aberto
         struct Anexo: Decodable, Identifiable {
             let nome, tipo, parte: String
             let tamanho: Int
@@ -372,19 +374,36 @@ struct EmailsTela: View {
         }
     }
 
+    /// A lista guardada aparece na hora (o vigia do jfy a mantém em dia de 2 em 2 min); a busca roda por trás e só
+    /// troca a lista quando achou algo novo.
     private func carregar() async {
+        let c = caixaLista
+        let (g, msgG): (Lista?, String?) = await JFY.ler(["--emails-json", c.rawValue, "cache"])
+        guard c == caixaLista else { return }  // trocou de caixa no meio: vale a resposta da nova
+        if let g { lista = g }
+        guard g?.cache == true else { aviso = msgG; caixa.ler(); return }  // sem lista guardada, o jfy já buscou
         carregando = true
         defer { carregando = false }
-        let (l, msg): (Lista?, String?) = await JFY.ler(["--emails-json", caixaLista.rawValue])
-        if let l { lista = l }
+        let (l, msg): (Lista?, String?) = await JFY.ler(["--emails-json", c.rawValue])
+        guard c == caixaLista else { return }
+        if let l, l.mudou == true { lista = l }
         aviso = msg
         caixa.ler()  // o jfy acabou de guardar o total: o selo acompanha
     }
 
+    /// O email aberto da última vez aparece na hora; a leitura de verdade só troca quando mudou (resposta nova na
+    /// conversa, lido ou não lido).
     private func abrir() async {
         guard let id = selecao else { email = nil; return }
+        let (g, msgG): (Email?, String?) = await JFY.ler(["--email-json", id, "cache"])
+        guard selecao == id else { return }
+        email = g
+        if msgG != nil { aviso = msgG }
+        guard g?.cache == true else { return }
         let (e, msg): (Email?, String?) = await JFY.ler(["--email-json", id])
-        if selecao == id { email = e; if msg != nil { aviso = msg } }
+        guard selecao == id else { return }
+        if let e, e.mudou == true { email = e }
+        if msg != nil { aviso = msg }
     }
 
     private func agir(_ args: [String]) {
