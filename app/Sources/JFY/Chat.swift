@@ -97,6 +97,7 @@ struct ChatTela: View {
         // ponytail: busca de tempos em tempos (conversas a cada 15 s, mensagens a cada 5 s); tempo real
         // (SSE ou websocket) se o MCP do Journify oferecer
         .task(id: ativa) {
+            if conversas.isEmpty { await conversasGuardadas() }  // a lista aparece na hora; a busca vem logo atrás
             while ativa && !Task.isCancelled {
                 await carregarConversas()
                 try? await Task.sleep(for: .seconds(15))
@@ -105,6 +106,7 @@ struct ChatTela: View {
         .task(id: "\(selecionada ?? "")|\(ativa)") {
             guard let cid = selecionada, ativa else { return }
             JFY.aquecerCorretor()  // a primeira correção já acha o Claude aberto
+            await mensagensGuardadas(cid)
             while !Task.isCancelled {
                 await carregarMensagens(cid)
                 await carregarProgramadas(cid)  // a que o relógio mandou sai daqui e aparece na conversa
@@ -585,6 +587,25 @@ struct ChatTela: View {
             let (fixadas, resto) = daAba
             selecionada = (fixadas + resto).first?.id
         }
+    }
+
+    /// A lista da última busca (jfy --chat-guardado), na hora; a busca de verdade, logo atrás, troca se mudou.
+    private func conversasGuardadas() async {
+        let r = await JFY.rodar(["--chat-guardado"])
+        guard conversas.isEmpty, r.status == 0, let lista: [Conversa] = decodificar(r.saida) else { return }
+        conversas = lista
+        if selecionada == nil {
+            let (fixadas, resto) = daAba
+            selecionada = (fixadas + resto).first?.id
+        }
+    }
+
+    /// As mensagens da última vez, na hora e sem marcar como lida; a busca de verdade, logo atrás, traz as novas. Sem
+    /// guardado, a conversa começa vazia (e não com as mensagens da conversa anterior).
+    private func mensagensGuardadas(_ cid: String) async {
+        let r = await JFY.rodar(["--chat-guardado", cid])
+        let lista: [Mensagem]? = r.status == 0 ? decodificar(r.saida) : nil
+        if selecionada == cid { mensagens = lista ?? [] }
     }
 
     private func carregarMensagens(_ cid: String) async {

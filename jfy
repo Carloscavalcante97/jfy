@@ -2698,18 +2698,34 @@ def nao_lidas_chat(ids=None, lida=None):
     gravar_json(CHAT_NAO_LIDAS, sorted(ids))
 
 
-def chat_conversas():
-    """[{id, nome, tipo ("canal" ou "direta"), nao_lidas, membro, ultima: {autor, texto, quando} ou None}], a mais recente primeiro."""
-    r = chat_conversas_mcp()
+CHAT_GUARDADO = os.path.join(HOME, "chat-guardado")  # a lista e as mensagens de cada conversa, como o app viu por último
+
+
+def chat_guardar(nome, d):
+    os.makedirs(CHAT_GUARDADO, exist_ok=True)
+    gravar_json(os.path.join(CHAT_GUARDADO, re.sub(r"[^\w-]", "", nome) + ".json"), d)
+
+
+def chat_guardado(cid="conversas"):
+    """jfy --chat-guardado [conversa]: a lista de conversas (ou as mensagens da conversa) da última busca, na hora, sem ir
+    ao Journify (e sem marcar como lida). O app mostra enquanto a busca de verdade roda; null se nunca buscou."""
+    try:
+        return json.load(open(os.path.join(CHAT_GUARDADO, re.sub(r"[^\w-]", "", cid) + ".json")))
+    except (OSError, ValueError):
+        return None
+
+
+def chat_conversas(cruas=None):
+    """[{id, nome, tipo ("canal" ou "direta"), nao_lidas, membro, ultima: {autor, texto, quando} ou None}], a mais recente
+    primeiro. Guarda para o app abrir na hora (--chat-guardado) e o selo do Chat. `cruas`: o listar_conversas que o vigia
+    já buscou."""
+    r = [{"id": c["id"], "nome": c.get("nome") or "Conversa", "tipo": "direta" if c.get("tipo") == "dm" else "canal",
+          "nao_lidas": 1 if c.get("naoLida") else 0, "membro": c.get("membro", True),
+          "ultima": {"autor": None, "texto": c.get("ultimaMensagem") or "", "quando": c["ultimaMensagemEm"]}
+          if c.get("ultimaMensagemEm") else None} for c in (mcp("listar_conversas") if cruas is None else cruas)]
     nao_lidas_chat([c["id"] for c in r if c["nao_lidas"] and c["membro"]])
+    chat_guardar("conversas", r)
     return r
-
-
-def chat_conversas_mcp():
-    return [{"id": c["id"], "nome": c.get("nome") or "Conversa", "tipo": "direta" if c.get("tipo") == "dm" else "canal",
-             "nao_lidas": 1 if c.get("naoLida") else 0, "membro": c.get("membro", True),
-             "ultima": {"autor": None, "texto": c.get("ultimaMensagem") or "", "quando": c["ultimaMensagemEm"]}
-             if c.get("ultimaMensagemEm") else None} for c in mcp("listar_conversas")]
 
 
 def msg_chat(m, eu):
@@ -2726,7 +2742,9 @@ def chat_mensagens(cid):
     r = mcp("listar_mensagens", conversaId=cid, limite=100, marcarComoLida=True)
     nao_lidas_chat(lida=cid)
     eu = load().get("journify_uid")
-    return [msg_chat(m, eu) for m in reversed(r.get("mensagens") or [])]
+    msgs = [msg_chat(m, eu) for m in reversed(r.get("mensagens") or [])]
+    chat_guardar(cid, msgs)
+    return msgs
 
 
 def chat_enviar(cid, texto, mencoes=""):
@@ -2847,10 +2865,10 @@ def vigiar_emails(st):
 def vigiar_chat(st):
     """Mensagem nova numa conversa (não lida) vira notificação, e o clique abre a conversa no app. A primeira vez só
     guarda o que já estava lá."""
-    vistas = st.get("chat")
-    novas = {c["id"]: c for c in mcp("listar_conversas", somenteNaoLidas=True)}
+    vistas, cruas = st.get("chat"), mcp("listar_conversas")  # a lista inteira, na mesma chamada: a guardada fica em dia
+    chat_conversas(cruas)  # e o selo do Chat
+    novas = {c["id"]: c for c in cruas if c.get("naoLida")}
     marca = {cid: c.get("ultimaMensagemEm") for cid, c in novas.items()}
-    nao_lidas_chat([cid for cid, c in novas.items() if c.get("membro", True)])  # o selo do Chat em dia, de 2 em 2 min
     if vistas is not None:
         for cid, c in novas.items():
             if marca[cid] and vistas.get(cid) != marca[cid]:
@@ -5747,7 +5765,8 @@ def main():
                 "--arquivo-enviar": arquivo_enviar, "--formularios-json": formularios_json, "--formulario-json": formulario_json,
                 "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia, "--corrigir": corrigir, "--chat-programar": chat_programar,
                 "--chat-programadas": chat_programadas, "--chat-desprogramar": chat_desprogramar,
-                "--chat-programadas-enviar": enviar_programadas, "--corretor-aquecer": corretor_aquecer,
+                "--chat-programadas-enviar": enviar_programadas,
+                "--chat-guardado": chat_guardado, "--corretor-aquecer": corretor_aquecer,
                 "--instalar-windows": instalar_windows}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])

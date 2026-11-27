@@ -140,6 +140,26 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     })
   }
 
+  // a lista da última busca (jfy --chat-guardado), na hora; a busca de verdade, logo atrás, troca se mudou
+  async function conversasGuardadas() {
+    const r = await api.jfy(['--chat-guardado'])
+    const lista = r.status === 0 ? decodificar<Conversa[]>(r.saida) : null
+    if (!lista) return
+    setConversas((l) => l ?? lista) // a busca de verdade chegou antes: fica a dela
+    setSelecionada((s) => {
+      if (s) return s
+      const { fixadas, resto } = separar(lista, abaLembrada.get(), favoritas.get())
+      return (fixadas[0] ?? resto[0] ?? lista[0])?.id ?? null
+    })
+  }
+
+  // as mensagens da última vez, na hora e sem marcar como lida; a busca de verdade, logo atrás, traz as novas
+  async function mensagensGuardadas(cid: string) {
+    const r = await api.jfy(['--chat-guardado', cid])
+    const lista = r.status === 0 ? decodificar<Mensagem[]>(r.saida) : null
+    if (lista && sel.current === cid) setMensagens((m) => (m.length ? m : lista)) // a de verdade chegou antes: fica
+  }
+
   async function carregarMensagens(cid: string) {
     const r = await api.jfy(['--chat', cid])
     const lista = r.status === 0 ? decodificar<Mensagem[]>(r.saida) : null
@@ -159,6 +179,7 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   // ponytail: busca de tempos em tempos (conversas a cada 15 s, mensagens a cada 5 s, só com a tela à vista); tempo
   // real (SSE ou websocket) se o MCP do Journify oferecer
   useEffect(() => {
+    conversasGuardadas()
     carregarConversas()
     if (!ativa) return
     const t = setInterval(carregarConversas, 15_000)
@@ -169,6 +190,7 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   // sai pelo relógio some da lista e aparece na conversa
   useEffect(() => {
     if (!selecionada || !ativa) return
+    mensagensGuardadas(selecionada)
     const ver = () => (carregarMensagens(selecionada), carregarProgramadas(selecionada))
     ver()
     const t = setInterval(ver, 5_000)
