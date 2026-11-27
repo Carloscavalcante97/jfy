@@ -1325,6 +1325,8 @@ def atualizar():
     """jfy --update: traz a versão nova do git (o branch em que o seu clone está) e reinstala pelo install.sh, sem as
     perguntas dos extras (o que já está ligado é atualizado; o resto fica como está). O install.sh religa o comando,
     atualiza a pipeline e remonta o app, se ele estiver instalado. O app aberto fecha e abre de novo na versão nova."""
+    if WIN:  # o motor vai dentro do app: a versão nova chega pelo instalador novo
+        sys.exit("No Windows, o jfy atualiza pelo instalador: baixe o novo (jfy Setup <versão>.exe) e abra.")
     repo, app = os.path.dirname(SELF), ["pgrep", "-f", "jfy.app/Contents/MacOS/JFY"]
     antes = git(repo, "rev-parse", "HEAD").stdout.strip()
     if subprocess.run(["git", "-C", repo, "pull", "--ff-only"]).returncode:
@@ -4727,7 +4729,7 @@ def principal():
     if os.path.exists(os.path.expanduser("~/Library/LaunchAgents/jfy.swiftbar.plist")) and \
             subprocess.run(["pgrep", "-x", "SwiftBar"], capture_output=True).returncode:
         subprocess.run(["open", "-g", "/Applications/SwiftBar.app"])  # ícone da barra de cima fechado: volta
-    if not cfg.get("comecou"):  # primeiro acesso: guia o que falta antes do menu
+    if not cfg.get("comecou") and not APP:  # primeiro acesso: guia o que falta antes do menu (no app, os primeiros passos são dele)
         primeiros_passos()
     tasks, buscado = [], 0
     while True:
