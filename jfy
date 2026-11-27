@@ -5848,7 +5848,7 @@ def selftest():
     garantir_branch(rp, {"id": "T3", "title": "passa", "estimate": {"value": 4}})  # 5 + 4 = 9: branch nova
     assert git(rp, "branch", "--show-current").stdout.strip() == "feature/passa"
     globals().update(reais)
-    shutil.rmtree(rp)
+    apagar_pasta(rp)
     # primeiros passos: o que já está feito não pergunta nada; o que falta é guiado e p pula
     global PASSOS, escolha, save, limpar
     salvo, feitos, respostas = {}, [], iter(["p", ""])
