@@ -1767,8 +1767,10 @@ def lancamentos_do_dia(dia):
     return mcp("listar_horas", de=dia.isoformat(), ate=dia.isoformat()).get("lancamentos") or []
 
 
+# um lançamento do listar_horas vem com os nomes em inglês: id, date, projectId, projectName, stageId, taskId,
+# category, activity, regularHours, overtimeHours
 def lanc_horas(l):
-    return float(pega(l, "horas", "hours") or 0)
+    return float(pega(l, "regularHours", "horas", "hours") or 0)
 
 
 def casar_lancamentos(cfg, itens, ja):
@@ -1778,8 +1780,8 @@ def casar_lancamentos(cfg, itens, ja):
     livres, par = list(ja), {}
     for it in itens:
         pj = projeto_journify(cfg, it["p"])
-        l = next((x for x in livres if pj and pega(x, "projetoId", "projectId") == pj["id"]
-                  and norm(pega(x, "atividade", "descricao", "description")) == norm(it["desc"])), None)
+        l = next((x for x in livres if pj and pega(x, "projectId", "projetoId") == pj["id"]
+                  and norm(pega(x, "activity", "atividade", "descricao")) == norm(it["desc"])), None)
         if l:
             livres.remove(l)
         par[it["kid"]] = l
@@ -1794,7 +1796,7 @@ def estado_journify(cfg, dia, itens):
         return None, {}
     vivos = [it for it in itens if not it["fora"]]
     par, sobra = casar_lancamentos(cfg, vivos, ja)
-    igual = lambda l, it: abs(lanc_horas(l) - it["lanc"] / 60) < 0.01 and pega(l, "categoria", "category") == it["cat"]
+    igual = lambda l, it: abs(lanc_horas(l) - it["lanc"] / 60) < 0.01 and pega(l, "category", "categoria") == it["cat"]
     estado = {it["kid"]: "nova" if not par[it["kid"]] else "lancada" if igual(par[it["kid"]], it) else "mudou" for it in vivos}
     return {"lancamentos": len(ja), "horas": round(sum(map(lanc_horas, ja)), 2), "removidas": len(sobra)}, estado
 
@@ -1839,7 +1841,7 @@ def horas_lancar(dia):
     for it in itens:
         pj, h, l = projeto_journify(cfg, it["p"]), round(it["lanc"] / 60, 2), par[it["kid"]]
         if l:
-            if abs(lanc_horas(l) - h) < 0.01 and pega(l, "categoria", "category") == it["cat"]:
+            if abs(lanc_horas(l) - h) < 0.01 and pega(l, "category", "categoria") == it["cat"]:
                 iguais += 1
             else:
                 mcp("editar_horas", lancamentoId=pega(l, "id", "lancamentoId"), horas=h, categoria=it["cat"])
@@ -1854,7 +1856,7 @@ def horas_lancar(dia):
     for i in range(0, len(novas), 20):
         mcp("lancar_horas", lancamentos=novas[i:i + 20])
     return {"novas": len(novas), "editadas": editadas, "iguais": iguais,
-            "sobrando": [{"projeto": pega(l, "projeto", "projetoNome", "projetoId"), "atividade": pega(l, "atividade", "descricao"),
+            "sobrando": [{"projeto": pega(l, "projectName", "projectId", "projeto"), "atividade": pega(l, "activity", "atividade"),
                           "horas": lanc_horas(l)} for l in sobra]}
 
 
@@ -5710,22 +5712,25 @@ def selftest():
     projetos_journify(forcar=True)
     vivos = [x for x in horas_json(hoje)["itens"] if not x["fora"]]
     assert len(vivos) == 2 and horas_json(hoje)["lancado"] is None, vivos
-    ja = [{"id": f"L{i}", "projetoId": projeto_journify(load(), x["pid"])["id"], "atividade": " " + x["desc"].upper(),
-           "horas": x["lanc"] / 60, "categoria": x["cat"]} for i, x in enumerate(vivos)]
+    # o formato real do listar_horas (nomes em inglês); a descrição casa sem olhar maiúscula nem espaço
+    ja = [{"id": f"L{i}", "date": hoje.isoformat(), "projectId": projeto_journify(load(), x["pid"])["id"], "projectName": "x",
+           "stageId": None, "taskId": None, "category": x["cat"], "activity": " " + x["desc"].upper(),
+           "regularHours": x["lanc"] / 60, "overtimeHours": 0} for i, x in enumerate(vivos)]
     journify["listar_horas"] = {"lancamentos": ja}
     h = horas_json(hoje)
     assert h["lancado"]["removidas"] == 0 and [x["estado"] for x in h["itens"] if not x["fora"]] == ["lancada", "lancada"], h
-    ja[0]["horas"] += 0.25
+    ja[0]["regularHours"] += 0.25
     ja.pop()
-    journify["listar_horas"] = {"lancamentos": ja + [{"id": "X", "projetoId": "S1", "atividade": "outra coisa", "horas": 1, "categoria": "Pesquisa"}]}
+    journify["listar_horas"] = {"lancamentos": ja + [{"id": "X", "projectId": "S1", "projectName": "Souv", "activity": "outra coisa",
+                                                      "regularHours": 1, "category": "Pesquisa"}]}
     h = horas_json(hoje)
-    assert h["lancado"] == {"lancamentos": 2, "horas": round(ja[0]["horas"] + 1, 2), "removidas": 1} \
+    assert h["lancado"] == {"lancamentos": 2, "horas": round(ja[0]["regularHours"] + 1, 2), "removidas": 1} \
         and [x["estado"] for x in h["itens"] if not x["fora"]] == ["mudou", "nova"], h
     # lançar: a que mudou é editada, a nova entra com o projeto e a etapa do Journify, a que sobrou lá fica (sem apagar)
     n0 = len(chamadas)
     r = horas_lancar(hoje.isoformat())
     feitas_h = chamadas[n0:]
-    assert (r["novas"], r["editadas"], r["iguais"], [x["atividade"] for x in r["sobrando"]]) == (1, 1, 0, ["outra coisa"]), r
+    assert (r["novas"], r["editadas"], r["iguais"], [(x["projeto"], x["atividade"]) for x in r["sobrando"]]) == (1, 1, 0, [("Souv", "outra coisa")]), r
     assert feitas_h[0] == ("editar_horas", {"lancamentoId": "L0", "horas": round(vivos[0]["lanc"] / 60, 2), "categoria": vivos[0]["cat"]}), feitas_h
     nova = feitas_h[1][1]["lancamentos"][0]
     pj1 = projeto_journify(load(), vivos[1]["pid"])
