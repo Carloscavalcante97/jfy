@@ -741,6 +741,14 @@ def vivo(pid):
         return True
 
 
+def paginar(texto):
+    """less -R quando existe; no Windows (sem less), o texto inteiro e Enter para voltar: a aba do app rola."""
+    if shutil.which("less"):
+        return subprocess.run(["less", "-R", "-Ps q volta "], input=texto, text=True)
+    print(texto)
+    ask(dim(" Enter volta"))
+
+
 def abrir_link(alvo):
     """Abre um link ou arquivo no app padrão (navegador, visualizador de imagem...)."""
     return os.startfile(alvo) if WIN else subprocess.run(["open", alvo])
@@ -1093,7 +1101,7 @@ def ler_email(tok, mid):
             f"{c('Data:', 39, True)} {h.get('date', '')}\n{c(h.get('subject') or '(sem assunto)', 255, True)}\n"
             + (dim("Anexos: " + ", ".join(anexos)) + "\n" if anexos else ""))
     link = link_gmail(tok, m["threadId"])
-    subprocess.run(["less", "-R", "-Ps q volta "], input=f"{topo}\n{texto}\n\n{dim('No Gmail: ' + link)}\n", text=True)
+    paginar(f"{topo}\n{texto}\n\n{dim('No Gmail: ' + link)}\n")
 
 
 def ler_emails():
@@ -3894,6 +3902,22 @@ COMMITTER = os.path.expanduser("~/.claude/agents/committer.md")
 SEGREDO = (r"-----BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk_live_[0-9A-Za-z]+|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|"
            r"AIza[0-9A-Za-z_-]{35}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|"
            r"(password|senha|secret|token)[[:space:]]*[:=][[:space:]]*[\"'][^\"']{6,}")  # a varredura do committer
+SEGREDO_RE = re.compile(SEGREDO.replace("[[:space:]]", r"\s"))  # o re do Python não tem as classes POSIX
+
+
+def achar_segredos(pasta, arquivos):
+    """A varredura do committer (era grep -nIE) em Python: o Windows não tem grep. Pula binário, como o -I.
+    Devolve "arquivo:linha:texto" de cada achado."""
+    achados = []
+    for a in arquivos:
+        try:
+            dados = open(os.path.join(pasta, a), "rb").read()
+        except OSError:
+            continue
+        if b"\0" in dados[:8000]:
+            continue
+        achados += [f"{a}:{n}:{l}" for n, l in enumerate(dados.decode("utf-8", "replace").splitlines(), 1) if SEGREDO_RE.search(l)]
+    return achados
 
 
 def repo_do_jfy(pasta):
@@ -4010,9 +4034,9 @@ def commit_fazer(pasta, mensagem, *arquivos):
     if not arquivos or not mensagem:
         sys.exit("Marque os arquivos e escreva a mensagem.")
     existem = [a for a in arquivos if os.path.isfile(os.path.join(pasta, a))]
-    achado = subprocess.run(["grep", "-nIE", "--", SEGREDO, *existem], cwd=pasta, capture_output=True, text=True).stdout if existem else ""
+    achado = achar_segredos(pasta, existem)
     if achado:
-        sys.exit("Possível segredo, commit parado:\n" + "\n".join(achado.splitlines()[:5]))
+        sys.exit("Possível segredo, commit parado:\n" + "\n".join(achado[:5]))
     r = git(pasta, "add", "-A", "--", *arquivos)
     if r.returncode:
         sys.exit(r.stderr.strip())
@@ -4649,7 +4673,7 @@ def tela_task(cfg, t):
         op = escolha(seta(), "12dpw", prefixos={"a": len(anexos)})
         if op == "d":
             coms = [c(f"{x.get('authorName')}:", 39, True) + " " + (x.get("body") or "") for x in full.get("comments") or []]
-            subprocess.run(["less", "-R", "-Ps q volta "], text=True, input="\n".join(
+            paginar("\n".join(
                 topo + ["", c("O QUE FAZER", 244, True)] + (desc or [dim("(sem descrição)")]) + [""] + base
                 + ([""] + coms if len(coms) > 1 else [])) + "\n")
         elif op == "w":
@@ -5124,6 +5148,12 @@ def selftest():
     assert GOOGLE_ARQ.search("https://drive.google.com/open?id=1abcdefghijklmnopqrstuvwx")[1] == "1abcdefghijklmnopqrstuvwx"
     assert not GOOGLE_ARQ.search("https://www.figma.com/design/i0FGbG8PbObEPXO67a3753/x")
     assert os.path.basename(nome_livre("/nao/existe", "a/b:c?.pdf")) == "a_b_c_.pdf"
+    seg = os.path.join(RUN_DIR, "teste-segredo")  # a varredura do commit, sem grep (o Windows não tem)
+    os.makedirs(seg, exist_ok=True)
+    open(os.path.join(seg, "a.env"), "w").write("ok = 1\nsenha = 'abcdefgh'\n")
+    open(os.path.join(seg, "b.bin"), "wb").write(b"\0senha = 'abcdefgh'")
+    open(os.path.join(seg, "c.py"), "w").write("chave = 'AKIA" + "A" * 16 + "'\n")
+    assert achar_segredos(seg, ["a.env", "b.bin", "c.py", "nao-existe"]) == ["a.env:2:senha = 'abcdefgh'", "c.py:1:chave = 'AKIA" + "A" * 16 + "'"]
     assert [categoria_arquivo(*x) for x in (("a.png", "image/png"), ("b.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), ("c.pdf", "application/pdf"), ("d.mp4", "video/mp4"), ("e.csv", ""))] == ["Imagens", "Planilhas", "Documentos", "Outros", "Planilhas"]
     salvo = {k: globals()[k] for k in ("load", "save", "chaves", "chaves_apagar", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
     cfg_f, apagados = {"google": {"client_id": "i", "client_secret": "s", "conta": "a@b"}}, []
