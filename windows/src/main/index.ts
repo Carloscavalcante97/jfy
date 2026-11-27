@@ -150,6 +150,33 @@ function sinalDeVida() {
   utimesSync(arq, agora, agora)
 }
 
+// ---------- só no Windows: o que no Mac é o install.sh e o LaunchAgent das 7h ----------
+/** A pipeline no ~/.claude, o uso da IA e o aviso do Claude: o motor confere a cada abertura e só mexe no que falta.
+ * O que faltar de essencial (Claude Code, Git) vira notificação; o resto fica no log. */
+async function instalar() {
+  const r = await jfy(['--instalar-windows'])
+  mkdirSync(join(JFY_DIR, 'rodando'), { recursive: true })
+  writeFileSync(join(JFY_DIR, 'rodando', 'instalar.log'), `${new Date().toISOString()}\n${r.saida}${r.erro}`)
+  try {
+    const falta = (JSON.parse(r.saida).avisos as string[]).filter((a) => a.startsWith('Falta'))
+    if (falta.length) new Notification({ title: 'jfy: falta instalar', body: falta.join('\n'), icon: ICONE }).show()
+  } catch {
+    /* o log guarda o erro */
+  }
+}
+
+/** A notificação das 7h (seg a sex), com as reuniões e o foco do dia. O app fica na bandeja, então ele mesmo dispara;
+ * com o computador desligado às 7h, sai quando ele ligar, até o meio-dia. */
+function notificacaoDoDia() {
+  const agora = new Date()
+  if ([0, 6].includes(agora.getDay()) || agora.getHours() < 7 || agora.getHours() >= 12) return
+  const marca = join(JFY_DIR, 'rodando', 'dia-avisado')
+  const hoje = agora.toDateString()
+  if (existsSync(marca) && readFileSync(marca, 'utf8') === hoje) return
+  writeFileSync(marca, hoje)
+  void jfy(['--notificar'])
+}
+
 // ---------- IPC com a tela ----------
 ipcMain.handle('jfy', (_e, args: string[], entrada?: string) => jfy(args, entrada))
 ipcMain.handle('abas:listar', () => ({ abas: abas.listar(), ativa: abas.ativa }))
@@ -247,6 +274,10 @@ else {
     const vigiar = () => void jfy(['--vigiar'])
     setTimeout(vigiar, 15_000)
     setInterval(vigiar, 120_000)
+    if (WIN) {
+      instalar()
+      setInterval(notificacaoDoDia, 60_000)
+    }
   })
 
   app.on('before-quit', (e) => {

@@ -8,7 +8,7 @@ Cada task roda numa aba própria (tmux), então dá para tocar várias ao mesmo 
 
 ### O que você precisa
 
-- **macOS** (o app do Mac pede o macOS 15 ou mais novo).
+- **macOS** (o app do Mac pede o macOS 15 ou mais novo). No Windows, veja [Windows](#windows).
 - **[Claude Code](https://docs.claude.com/claude-code)** instalado e logado.
 - **[Homebrew](https://brew.sh)**: o `install.sh` usa ele para instalar o `tmux`, o `terminal-notifier` (notificações) e o SwiftBar (ícone na barra de cima).
 - **Xcode** (App Store), só para o app do Mac: é com o Swift dele que o app é montado no seu Mac. Abra o Xcode uma vez depois de instalar, para ele terminar a instalação.
@@ -87,6 +87,42 @@ Coisas que o jfy não consegue fazer por você, mas que você só faz uma vez:
 3. **Chrome para as horas.** Instale a extensão Claude in Chrome, conecte ela ao Claude Code e deixe o Journify logado no Chrome. Sem isso, o "Lançar no Journify" não tem como preencher o minhas-horas.
 4. **Permissões do macOS.** Deixe ligadas as notificações do **jfy** (é ele que mostra os avisos com o app aberto, com o ícone da Souv) e do **terminal-notifier** (com o app fechado), em Ajustes do Sistema › Notificações. Se o macOS perguntar se o jfy pode controlar outro app, permita.
 5. **Agenda das outras pessoas** ("Reunião com…" na Agenda): aparece a agenda de quem compartilha com você. Na Souv, as agendas já vêm compartilhadas dentro do domínio; se a de alguém não aparecer, a etiqueta da pessoa mostra o motivo.
+
+## Windows
+
+No Windows o jfy é um app (`windows/`, em Electron) com as mesmas telas do app do Mac e o terminal do jfy dentro dele. O motor é o mesmo `jfy` em Python, que vai dentro do instalador junto com o Python: ninguém precisa instalar Python. A diferença de fundo é que o Windows não tem tmux: **as abas das tasks são do próprio app**. Fechar a janela deixa tudo rodando (o jfy fica na bandeja, perto do relógio); **Sair** encerra as abas e, com alguma rodando, pergunta antes.
+
+### O que você precisa
+
+- **Windows 10 ou 11**, 64 bits.
+- **[Git para Windows](https://git-scm.com)**: a pipeline, a aba GitHub e o próprio Claude Code usam.
+- **[Claude Code](https://docs.claude.com/claude-code)** pelo **instalador nativo** (o `claude.exe`), logado. Pelo npm não serve: o jfy passa os pedidos ao Claude como argumentos, e o `claude.cmd` do npm estraga os que têm `%`, `&` ou aspas.
+- **Google Chrome** com a extensão **Claude in Chrome** e o Journify logado, para lançar as horas, como no Mac.
+- O resto (GitHub CLI pelo winget, Journify, Google, seus projetos) os **primeiros passos** do app guiam.
+
+### Instalar
+
+Baixe o instalador (`jfy Setup <versão>.exe`) nos artefatos da última execução do workflow **Windows** no GitHub (aba Actions) e abra. Ou monte você mesmo, com o [Node.js](https://nodejs.org) 24 instalado:
+
+```powershell
+git clone https://github.com/Carloscavalcante97/jfy.git
+cd jfy\windows
+npm install
+npm run dist          # baixa o Python embutível e gera windows\dist\jfy Setup <versão>.exe
+```
+
+Ao abrir, o app confere e liga sozinho o que no Mac é o `install.sh`: baixa a pipeline do time em `~/.jfy/pipeline-Claude` e copia o `/pipeline`, os agentes e os hooks para o `~/.claude` (cópia, porque link no Windows pede o modo de desenvolvedor; arquivo seu diferente fica como está), e põe o uso da IA no `statusLine` e o aviso do Claude nos hooks do `~/.claude/settings.json`. O que faltar de essencial (Claude Code, Git) vira notificação; o resto fica em `~/.jfy/rodando/instalar.log`. A notificação das 7h é o próprio app que dispara (com o computador desligado às 7h, ela sai quando ele ligar, até o meio-dia).
+
+### Desenvolver
+
+`cd windows && npm install && npm run dev` abre o app com recarga ao vivo. Dá para desenvolver no Mac também: o app usa o `/usr/bin/python3` e o `jfy` do repo, com as abas no app em vez do tmux (o jfy sabe que está no app pela variável `JFY_APP`). No Windows, o `npm run dev` usa o `python` do PATH (ou o que estiver em `JFY_PYTHON`).
+
+### Diferenças do Mac
+
+- **Sem tmux:** as abas são do app. Sair do app encerra o que roda nelas (o Claude de cada task retoma com `--resume`).
+- **Portas:** o Windows não informa a pasta em que outro programa roda; o projeto de cada porta sai do caminho na linha de comando (o `node C:\repo\node_modules\...` de um servidor), e "Claude aberto neste repo" não aparece.
+- **Segredos** (o acesso ao Google): cifrados pela DPAPI do Windows em `~/.jfy/segredos`, no lugar do Chaves do macOS.
+- **Sem o ícone na barra de cima:** o jfy fica na bandeja do Windows.
 
 ## Como usar
 

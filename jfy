@@ -27,7 +27,17 @@ WIN = os.name == "nt"
 # app do Windows (windows/, Electron): ele hospeda as abas no lugar do tmux e põe JFY_APP="url|token" em cada aba e
 # comando que roda; JFY_ABA="@n" diz em que aba este jfy está. No Mac, JFY_ABAS=app no app de teste faz o mesmo.
 APP = os.environ.get("JFY_APP")
-EU = [sys.executable, SELF]  # rodar o jfy de novo: no Windows não há shebang
+# rodar o jfy de novo: no Windows não há shebang, e sem o modo UTF-8 o Python de lá lê os arquivos em cp1252 (um
+# hook do Claude aberto fora do app quebraria no primeiro acento do config)
+EU = [sys.executable, "-X", "utf8", SELF] if WIN else [sys.executable, SELF]
+# em segundo plano e fora da aba: no Windows, fechar a aba (o ConPTY dela) mata o que está preso ao console dela, e o
+# fechamento da task (horas, handoff) morreria no meio. CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP: console próprio, escondido
+FUNDO = {"creationflags": 0x08000200} if WIN else {"start_new_session": True}
+if WIN:  # o que o winget e os instaladores põem no PATH só vale para programas abertos depois: o app aberto não vê
+    os.environ["PATH"] = os.pathsep.join([os.environ.get("PATH", ""), *(
+        p for p in (os.path.expanduser(r"~\.local\bin"), os.path.expandvars(r"%ProgramFiles%\GitHub CLI"),
+                    os.path.expandvars(r"%ProgramFiles%\Git\cmd"), os.path.expandvars(r"%ProgramFiles%\Docker\Docker\resources\bin"))
+        if os.path.isdir(p))])
 FINAIS = ["em_teste", "em_revisao", "fechado"]  # task pronta: quem encerra escolhe para onde vai (ao iniciar: em_progresso)
 # ordem na tela do projeto: o que dá para tocar agora primeiro, o que espera os outros depois
 ORDEM = ["em_progresso", "priorizado", "em_aberto", "criando_escopo", "em_revisao", "em_teste",
@@ -710,6 +720,27 @@ def chaves_apagar(servico):
         subprocess.run(["security", "delete-generic-password", "-a", "jfy", "-s", servico], capture_output=True)
 
 
+def vivo(pid):
+    """O processo ainda roda? No Windows não dá para usar os.kill(pid, 0): lá ele MATA o processo."""
+    if WIN:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        codigo = ctypes.c_ulong()
+        k.GetExitCodeProcess(h, ctypes.byref(codigo))
+        k.CloseHandle(h)
+        return codigo.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def abrir_link(alvo):
     """Abre um link ou arquivo no app padrão (navegador, visualizador de imagem...)."""
     return os.startfile(alvo) if WIN else subprocess.run(["open", alvo])
@@ -1173,7 +1204,7 @@ def relogio():
     while os.path.getmtime(SELF) == versao:
         if time.time() - vigia > 120:  # PRs e agenda: em outro processo, para a barra não travar na rede
             vigia = time.time()
-            subprocess.Popen([*EU, "--vigiar"], start_new_session=True, stdin=subprocess.DEVNULL,
+            subprocess.Popen([*EU, "--vigiar"], **FUNDO, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "vigiar.log"), "a"))
         TEMA = TEMAS.get(load().get("tema"), {})  # tema trocado no menu vale aqui sem reiniciar
         m, rodando = cronometro()
@@ -1778,23 +1809,53 @@ def lsof_campos(*args):
     return r
 
 
+def processos_windows():
+    """No Windows não há lsof nem ps: as portas em escuta e os processos (pai, linha de comando, nome) numa chamada só
+    ao PowerShell. Devolve ({pid: {portas}}, {pid: (ppid, comando)}, {pid: nome})."""
+    # ponytail: o Get-CimInstance leva ~1 s; a tela Portas olha de tempos em tempos, então serve
+    script = ("[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+              "$c = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object LocalPort, OwningProcess); "
+              "$p = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, CommandLine, Name); "
+              "@{c = $c; p = $p} | ConvertTo-Json -Depth 3 -Compress")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                       encoding="utf-8", errors="replace")
+    d = json.loads(r.stdout or '{"c": [], "p": []}')
+    abertas = {}
+    for x in d.get("c") or []:
+        if x["OwningProcess"] > 4:  # 0 e 4: o próprio Windows
+            abertas.setdefault(x["OwningProcess"], set()).add(x["LocalPort"])
+    ps = {x["ProcessId"]: (x["ParentProcessId"] or 0, x["CommandLine"] or x["Name"] or "") for x in d.get("p") or []}
+    return abertas, ps, {x["ProcessId"]: x["Name"] or "" for x in d.get("p") or []}
+
+
 def portas():
     """Portas TCP abertas por programas de desenvolvimento: o que é, de que projeto, se tem Claude no repo e como parar.
     Fica de fora o que não é de desenvolvimento (Figma, CleanMyMac, o próprio macOS)."""
     cfg, casa = load(), os.path.expanduser("~")
-    abertas = {pid: {int(n.rsplit(":", 1)[1]) for n in ns} for pid, ns in lsof_campos("-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn").items()}
-    ps = {}  # pid -> (ppid, comando)
-    for l in subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout.splitlines():
-        a, b, cmd = (l.split(None, 2) + [""])[:3]
-        ps[int(a)] = (int(b), cmd)
-    claudes = {pid for pid, (_, cmd) in ps.items() if os.path.basename(cmd.split(" ")[0]) == "claude"}
-    cwd = {pid: os.path.realpath(ns[0]) for pid, ns in
-           (lsof_campos("-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, [*abertas, *claudes]))) if abertas else {}).items()}
     raizes = [(os.path.realpath(r), k) for k, pr in cfg["projetos"].items() for r in repos_de(pr)]
+    if WIN:
+        abertas, ps, nomes = processos_windows()
+        claudes = {pid for pid, n in nomes.items() if n.lower() == "claude.exe"}
+        # ponytail: o Windows não dá a pasta de trabalho de outro processo; o projeto sai do caminho na linha de comando
+        # (node C:\repo\node_modules\...). Servidor sem o caminho do repo na linha fica sem projeto, e "Claude aberto
+        # neste repo" não aparece
+        cmd_de = lambda pid: os.path.normcase(ps.get(pid, (0, ""))[1].replace("/", "\\"))
+        cwd = {pid: next((r for r, _ in raizes if os.path.normcase(r) in cmd_de(pid)), "/") for pid in abertas}
+    else:
+        abertas = {pid: {int(n.rsplit(":", 1)[1]) for n in ns} for pid, ns in lsof_campos("-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn").items()}
+        ps = {}  # pid -> (ppid, comando)
+        for l in subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True).stdout.splitlines():
+            a, b, cmd = (l.split(None, 2) + [""])[:3]
+            ps[int(a)] = (int(b), cmd)
+        nomes = {pid: os.path.basename(cmd.split(" ")[0]) for pid, (_, cmd) in ps.items()}
+        claudes = {pid for pid, n in nomes.items() if n == "claude"}
+        cwd = {pid: os.path.realpath(ns[0]) for pid, ns in
+               (lsof_campos("-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, [*abertas, *claudes]))) if abertas else {}).items()}
     paineis = ([[x["cwd"], x["nome"]] for x in app_abas("listar")["abas"]] if APP else
                [l.split("\t", 1) for l in subprocess.run(TMUX + ["list-panes", "-a", "-F", "#{pane_current_path}\t#{window_name}"],
                                                           capture_output=True, text=True).stdout.splitlines() if "\t" in l])
-    dentro = lambda pasta, raiz: pasta == raiz or pasta.startswith(raiz + "/")
+    dentro = lambda pasta, raiz: os.path.normcase(pasta) == os.path.normcase(raiz) or \
+        os.path.normcase(pasta).startswith(os.path.normcase(raiz) + os.sep)
     docker, linhas = containers(), []
 
     def pelo_claude(pid):  # o Claude subiu o servidor (npm run dev num Bash dele) e ele ficou rodando
@@ -1826,7 +1887,7 @@ def portas():
         notas = [x for x in (os.path.basename(pasta) if k else "", f"aba do jfy: {aba}" if aba else "Claude aberto neste repo" if claude else "",
                              "aberta pelo Claude" if pelo_claude(pid) else "", f"processo {pid}") if x]
         linhas.append({"portas": sorted(pts), "tipo": t[0], "icone": t[2], "cor": t[3], "parar": str(pid), "notas": notas,
-                       "nome": cfg["projetos"][k]["nome"] if k else os.path.basename(pasta) if raiz else os.path.basename(ps[pid][1].split(" ")[0])})
+                       "nome": cfg["projetos"][k]["nome"] if k else os.path.basename(pasta) if raiz else nomes.get(pid, "")})
     return sorted(linhas, key=lambda x: x["portas"][0])
 
 
@@ -1839,6 +1900,14 @@ def encerrar(alvo):
     if alvo.startswith("docker:"):
         return subprocess.run(["docker", "stop", alvo[7:]], capture_output=True).returncode == 0
     pid = int(alvo)
+    if WIN:  # pede para fechar (a árvore toda: o npm e o node que ele abriu); em 3 s, força
+        for forca in ([], ["/F"]):
+            subprocess.run(["taskkill", *forca, "/T", "/PID", str(pid)], capture_output=True)
+            for _ in range(30):
+                time.sleep(0.1)
+                if not vivo(pid):
+                    return True
+        return False
     for sinal in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.kill(pid, sinal)
@@ -2096,6 +2165,88 @@ def agentes_aplicar():
     for a, m in load().get("modelos_agentes", {}).items():
         if os.path.exists(os.path.join(PIPE, "agents", f"{a}.md")):
             gravar_modelo_agente(a, m)
+    if WIN:
+        ligar_pipeline()
+
+
+def ligar_pipeline():
+    """No Windows, a pipeline vai para o ~/.claude por cópia (symlink pede o modo de desenvolvedor). Como o ligar() do
+    install.sh, não sobrescreve arquivo seu: só troca o que a cópia anterior pôs lá. Devolve os que ficaram como estavam."""
+    import hashlib
+    h = lambda b: hashlib.sha256(b).hexdigest()
+    reg_arq, claude = os.path.join(HOME, "pipeline-copias.json"), os.path.expanduser("~/.claude")
+    reg = json.load(open(reg_arq)) if os.path.exists(reg_arq) else {}
+    pares = [(os.path.join(PIPE, "pipeline.md"), os.path.join(claude, "commands", "pipeline.md"))]
+    for sub, ext, destino in (("agents", ".md", ("agents",)), ("hooks", ".sh", ("hooks", "pipeline"))):
+        pasta = os.path.join(PIPE, sub)
+        pares += [(os.path.join(pasta, f), os.path.join(claude, *destino, f))
+                  for f in sorted(os.listdir(pasta) if os.path.isdir(pasta) else []) if f.endswith(ext)]
+    mantidos = []
+    for src, dst in pares:
+        novo = open(src, "rb").read()
+        if os.path.exists(dst):
+            atual = open(dst, "rb").read()
+            if atual != novo and reg.get(dst) != h(atual):
+                mantidos.append(dst)
+                continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "wb").write(novo)
+        reg[dst] = h(novo)
+    json.dump(reg, open(reg_arq, "w"), indent=1)
+    return mantidos
+
+
+def statusline():
+    """statusLine do Claude Code no Windows (lá não há tee): guarda o que ele manda, para a barra de uso do app."""
+    dados = sys.stdin.buffer.read()
+    with contextlib.suppress(OSError):
+        open(USO, "wb").write(dados)
+
+
+def instalar_windows():
+    """O install.sh do Windows: o app roda a cada abertura e só mexe no que falta. A pipeline do time no ~/.claude (por
+    cópia), o uso da IA no statusLine e o aviso do Claude nos hooks, apontando para o Python e o jfy desta instalação.
+    Devolve o que fez e os avisos."""
+    feito, avisos = [], []
+    if not shutil.which("claude"):
+        avisos.append("Falta o Claude Code: instale pelo instalador nativo (https://docs.claude.com/claude-code), não pelo npm.")
+    if not shutil.which("git"):
+        avisos.append("Falta o Git para Windows (https://git-scm.com): a pipeline e a aba GitHub precisam dele.")
+    else:
+        if os.path.isdir(os.path.join(PIPE, ".git")):
+            agentes_oficial()  # o modelo que você trocou volta ao oficial para o pull, e a sua escolha volta depois dele
+            if git(PIPE, "pull", "-q", "--ff-only").returncode:
+                avisos.append("Não consegui atualizar a pipeline; segui com a versão que já estava.")
+            agentes_aplicar()
+        elif subprocess.run(["git", "clone", "-q", "https://github.com/Carloscavalcante97/pipeline-Claude.git", PIPE],
+                            capture_output=True).returncode:
+            avisos.append("Não consegui baixar a pipeline (github.com/Carloscavalcante97/pipeline-Claude).")
+        if os.path.isdir(PIPE):
+            avisos += [f"{os.path.relpath(m, os.path.expanduser('~'))} já existe e é diferente da pipeline oficial; mantive o seu."
+                       for m in ligar_pipeline()]
+            feito.append("/pipeline, agentes e hooks em ~/.claude")
+    # barras normais: o Claude Code roda o comando pelo Git Bash, onde a barra invertida some
+    eu = " ".join(f'"{x}"' if " " in x else x for x in (a.replace("\\", "/") for a in EU))
+    p = os.path.expanduser("~/.claude/settings.json")
+    try:
+        st = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+    except ValueError as e:
+        return {"feito": feito, "avisos": avisos + [f"~/.claude/settings.json não é um JSON válido ({e}): não mexi nele."]}
+    do_jfy = lambda cmd, arg: "jfy" in cmd and arg in cmd
+    sl = st.get("statusLine") or {}
+    if not sl or do_jfy(sl.get("command", ""), "--statusline"):
+        st["statusLine"] = {"type": "command", "command": f"{eu} --statusline"}
+    elif "claude-status.json" not in sl.get("command", ""):
+        avisos.append("Seu statusLine do Claude é outro: a barra de uso da IA do app fica sem dados.")
+    hooks = st.setdefault("hooks", {})
+    for ev, grupo in (("Stop", {}), ("Notification", {"matcher": "permission_prompt|elicitation_dialog"})):
+        # tira só o comando do jfy de cada grupo (o caminho pode ter mudado) e põe o atual num grupo dele
+        lista = [dict(g, hooks=[x for x in g.get("hooks", []) if not do_jfy(x.get("command", ""), "--avisar")]) for g in hooks.get(ev, [])]
+        hooks[ev] = [g for g in lista if g["hooks"]] + [dict(grupo, hooks=[{"type": "command", "command": f"{eu} --avisar"}])]
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    json.dump(st, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    feito.append("uso da IA e aviso do Claude no ~/.claude/settings.json")
+    return {"feito": feito, "avisos": avisos}
 
 
 def modelo_escolher(atividade, valor):
@@ -3404,6 +3555,17 @@ def journify_sair():
     subprocess.run(["claude", "mcp", "remove", "journify", "--scope", "user"], capture_output=True)
 
 
+def gh_instalar():
+    """Primeiros passos do app: instala o GitHub CLI (gh) numa aba do jfy. Homebrew no Mac, winget no Windows."""
+    cmd = (["winget", "install", "--id", "GitHub.cli", "-e", "--source", "winget", "--accept-package-agreements",
+            "--accept-source-agreements"] if WIN else ["brew", "install", "gh"])
+    if shutil.which(cmd[0]):
+        subprocess.call(cmd)
+    else:
+        print(c("Falta o " + ("winget (o Instalador de Aplicativos, na Microsoft Store)." if WIN else "Homebrew (https://brew.sh)."), 203))
+    ask(dim("\nEnter fecha esta aba. Volte aos primeiros passos no app."))
+
+
 def github_login():
     """Conecta uma conta do GitHub: o gh auth login roda numa aba do jfy (ele pede para abrir o navegador)."""
     if not na_aba():
@@ -4077,8 +4239,7 @@ def nos_repos(pastas):
 def ocupado(lock):
     try:
         pid = int(open(lock).read())
-        os.kill(pid, 0)
-        return pid != os.getpid()
+        return vivo(pid) and pid != os.getpid()
     except (OSError, ValueError):
         return False
 
@@ -4154,7 +4315,7 @@ def fechar(sid, pastas, pedido):
     # ponytail: reabrir a task no mesmo repo antes disso acabar (~1 min) pode cruzar com a escrita do handoff.md
     arq = os.path.join(RUN_DIR, sid + ".fechar")
     open(arq, "w").write(pedido)
-    subprocess.Popen([*EU, "--fechar", sid, pastas[0], arq, *pastas[1:]], start_new_session=True, stdin=subprocess.DEVNULL,
+    subprocess.Popen([*EU, "--fechar", sid, pastas[0], arq, *pastas[1:]], **FUNDO, stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "fechar.log"), "a"))
     print(dim("handoff.md e memória do projeto: atualizando em segundo plano."))
 
@@ -4873,6 +5034,10 @@ def main():
         return primeiros_passos()
     if a[:1] == ["--login"]:  # Google: agenda e Gmail
         return login()
+    if a[:1] == ["--gh-instalar"]:  # primeiros passos do app, numa aba
+        return gh_instalar()
+    if a[:1] == ["--statusline"]:  # statusLine do Claude Code no Windows
+        return statusline()
     # abas do app (app/): JSON no stdout, erro como mensagem
     comandos = {"--projetos-json": projetos_json, "--tasks-json": tasks_json, "--task-json": task_json,
                 "--task-mudar": task_mudar, "--tasks-mudar": tasks_mudar, "--tasks-pontos": tasks_pontos, "--docs-json": docs_json, "--doc-json": doc_json, "--reunioes-projeto-json": reunioes_projeto_json, "--reuniao-json": reuniao_json, "--arquivos-json": arquivos_json, "--contexto-montar": contexto_montar, "--contexto-historico": contexto_historico, "--contexto-enviar": contexto_enviar, "--uso-avaliar": uso_avaliar, "--projeto-validar": projeto_validar, "--projeto-salvar": projeto_salvar, "--modelos-json": modelos_json, "--modelo": modelo_escolher,
@@ -4891,7 +5056,8 @@ def main():
                 "--repo-mudancas": repo_mudancas, "--repo-diff": repo_diff, "--commit-mensagem": commit_mensagem,
                 "--commit-autor": commit_autor, "--commit-fazer": commit_fazer,
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
-                "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir}
+                "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir,
+                "--instalar-windows": instalar_windows}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
     if a[:1] == ["--horas-json"]:  # aba Horas do app: jfy --horas-json [AAAA-MM-DD]
