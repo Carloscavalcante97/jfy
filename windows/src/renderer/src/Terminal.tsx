@@ -11,6 +11,14 @@ const terms = new Map<string, Term>()
 let palco: HTMLDivElement | null = null
 let ativa = '@0'
 let visivel = false
+const WIN = navigator.userAgent.includes('Windows')
+
+/** Os caminhos como o terminal do sistema cola: no Windows entre aspas (quando têm espaço); no Mac, espaço e símbolos
+ * com \\ na frente. Um espaço no fim, para continuar digitando. */
+function colarCaminhos(caminhos: string[]) {
+  const um = (c: string) => (WIN ? (/[\s&()^%!]/.test(c) ? `"${c}"` : c) : c.replace(/[ '"()[\]{}&;|<>$`\\!*?#~]/g, '\\$&'))
+  api.abas.escrever(ativa, caminhos.map(um).join(' ') + ' ')
+}
 
 // as abas com o sino (o Claude pediu atenção): a bolinha vermelha na barra lateral
 const sinos = new Set<string>()
@@ -115,7 +123,27 @@ export function TerminalTela({ menuVivo }: { menuVivo: boolean }) {
     return () => ro.disconnect()
   }, [])
   return (
-    <div className="palco-terminal" ref={ref}>
+    <div
+      className="palco-terminal"
+      ref={ref}
+      // um arquivo arrastado (do Explorador, um print) vira o caminho colado, e o Claude anexa a imagem
+      // colar com só uma imagem copiada (um print): o atalho do Claude para colar imagem, que lê do clipboard.
+      // No Windows é o Alt+V (ESC v); no Mac, o Ctrl+V (0x16). Na captura, antes do xterm colar texto vazio
+      onPasteCapture={(e) => {
+        const d = e.clipboardData
+        if (d.getData('text/plain') || ![...d.items].some((i) => i.type.startsWith('image/'))) return
+        e.preventDefault()
+        e.stopPropagation()
+        api.abas.escrever(ativa, WIN ? '\x1bv' : '\x16')
+      }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault()
+        const caminhos = [...e.dataTransfer.files].map((f) => api.caminhoDe(f)).filter(Boolean)
+        if (caminhos.length) colarCaminhos(caminhos)
+        terms.get(ativa)?.xt.focus()
+      }}
+    >
       {!menuVivo && ativa === '@0' && (
         <div className="encerrado">
           O jfy fechou. As abas abertas continuam rodando.

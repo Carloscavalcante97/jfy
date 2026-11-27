@@ -1,5 +1,5 @@
 // A ponte entre a tela e o processo principal: só o que a tela usa, nada de Node solto no renderer.
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 type Resultado = { status: number; saida: string; erro: string }
 export type Aba = { id: string; nome: string; chave: string; cor?: string; cwd: string; viva: boolean }
@@ -20,6 +20,8 @@ const api = {
   escolher: (o: { pasta?: boolean; titulo?: string; criar?: boolean; filtros?: { name: string; extensions: string[] }[] }): Promise<string | null> =>
     ipcRenderer.invoke('escolher', o),
   copiar: (texto: string) => ipcRenderer.send('copiar', texto),
+  /** O caminho no disco de um arquivo arrastado para a janela (o File do navegador não tem mais o .path). */
+  caminhoDe: (f: File) => webUtils.getPathForFile(f),
   mostrarPasta: (p: string) => ipcRenderer.send('mostrar-pasta', p),
   selo: (n: number, imagem?: string) => ipcRenderer.send('selo', n, imagem),
   abrirLink: (alvo: string) => ipcRenderer.send('abrir-link', alvo),
