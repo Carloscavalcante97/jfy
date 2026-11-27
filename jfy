@@ -1445,11 +1445,11 @@ def minutos_uteis(ini, fim):
     return max(1, round((fim - ini - reun) / 60))
 
 
-def registrar_horas(ini, fim, minutos, modo, tid=None, pid=None, titulo=None, cat=None):
+def registrar_horas(ini, fim, minutos, modo, tid=None, pid=None, titulo=None, cat=None, ligar=False):
     """Uma linha por trabalho em ~/.jfy/horas/AAAA-MM-DD.jsonl (dia do início): base do jfy --horas. `cat`: a categoria
-    escolhida à mão (sem ela, a do modo)."""
-    linha = {k: v for k, v in dict(ini=ini, fim=fim, min=minutos, modo=modo, tid=tid, pid=pid, titulo=titulo, cat=cat).items()
-             if v is not None}
+    escolhida à mão (sem ela, a do modo). `ligar`: você pediu, ao encerrar a task, para o lançamento ir ligado a ela."""
+    linha = {k: v for k, v in dict(ini=ini, fim=fim, min=minutos, modo=modo, tid=tid, pid=pid, titulo=titulo, cat=cat,
+                                   ligar=ligar or None).items() if v is not None}
     with open(os.path.join(HORAS_DIR, date.fromtimestamp(ini).isoformat() + ".jsonl"), "a") as f:
         f.write(json.dumps(linha, ensure_ascii=False) + "\n")
 
@@ -1812,10 +1812,11 @@ def etapa_padrao(pj, cat):
 
 
 def tasks_das_linhas(dia):
-    """{linha: task} das linhas que vieram de uma task só (a linha vai ligada a ela no Journify)."""
+    """{linha: task} das linhas que vão ligadas a uma task no Journify: as que vieram de uma task só, e todas com o
+    "ligar" que você escolheu ao encerrar (sem ele, a linha vai solta, só com o projeto)."""
     por = {}
     for e, k in entradas_do_log(dia):
-        por.setdefault("|".join(str(x) for x in k), set()).add(e.get("tid"))
+        por.setdefault("|".join(str(x) for x in k), set()).add(e.get("tid") if e.get("ligar") else None)
     return {kid: next(iter(t)) for kid, t in por.items() if len(t) == 1 and None not in t}
 
 
@@ -4650,7 +4651,7 @@ def destino():
     return novo, video, motivo
 
 
-def fim(tid, minutos=None, novo=None, nada=False, modo="sessao", video=None, motivo=None):
+def fim(tid, minutos=None, novo=None, nada=False, modo="sessao", video=None, motivo=None, ligar=False):
     """Comenta o tempo gasto e, se pronta, muda o status para `novo` (um dos FINAIS). Sem minutos, usa o relógio do inicio() (sem as reuniões).
     O tempo também vai para o log de horas do dia."""
     arq = os.path.join(RUN_DIR, tid + ".t")
@@ -4662,7 +4663,7 @@ def fim(tid, minutos=None, novo=None, nada=False, modo="sessao", video=None, mot
     ini = float(open(arq).read()) if os.path.exists(arq) else agora - 60 * (minutos or 1)
     if minutos is None:
         minutos = minutos_uteis(ini, agora)
-    registrar_horas(ini, agora, minutos, modo, tid=tid)  # antes do Journify: o tempo foi trabalhado mesmo se ele falhar
+    registrar_horas(ini, agora, minutos, modo, tid=tid, ligar=ligar)  # antes do Journify: o tempo foi trabalhado mesmo se ele falhar
     quando = datetime.now().strftime("%d/%m/%Y %H:%M")
     try:
         mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
@@ -4715,7 +4716,9 @@ def rodar(tid, modo="pipeline"):
         fim(tid, nada=True)
     else:
         m = ask(f"Tempo gasto, já sem as reuniões (80, 1h20) [{fmt_min(minutos)}]: ")
-        fim(tid, ler_minutos(m) or minutos, d[0], modo=modo, video=d[1], motivo=d[2])
+        # nem toda hora precisa ir presa à task no Minhas Horas: você escolhe, e o padrão é não ligar
+        ligar = escolha("Ao lançar as horas, ligar este tempo à task no Minhas Horas? (s/n) [n] ", "sn") == "s"
+        fim(tid, ler_minutos(m) or minutos, d[0], modo=modo, video=d[1], motivo=d[2], ligar=ligar)
     fechar(sid, pastas, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
     ask(dim("Enter fecha esta aba."))
 
@@ -4736,7 +4739,7 @@ Regras desta sessão:
 - Ao começar uma task, rode `{SELF} --inicio <id>` e leia a task com mcp__journify__obter_task.
 - Task de código: confira se a branch é gitflow (feature/<slug>). Se não for, proponha a branch e espere meu ok. Depois rode o /pipeline com o id da task.
 - Task que não é código (estudo, análise, documento): faça direto comigo. Nada vai para o Journify sem eu aprovar.
-- Ao terminar, pergunte se a task está pronta e para onde ela vai: em teste, em revisão ou fechado (fechado: peça o link do vídeo do teste ou o motivo de não ter). Pergunte também se quero corrigir o tempo. Rode `{SELF} --fim <id>`, com `--status em_teste`, `--status em_revisao` ou `--status fechado` se estiver pronta (fechado: mais `--video <link>` ou `--sem-video "<motivo>"`) e `--min N` se eu corrigir o tempo (sem --min o jfy usa o relógio). Se eu não quiser registrar, rode `{SELF} --fim <id> --nada`. Nunca mude status nem tempo no Journify de outro jeito.
+- Ao terminar, pergunte se a task está pronta e para onde ela vai: em teste, em revisão ou fechado (fechado: peça o link do vídeo do teste ou o motivo de não ter). Pergunte também se quero corrigir o tempo e se, ao lançar as horas, esse tempo vai ligado à task no Minhas Horas (o padrão é não). Rode `{SELF} --fim <id>`, com `--ligar` se eu quiser ligar, com `--status em_teste`, `--status em_revisao` ou `--status fechado` se estiver pronta (fechado: mais `--video <link>` ou `--sem-video "<motivo>"`) e `--min N` se eu corrigir o tempo (sem --min o jfy usa o relógio). Se eu não quiser registrar, rode `{SELF} --fim <id> --nada`. Nunca mude status nem tempo no Journify de outro jeito.
 - Logo depois do --fim, faça o encerramento da task: {fechamento(pid_proj)}
 - Depois atualize a lista com mcp__journify__minhas_tasks (projetoId {pid_proj}) e pergunte se seguimos com outra."""
     sid = str(uuid.uuid4())
@@ -5354,7 +5357,8 @@ def main():
         novo = arg("--status") or ("em_teste" if "--pronta" in a else None)  # --pronta: sessões abertas antes do --status
         if novo and novo not in FINAIS:
             return print(c(f"--status precisa ser um destes: {', '.join(FINAIS)}", 203))
-        return fim(a[1], int(arg("--min")) if arg("--min") else None, novo, "--nada" in a, video=arg("--video"), motivo=arg("--sem-video"))
+        return fim(a[1], int(arg("--min")) if arg("--min") else None, novo, "--nada" in a, video=arg("--video"), motivo=arg("--sem-video"),
+                   ligar="--ligar" in a)
     if APP or os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
         return principal()
     # fora do tmux: entra (ou volta) na sessão jfy, garantindo a aba do menu
@@ -5677,6 +5681,14 @@ def selftest():
             assert False, args
         except SystemExit:
             pass
+    # ligar à task: só a linha cujo tempo você pediu para ligar ao encerrar (todas as entradas dela)
+    for t, lig in (("Tarefa A", True), ("Tarefa B", False)):
+        ini = datetime.combine(d1, datetime.min.time()).timestamp() + 30000
+        registrar_horas(ini, ini + 600, 10, "pipeline", tid="T" + t[-1], pid="a", titulo=t, ligar=lig)
+    assert tasks_das_linhas(d1) == {"a|Desenvolvimento|Tarefa A": "TA"}, tasks_das_linhas(d1)
+    with open(os.path.join(HORAS_DIR, d1.isoformat() + ".jsonl")) as f:
+        fica = [l for l in f if '"Tarefa ' not in l]
+    open(os.path.join(HORAS_DIR, d1.isoformat() + ".jsonl"), "w").writelines(fica)
     # registro à mão: vira uma linha como as outras, com a categoria escolhida; futuro e hora ilegível: recusa
     assert horas_nova(d1.isoformat(), "Souv", "Funcionalidade", "1h30", " Ajuda no deploy ") == {"dia": d1.isoformat(), "trabalhado": 90}
     assert so(d1) == {"Ajuda no deploy": (90, None)} and next(x for x in itens_horas(cfg_h, d1)[0])["cat"] == "Funcionalidade"

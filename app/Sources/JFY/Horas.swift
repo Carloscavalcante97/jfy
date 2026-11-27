@@ -95,7 +95,7 @@ struct HorasTela: View {
             Button(horas?.lancado == nil ? "Lançar" : "Lançar de novo") { lancar() }
         } message: {
             Text(horas?.lancado == nil
-                 ? "Vai direto para o Journify, em segundos: cada linha vira um lançamento no Minhas Horas, ligado à task quando veio de uma."
+                 ? "Vai direto para o Journify, em segundos: cada linha vira um lançamento no Minhas Horas, ligado à task quando você escolheu isso ao encerrar a task."
                  : "O que já está lá e mudou é editado, e só as linhas novas são criadas, sem duplicar.")
         }
     }

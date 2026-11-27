@@ -174,7 +174,7 @@ export default function Horas({ ativa }: { ativa: boolean }) {
           }
         : {
             titulo: `Lançar ${fmt(h.total)} de ${ddmm(dia)} no Journify?`,
-            mensagem: 'Vai direto para o Journify, em segundos: cada linha vira um lançamento no Minhas Horas, ligado à task quando veio de uma.',
+            mensagem: 'Vai direto para o Journify, em segundos: cada linha vira um lançamento no Minhas Horas, ligado à task quando você escolheu isso ao encerrar a task.',
             botao: 'Lançar'
           }
     )
