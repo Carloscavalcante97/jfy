@@ -1231,11 +1231,15 @@ def relogio():
     linha e não chama de novo enquanto ele vive, então não sobe um Python por segundo. Sai quando o jfy muda (o tmux
     sobe o novo no próximo redesenho, até 15s) e quando o tmux fecha. Avisa uma vez por dia quando fecha a jornada."""
     global TEMA
-    versao, vigia = os.path.getmtime(SELF), 0
+    versao, vigia, programada = os.path.getmtime(SELF), 0, 0
     while os.path.getmtime(SELF) == versao:
         if time.time() - vigia > 120:  # PRs e agenda: em outro processo, para a barra não travar na rede
             vigia = time.time()
             subprocess.Popen([*EU, "--vigiar"], **FUNDO, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "vigiar.log"), "a"))
+        if time.time() - programada > 20 and programada_vencida():  # mensagem programada do chat na hora
+            programada = time.time()
+            subprocess.Popen([*EU, "--chat-programadas-enviar"], **FUNDO, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "vigiar.log"), "a"))
         TEMA = TEMAS.get(load().get("tema"), {})  # tema trocado no menu vale aqui sem reiniciar
         m, rodando = cronometro()
@@ -2681,8 +2685,27 @@ def uso(dias=None):
 # Chat do time (as conversas entre colaboradores do Journify) na tela de chat do app, pelo MCP. O app só fala com as
 # três funções abaixo, em JSON. ponytail: o MCP só responde quando chamado; a tela pergunta a cada 5 s e o vigia, a
 # cada 2 min (mensagem nova vira notificação). Com a API de tempo real do Journify, troca aqui e o app não muda.
+CHAT_NAO_LIDAS = os.path.join(HOME, "chat-nao-lidas.json")  # as conversas (suas) com mensagem não lida: o selo do Chat
+
+
+def nao_lidas_chat(ids=None, lida=None):
+    """Guarda quais conversas estão não lidas (ids), ou tira uma que acabou de ser lida (lida). O app só conta."""
+    if lida:
+        try:
+            ids = [i for i in json.load(open(CHAT_NAO_LIDAS)) if i != lida]
+        except (OSError, ValueError):
+            return
+    gravar_json(CHAT_NAO_LIDAS, sorted(ids))
+
+
 def chat_conversas():
     """[{id, nome, tipo ("canal" ou "direta"), nao_lidas, membro, ultima: {autor, texto, quando} ou None}], a mais recente primeiro."""
+    r = chat_conversas_mcp()
+    nao_lidas_chat([c["id"] for c in r if c["nao_lidas"] and c["membro"]])
+    return r
+
+
+def chat_conversas_mcp():
     return [{"id": c["id"], "nome": c.get("nome") or "Conversa", "tipo": "direta" if c.get("tipo") == "dm" else "canal",
              "nao_lidas": 1 if c.get("naoLida") else 0, "membro": c.get("membro", True),
              "ultima": {"autor": None, "texto": c.get("ultimaMensagem") or "", "quando": c["ultimaMensagemEm"]}
@@ -2701,6 +2724,7 @@ def chat_mensagens(cid):
     """[{id, autor, texto, quando (ISO 8601), minha (bool)}] da conversa, da mais antiga para a mais nova (as 100 últimas).
     Abrir a conversa marca como lida, como no app do Journify."""
     r = mcp("listar_mensagens", conversaId=cid, limite=100, marcarComoLida=True)
+    nao_lidas_chat(lida=cid)
     eu = load().get("journify_uid")
     return [msg_chat(m, eu) for m in reversed(r.get("mensagens") or [])]
 
@@ -2713,6 +2737,103 @@ def chat_enviar(cid, texto, mencoes=""):
     m = r.get("mensagem", r) if isinstance(r, dict) else {}
     return {"id": m.get("id") or str(uuid.uuid4()), "autor": m.get("autor") or "você", "texto": texto,
             "quando": m.get("em") or datetime.now().astimezone().isoformat(timespec="seconds"), "minha": True}
+
+
+# ---------- chat: mensagem programada ----------
+# O Journify não programa mensagem: o jfy guarda e manda na hora, pelo relógio (no Mac, o da barra do tmux; no Windows,
+# o que o app mantém rodando), que olha a fila a cada segundo. Computador desligado ou dormindo na hora: manda ao voltar,
+# se o atraso for de até 30 min; mais que isso, não manda sozinho (a mensagem podia não fazer mais sentido) e avisa.
+PROGRAMADAS = os.path.join(HOME, "chat-programadas.json")
+ATRASO_MAX = 1800
+
+
+@contextlib.contextmanager
+def trava_arquivo(arq):
+    """Um processo por vez no arquivo (o app programa enquanto o relógio manda). Trava largada há 30 s não vale mais."""
+    t = arq + ".trava"
+    for _ in range(100):
+        try:
+            os.close(os.open(t, os.O_CREAT | os.O_EXCL))
+            break
+        except FileExistsError:
+            with contextlib.suppress(OSError):
+                if time.time() - os.path.getmtime(t) > 30:
+                    os.remove(t)
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(t)
+
+
+def programadas():
+    try:
+        return json.load(open(PROGRAMADAS))
+    except (OSError, ValueError):
+        return []
+
+
+def chat_programar(cid, quando, texto, mencoes=""):
+    """jfy --chat-programar <conversa> <AAAA-MM-DDTHH:MM, hora local> <texto> [ids marcados]: guarda para mandar na hora."""
+    ts = datetime.fromisoformat(quando).astimezone().timestamp()
+    if ts < time.time() - 60:
+        sys.exit("Esse horário já passou.")
+    if not texto.strip():
+        sys.exit("A mensagem está vazia.")
+    p = {"id": uuid.uuid4().hex[:12], "conversa": cid, "texto": texto, "mencoes": mencoes, "quando": ts}
+    with trava_arquivo(PROGRAMADAS):
+        gravar_json(PROGRAMADAS, programadas() + [p])
+    return p
+
+
+def chat_programadas(cid=None):
+    """jfy --chat-programadas [conversa]: as que esperam a hora, da mais próxima para a mais longe. Com "erro": não foi
+    (falhou, ou o computador estava desligado na hora), e espera a pessoa mandar agora ou cancelar."""
+    return sorted((p for p in programadas() if cid is None or p["conversa"] == cid), key=lambda p: p["quando"])
+
+
+def chat_desprogramar(pid):
+    """jfy --chat-desprogramar <id>: tira da fila (cancelar, ou editar: o app devolve o texto para o campo)."""
+    with trava_arquivo(PROGRAMADAS):
+        fila = programadas()
+        if not any(p["id"] == pid for p in fila):  # o relógio mandou no mesmo instante: o Editar não devolve o texto
+            sys.exit("Essa mensagem já foi enviada.")
+        gravar_json(PROGRAMADAS, [p for p in fila if p["id"] != pid])
+    return {"ok": True}
+
+
+def programada_vencida():
+    """O relógio pergunta a cada segundo (só lê um arquivo pequeno): tem mensagem na hora de ir?"""
+    return any(not p.get("erro") and p["quando"] <= time.time() for p in programadas())
+
+
+def enviar_programadas():
+    """jfy --chat-programadas-enviar (o relógio chama): manda as que chegaram na hora. Sai da fila antes de mandar, e
+    a que falhou volta com o erro, sem nova tentativa sozinha: a mensagem pode ter chegado ao Journify mesmo com o erro,
+    e mandar duas vezes é pior que avisar."""
+    agora = time.time()
+    with trava_arquivo(PROGRAMADAS):
+        fila = programadas()
+        vez = [p for p in fila if not p.get("erro") and p["quando"] <= agora]
+        gravar_json(PROGRAMADAS, [p for p in fila if p not in vez])
+    voltam = []
+    for p in vez:
+        hora = datetime.fromtimestamp(p["quando"]).strftime("%d/%m %H:%M")
+        if agora - p["quando"] > ATRASO_MAX:
+            voltam.append(dict(p, erro=f"Não foi às {hora}: o computador estava desligado ou dormindo."))
+            notificar("Mensagem programada não foi", f"Era para {hora}: {p['texto'][:80]}", app=f"chat/{p['conversa']}")
+            continue
+        try:
+            chat_enviar(p["conversa"], p["texto"], p.get("mencoes") or "")
+            notificar("Mensagem programada enviada", p["texto"][:100], app=f"chat/{p['conversa']}")
+        except Exception as e:
+            voltam.append(dict(p, erro=str(e)[:200] or "o Journify não respondeu"))
+            notificar("Mensagem programada não foi", f"{e}"[:100], app=f"chat/{p['conversa']}")
+    if voltam:
+        with trava_arquivo(PROGRAMADAS):
+            gravar_json(PROGRAMADAS, programadas() + voltam)
+    return {"enviadas": len(vez) - len(voltam), "falharam": len(voltam)}
 
 
 def vigiar_emails(st):
@@ -2729,6 +2850,7 @@ def vigiar_chat(st):
     vistas = st.get("chat")
     novas = {c["id"]: c for c in mcp("listar_conversas", somenteNaoLidas=True)}
     marca = {cid: c.get("ultimaMensagemEm") for cid, c in novas.items()}
+    nao_lidas_chat([cid for cid, c in novas.items() if c.get("membro", True)])  # o selo do Chat em dia, de 2 em 2 min
     if vistas is not None:
         for cid, c in novas.items():
             if marca[cid] and vistas.get(cid) != marca[cid]:
@@ -5623,7 +5745,9 @@ def main():
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
                 "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir,
                 "--arquivo-enviar": arquivo_enviar, "--formularios-json": formularios_json, "--formulario-json": formulario_json,
-                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia, "--corrigir": corrigir, "--corretor-aquecer": corretor_aquecer,
+                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar, "--chat-ia": chat_ia, "--corrigir": corrigir, "--chat-programar": chat_programar,
+                "--chat-programadas": chat_programadas, "--chat-desprogramar": chat_desprogramar,
+                "--chat-programadas-enviar": enviar_programadas, "--corretor-aquecer": corretor_aquecer,
                 "--instalar-windows": instalar_windows}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
@@ -5653,8 +5777,8 @@ def main():
         return avisar()
     if a[:1] == ["--uso"]:  # tela de uso da IA do app: jfy --uso [dias], JSON
         return print(json.dumps(uso(int(a[1]) if a[1:] else None), ensure_ascii=False))
-    if a[:1] == ["--chat"]:  # tela de chat do app: jfy --chat [conversa [texto]]
-        return chat(*a[1:3])
+    if a[:1] == ["--chat"]:  # tela de chat do app: jfy --chat [conversa [texto [ids marcados]]]
+        return chat(*a[1:4])
     if a[:1] == ["--fim"]:
         arg = lambda k: a[a.index(k) + 1] if k in a[:-1] else None
         novo = arg("--status") or ("em_teste" if "--pronta" in a else None)  # --pronta: sessões abertas antes do --status
@@ -5933,6 +6057,28 @@ def selftest():
     shutil.rmtree(HOME)
     HOME, ITENS_EMAIL = home_antes, os.path.join(home_antes, "emails-itens.json")
     os.remove(EMAIL)
+    # mensagem programada: vai na hora, uma vez só; a atrasada demais e a que falhou voltam com erro e não vão sozinhas
+    global PROGRAMADAS, chat_enviar
+    PROGRAMADAS, enviadas, chat_antes = os.path.join(RUN_DIR, "teste-programadas.json"), [], chat_enviar
+    def enviar_falso(cid, texto, mencoes=""):
+        if cid == "ruim":
+            raise RuntimeError("sem acesso")
+        enviadas.append((cid, texto, mencoes))
+    chat_enviar = enviar_falso
+    hora = lambda seg: datetime.fromtimestamp(time.time() + seg).isoformat(timespec="seconds")
+    futura = chat_programar("c1", hora(3600), "depois")
+    for cid, seg in (("c1", -30), ("ruim", -30), ("c2", -40)):
+        p = chat_programar(cid, hora(seg), f"oi {cid}", "u1" if cid == "c1" else "")
+    gravar_json(PROGRAMADAS, [dict(p, quando=time.time() - 7200) if p["conversa"] == "c2" else p for p in programadas()])
+    assert programada_vencida() and enviar_programadas() == {"enviadas": 1, "falharam": 2}
+    assert enviadas == [("c1", "oi c1", "u1")] and not programada_vencida()
+    assert enviar_programadas() == {"enviadas": 0, "falharam": 0} and len(enviadas) == 1  # não manda de novo
+    assert [p["texto"] for p in chat_programadas()] == ["oi c2", "oi ruim", "depois"]
+    assert all(p.get("erro") for p in chat_programadas()[:2]) and [p["id"] for p in chat_programadas("c1")] == [futura["id"]]
+    chat_desprogramar(futura["id"])
+    assert len(chat_programadas()) == 2
+    os.remove(PROGRAMADAS)
+    PROGRAMADAS, chat_enviar = os.path.join(HOME, "chat-programadas.json"), chat_antes
     # reuniões: o que você deu (no app) vale sobre o palpite pelo título; nome livre vira o projeto da linha
     global REUNIOES, reunioes_do_dia
     REUNIOES, agora = os.path.join(RUN_DIR, "teste-reunioes.json"), time.time()

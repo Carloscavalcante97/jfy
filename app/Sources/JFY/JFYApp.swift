@@ -266,7 +266,7 @@ struct Principal: View {
                         .foregroundStyle(marcada ? Souv.destaque : Souv.texto2)
                         Text(t.rawValue).foregroundStyle(Souv.texto).fontWeight(marcada ? .medium : .regular).lineLimit(1)
                         Spacer(minLength: 0)
-                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count
+                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .chat ? caixa.chatNaoLidas : t == .portas ? portas.itens.count
                              : t == .contexto ? cesta.itens.count : 0)
                         if t == .terminal, !abas.itens.isEmpty {
                             Spacer(minLength: 0)

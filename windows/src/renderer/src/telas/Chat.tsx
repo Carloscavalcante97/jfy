@@ -1,14 +1,15 @@
 // Tela "Chat" (app/Sources/JFY/Chat.swift no Mac): o chat do time do Journify. A tela só desenha; quem fala com o
 // Journify (pelo MCP) é o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida),
 // `--chat <id> <texto> [ids marcados]` (envia), `--chat-ia` (melhora a mensagem pelo Claude) e `--corrigir` (o corretor
-// de português, o Claude Haiku nos bastidores; `--corretor-aquecer` abre ele antes). Mensagem nova vira notificação
-// pelo vigia, e o clique abre a conversa aqui.
+// de português, o Claude Haiku nos bastidores; `--corretor-aquecer` abre ele antes). A mensagem programada (o Journify
+// não tem) é guardada pelo jfy (`--chat-programar`, `--chat-programadas`, `--chat-desprogramar`) e sai na hora pelo
+// relógio dele, sem a tela. Mensagem nova vira notificação pelo vigia, e o clique abre a conversa aqui.
 import { useEffect, useRef, useState } from 'react'
-import { Check, CircleAlert, CircleArrowUp, Copy, Eye, MessagesSquare, Reply, Smile, Sparkles, SpellCheck, Star, StarOff, X } from 'lucide-react'
-import { api, aquecerCorretor, ler } from '../jfy'
+import { CircleAlert, CircleArrowUp, Clock, Copy, Eye, MessagesSquare, Reply, Smile, Sparkles, SpellCheck, Star, StarOff, X } from 'lucide-react'
+import { api, aquecerCorretor, fazer, ler } from '../jfy'
 import { atendido, loja, nav } from '../estado'
 import { Avatar as AvatarPessoa } from '../avatar'
-import { Aviso, Botao, Caixa, Carregando, Flutuante, Linha, Segmentos, Selo, fmtHora, menuContexto } from '../souv'
+import { Aviso, Botao, Carregando, Flutuante, Linha, Segmentos, Selo, diaLocal, fmtHora, menuContexto } from '../souv'
 import './Chat.css'
 
 type Mensagem = { id: string; autor: string; autor_id?: string | null; texto: string; quando?: string; minha?: boolean }
@@ -25,6 +26,8 @@ type Troca = { de: string; para: string }
 // a correção do Claude para o texto exato `de` (sem trocas: nada a corrigir, ou o motor descartou). dispensada: o ✕,
 // ou já aplicada; a faixa não volta para esse texto
 type Correcao = { de: string; texto: string; trocas: Troca[]; dispensada?: boolean }
+// quando: epoch em segundos. erro: não foi (falhou, ou o computador estava desligado na hora) e espera você decidir
+type Programada = { id: string; conversa: string; texto: string; mencoes: string; quando: number; erro?: string }
 
 const tipoDe = (c: Conversa): Tipo => (c.tipo === 'canal' ? 'canal' : 'direta')
 const abaLembrada = loja<Tipo>('direta', 'chat.aba')
@@ -34,8 +37,6 @@ const MAX_FIXAS = 3
 const favoritas = loja<Favoritas>({ diretas: [], grupos: [] }, 'chat.favoritas')
 const chaveFav = (t: Tipo) => (t === 'canal' ? 'grupos' : 'diretas')
 const EMOJIS = ['👍', '🙏', '😂', '✅', '🎉', '❤️', '👀', '🚀', '🔥', '😅', '🤝', '💡']
-// corrigir ao enviar: a correção pronta vai na hora; sem ela, espera até 5 s e manda como está (nunca trava o envio)
-const CORRIGIR_AO_ENVIAR = loja(false, 'chat.corrigirAoEnviar')
 
 const semAcento = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
 const escapar = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -58,6 +59,29 @@ function hora(iso?: string) {
   if (!d || isNaN(+d)) return ''
   return d.toDateString() === new Date().toDateString() ? fmtHora(d) : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 }
+
+/** "AAAA-MM-DDTHH:MM" na hora local: o que o datetime-local e o --chat-programar entendem. */
+const local = (d: Date) => `${diaLocal(d)}T${d.toTimeString().slice(0, 5)}`
+/** Daqui a `dias` dias, às `h` em ponto (o setHours passa da meia-noite sozinho: 24h vira 0h do dia seguinte). */
+function emPonto(dias: number, h: number) {
+  const d = new Date()
+  d.setDate(d.getDate() + dias)
+  d.setHours(h, 0, 0, 0)
+  return local(d)
+}
+/** "hoje 14:30", "amanhã 09:00" ou "sex 28/11 14:30". */
+function quandoSai(ts: number) {
+  const d = new Date(ts * 1000)
+  const amanha = new Date()
+  amanha.setDate(amanha.getDate() + 1)
+  const dia = diaLocal(d) === diaLocal(new Date()) ? 'hoje' : diaLocal(d) === diaLocal(amanha) ? 'amanhã'
+    : `${d.toLocaleDateString('pt-BR', { weekday: 'short' }).replace('.', '')} ${d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}`
+  return `${dia} ${fmtHora(d)}`
+}
+// ponytail: a que chegou na hora (ou chega em 5 s) está saindo pelo relógio, que olha a fila a cada segundo: não dá
+// mais para editar nem cancelar, senão o texto voltava ao campo de uma mensagem já enviada. O motor dizer no
+// --chat-desprogramar se tirou de fato fecha a janela de vez
+const saindo = (p: Programada) => !p.erro && p.quando * 1000 < Date.now() + 5_000
 
 /** As conversas da aba: as fixadas (as que estão na lista) primeiro, e o resto. */
 function separar(lista: Conversa[], aba: Tipo, fav: Favoritas) {
@@ -85,14 +109,16 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   const [marcados, setMarcados] = useState<Pessoa[]>([])
   const [melhorando, setMelhorando] = useState(false)
   const [antes, setAntes] = useState<string | null>(null) // o texto de antes do Claude (ou do corretor), para o Desfazer
-  // quem mexeu no texto: o Melhorar ou o corretor (Corrigir, Aplicar ou Tab, com quantas correções)
-  const [quemMexeu, setQuemMexeu] = useState<{ claude: true } | { correcoes: number }>({ claude: true })
+  // o Desfazer é do Melhorar (com a nota) ou do corretor (Corrigir, Aplicar ou Tab: só o botão)
+  const [melhorada, setMelhorada] = useState(false)
   const [correcao, setCorrecao] = useState<Correcao | null>(null) // a última que voltou dos bastidores
-  const [corrigindo, setCorrigindo] = useState<'botao' | 'envio' | null>(null) // o Corrigir, ou o envio esperando a correção
+  const [corrigindo, setCorrigindo] = useState(false) // o Corrigir esperando o corretor
   const [recado, setRecado] = useState<string | null>(null) // "Nada para corrigir.", por uns segundos
-  const corrigirAoEnviar = CORRIGIR_AO_ENVIAR.use()
-  const [erroIa, setErroIa] = useState<string | null>(null)
+  const [erroCampo, setErroCampo] = useState<string | null>(null) // do Melhorar, do Corrigir ou da mensagem programada
   const [paleta, setPaleta] = useState<HTMLElement | null>(null) // os emojis abertos, presos ao botão
+  const [relogio, setRelogio] = useState<HTMLElement | null>(null) // o "Programar envio" aberto, preso ao botão
+  const [quando, setQuando] = useState('') // o dia e hora escolhidos no datetime-local
+  const [programadas, setProgramadas] = useState<Programada[]>([]) // as desta conversa
   const sel = useRef(selecionada)
   sel.current = selecionada
   const textoAtual = useRef(texto) // a resposta do corretor só vale se o campo ainda tem o texto que foi
@@ -124,6 +150,12 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     setConversas((l) => l && l.map((x) => (x.id === cid ? { ...x, nao_lidas: 0 } : x)))
   }
 
+  // erro aqui fica quieto, como nas mensagens: a lista que estava fica e a próxima volta tenta de novo
+  async function carregarProgramadas(cid: string) {
+    const [lista] = await ler<Programada[]>(['--chat-programadas', cid])
+    if (lista && sel.current === cid) setProgramadas((l) => (JSON.stringify(l) === JSON.stringify(lista) ? l : lista))
+  }
+
   // ponytail: busca de tempos em tempos (conversas a cada 15 s, mensagens a cada 5 s, só com a tela à vista); tempo
   // real (SSE ou websocket) se o MCP do Journify oferecer
   useEffect(() => {
@@ -133,11 +165,13 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     return () => clearInterval(t)
   }, [ativa])
 
-  // só com a tela à vista: ler as mensagens marca a conversa como lida no Journify
+  // só com a tela à vista: ler as mensagens marca a conversa como lida no Journify. As programadas vêm junto: a que
+  // sai pelo relógio some da lista e aparece na conversa
   useEffect(() => {
     if (!selecionada || !ativa) return
-    carregarMensagens(selecionada)
-    const t = setInterval(() => carregarMensagens(selecionada), 5_000)
+    const ver = () => (carregarMensagens(selecionada), carregarProgramadas(selecionada))
+    ver()
+    const t = setInterval(ver, 5_000)
     return () => clearInterval(t)
   }, [selecionada, ativa])
 
@@ -147,7 +181,8 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     setSelecionada(abrirConversa)
     atendido('abrirConversa')
   }, [abrirConversa])
-  useEffect(() => setMensagens([]), [selecionada]) // a conversa nova não mostra as mensagens da outra enquanto carrega
+  // a conversa nova não mostra as mensagens (nem as programadas) da outra enquanto carrega
+  useEffect(() => void (setMensagens([]), setProgramadas([])), [selecionada])
 
   const c = conversas?.find((x) => x.id === selecionada)
   // a conversa aberta por fora (o clique na notificação) aparece na aba dela; trocar de aba à mão não fecha a aberta
@@ -163,14 +198,14 @@ export default function Chat({ ativa }: { ativa: boolean }) {
 
   const soLeitura = c?.membro === false
   const podeEnviar = !enviando && !melhorando && !corrigindo && !!texto.trim() && !soLeitura
-  // a faixa "N correções" acima do campo: a correção é deste texto, tem troca e ninguém dispensou
+  // a faixa das trocas acima do campo: a correção é deste texto, tem troca e ninguém dispensou
   const faixa = correcao?.de === texto && correcao.trocas.length && !correcao.dispensada && !melhorando && !corrigindo ? correcao : null
 
   // a primeira correção já acha o Claude do corretor aberto
   useEffect(() => void (ativa && selecionada && !soLeitura && aquecerCorretor()), [ativa, selecionada, soLeitura])
 
   // a correção nos bastidores: 1,5 s depois da última tecla, com 3 palavras ou mais. Não corrige de novo o texto que
-  // já tem resposta, nem o que saiu de uma correção. Erro aqui fica quieto: o Corrigir e o envio mostram o deles
+  // já tem resposta, nem o que saiu de uma correção. Erro aqui fica quieto: o Corrigir mostra o dele
   useEffect(() => {
     if (soLeitura || texto.trim().split(/\s+/).length < 3 || correcao?.de === texto || correcao?.texto === texto) return
     const t = setTimeout(() => pedirCorrecao(texto), 1_500)
@@ -248,7 +283,7 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   function aplicar(x: Correcao) {
     trocar(x.texto, x.texto.length)
     setAntes(x.de)
-    setQuemMexeu({ correcoes: x.trocas.length })
+    setMelhorada(false)
     setCorrecao({ ...x, dispensada: true })
   }
 
@@ -256,18 +291,19 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   async function corrigir() {
     const t = texto
     if (!t.trim() || corrigindo || melhorando || enviando) return
-    setErroIa(null)
+    setErroCampo(null)
     let x = correcao?.de === t ? correcao : null
     if (!x) {
-      setCorrigindo('botao') // o campo fica só leitura, como no Melhorar: a correção não atropela o que fosse digitado
+      setCorrigindo(true) // o campo fica só leitura, como no Melhorar: a correção não atropela o que fosse digitado
       const [r, msg] = await pedirCorrecao(t)
-      setCorrigindo(null)
-      if (!r) return setErroIa(msg ?? 'O corretor não respondeu.')
+      setCorrigindo(false)
+      if (!r) return setErroCampo(msg ?? 'O corretor não respondeu.')
       x = r
     }
+    // sem troca: nada a corrigir, ou o motor descartou a correção pelas travas dele
     if (x.trocas.length) return aplicar(x)
     setRecado('Nada para corrigir.')
-    setTimeout(() => setRecado(null), 2_500)
+    setTimeout(() => setRecado(null), 2_000)
     campo.current?.focus()
   }
 
@@ -275,13 +311,13 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     const t = texto
     if (!t.trim() || melhorando || enviando) return
     setMelhorando(true)
-    setErroIa(null)
+    setErroCampo(null)
     const [r, msg] = await ler<{ texto: string }>(['--chat-ia'], t)
     setMelhorando(false)
-    if (!r?.texto) return setErroIa(msg ?? 'O Claude não devolveu texto.')
+    if (!r?.texto) return setErroCampo(msg ?? 'O Claude não devolveu texto.')
     setTexto(r.texto)
     setAntes(t)
-    setQuemMexeu({ claude: true })
+    setMelhorada(true)
     setCorrecao({ de: r.texto, texto: r.texto, trocas: [] }) // o texto do Claude não passa pelo corretor
     campo.current?.focus()
   }
@@ -300,39 +336,76 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     favoritas.set((f) => ({ ...f, [k]: [...f[k], x.id] }))
   }
 
-  async function enviar() {
-    let t = texto
-    const cid = selecionada
-    if (!cid || !t.trim() || enviando || melhorando || corrigindo || soLeitura) return
-    // corrigir ao enviar: a correção pronta deste texto vai na hora; sem ela, espera até 5 s e, sem resposta, vai como
-    // está. Não mexe no que você já corrigiu ou melhorou (o Desfazer à vista) nem no que você dispensou no ✕
-    if (corrigirAoEnviar && antes === null) {
-      let x = correcao?.de === t ? correcao : null
-      if (!x) {
-        setCorrigindo('envio')
-        const espera = new Promise<null>((ok) => setTimeout(ok, 5_000, null))
-        x = await Promise.race([pedirCorrecao(t).then(([r]) => r), espera])
-        setCorrigindo(null)
-      }
-      if (x && !x.dispensada) t = x.texto
-    }
-    t = t.trim()
-    // os marcados cujo "@Nome" ainda está no texto: o Journify avisa cada um, como no app
-    const ids = marcados.filter((p) => new RegExp(`@${escapar(p.nome)}${depoisDoNome}`, 'u').test(t)).map((p) => p.id)
-    setEnviando(true)
-    setErroEnvio(null)
+  /** Os ids dos marcados cujo "@Nome" ainda está no texto, separados por vírgula: o Journify avisa cada um, como no app. */
+  const mencoesDe = (t: string) =>
+    marcados.filter((p) => new RegExp(`@${escapar(p.nome)}${depoisDoNome}`, 'u').test(t)).map((p) => p.id).join(',')
+
+  /** O campo depois de enviar (ou programar): vazio, sem o Desfazer nem a lista do @. */
+  function limparCampo() {
     setTexto('')
     setAntes(null)
     setMencao(null)
-    const r = await api.jfy(['--chat', cid, t, ...(ids.length ? [ids.join(',')] : [])])
+  }
+
+  /** Manda pelo jfy --chat e põe a mensagem na conversa. Devolve o erro (à vista embaixo das mensagens), ou null. */
+  async function mandar(cid: string, t: string, mencoes: string) {
+    setEnviando(true)
+    setErroEnvio(null)
+    const r = await api.jfy(['--chat', cid, t, ...(mencoes ? [mencoes] : [])])
     setEnviando(false)
     const m = r.status === 0 ? decodificar<Mensagem>(r.saida) : null
-    if (m) {
-      if (sel.current === cid) setMensagens((l) => [...l, m])
-    } else {
-      setTexto(t) // não perde o que foi escrito
-      setErroEnvio(motivo(r))
+    if (m && sel.current === cid) setMensagens((l) => [...l, m])
+    const erro = m ? null : motivo(r)
+    setErroEnvio(erro)
+    return erro
+  }
+
+  async function enviar() {
+    const t = texto.trim()
+    const cid = selecionada
+    if (!cid || !t || !podeEnviar) return
+    limparCampo()
+    if (await mandar(cid, t, mencoesDe(t))) setTexto(t) // não perde o que foi escrito
+  }
+
+  /** Guarda no jfy para sair em `q` ("AAAA-MM-DDTHH:MM"), com as mesmas menções que o envio levaria. */
+  async function programar(q: string) {
+    const t = texto.trim()
+    const cid = selecionada
+    setRelogio(null)
+    if (!cid || !t || !podeEnviar) return
+    setErroCampo(null)
+    const mencoes = mencoesDe(t)
+    limparCampo()
+    campo.current?.focus() // o botão do popover, que tinha o foco, sumiu
+    const erro = await fazer(['--chat-programar', cid, q, t, ...(mencoes ? [mencoes] : [])])
+    if (erro) (setTexto(t), setErroCampo(erro)) // "Esse horário já passou.": o texto volta para o campo
+    carregarProgramadas(cid)
+  }
+
+  /** Cancelar, ou Editar (`devolver`: o texto e as menções voltam para o campo vazio). */
+  async function desprogramar(p: Programada, devolver?: boolean) {
+    if (saindo(p) || (devolver && texto.trim())) return
+    const erro = await fazer(['--chat-desprogramar', p.id])
+    if (erro) return setErroCampo(erro)
+    setProgramadas((l) => l.filter((x) => x.id !== p.id)) // some já, sem esperar a lista
+    if (devolver) {
+      trocar(p.texto, p.texto.length)
+      // o @ só marca quem está em `marcados`: quem estava na programada volta para lá (se ainda escreve na conversa)
+      const ids = p.mencoes.split(',')
+      setMarcados((l) => [...l, ...pessoas.filter((x) => ids.includes(x.id) && !l.some((y) => y.id === x.id))])
     }
+    carregarProgramadas(p.conversa)
+  }
+
+  /** A que não foi: manda pelo caminho do envio, com as menções guardadas, e só então tira da fila. */
+  async function enviarAgora(p: Programada) {
+    if (enviando || (await mandar(p.conversa, p.texto, p.mencoes))) return
+    // foi, mas ficou na fila: o aviso, para ninguém mandar de novo achando que não foi
+    const erro = await fazer(['--chat-desprogramar', p.id])
+    if (erro) setErroCampo(`A mensagem foi, mas não saiu da fila: ${erro}`)
+    else setProgramadas((l) => l.filter((x) => x.id !== p.id))
+    carregarProgramadas(p.conversa)
   }
 
   function teclas(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -459,35 +532,57 @@ export default function Chat({ ativa }: { ativa: boolean }) {
               <CircleAlert size={12} /> {erroEnvio}
             </span>
           )}
-          {erroIa && <div className="ch-aviso-campo"><Aviso texto={erroIa} fechar={() => setErroIa(null)} /></div>}
+          {programadas.length > 0 && (
+            <div className="ch-programadas">
+              {programadas.map((p) => (
+                <div key={p.id} className="texto2 pequeno-texto ch-prog">
+                  <Clock size={12} />
+                  <span className="ch-prog-quando">{quandoSai(p.quando)}</span>
+                  <span className="ch-prog-texto" title={p.texto}>{p.texto}</span>
+                  {p.erro && <span className="perigo-texto ch-prog-erro" title={p.erro}>{p.erro}</span>}
+                  {saindo(p) ? (
+                    <span>Enviando…</span>
+                  ) : (
+                    <>
+                      {p.erro ? (
+                        <Botao tipo="link" disabled={enviando} onClick={() => enviarAgora(p)}>Enviar agora</Botao>
+                      ) : (
+                        <Botao
+                          tipo="link"
+                          disabled={!!texto.trim()}
+                          title={texto.trim() ? 'Para editar, o campo precisa estar vazio' : 'Tira da fila e devolve o texto para o campo'}
+                          onClick={() => desprogramar(p, true)}
+                        >
+                          Editar
+                        </Botao>
+                      )}
+                      <Botao tipo="link" onClick={() => desprogramar(p)}>Cancelar</Botao>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {erroCampo && <div className="ch-aviso-campo"><Aviso texto={erroCampo} fechar={() => setErroCampo(null)} /></div>}
+          {/* o Desfazer fica até a primeira edição; só o Melhorar ganha a nota */}
           {antes !== null && !melhorando && !corrigindo && (
             <span className="texto2 pequeno-texto linha-h ch-nota">
-              {'claude' in quemMexeu ? (
-                <><Sparkles size={12} /> Melhorada pelo Claude.</>
-              ) : (
-                <><SpellCheck size={12} /> {quemMexeu.correcoes === 1 ? '1 correção' : `${quemMexeu.correcoes} correções`} do Claude.</>
-              )}
+              {melhorada && <><Sparkles size={12} /> Melhorada pelo Claude.</>}
               <Botao tipo="link" onClick={() => trocar(antes, antes.length)}>Desfazer</Botao>
             </span>
           )}
-          {recado && (
-            <span className="texto2 pequeno-texto linha-h ch-nota">
-              <SpellCheck size={12} /> {recado}
-            </span>
-          )}
+          {recado && <span className="texto2 pequeno-texto linha-h ch-nota">{recado}</span>}
           {faixa && !soLeitura && (
             <div className="texto2 pequeno-texto ch-faixa">
-              <Check size={12} className="ch-faixa-ok" />
-              <span className="ch-faixa-n">{faixa.trocas.length === 1 ? '1 correção' : `${faixa.trocas.length} correções`}</span>
               {faixa.trocas.slice(0, 3).map((x, i) => (
                 <span key={i} className="ch-troca" title={`${x.de} → ${x.para}`}>
                   <s>{x.de}</s> → <strong>{x.para}</strong>
                 </span>
               ))}
-              {faixa.trocas.length > 3 && <span>+{faixa.trocas.length - 3}</span>}
+              {faixa.trocas.length > 3 && <span>…</span>}
               <span className="espaco" />
               <Botao tipo="link" onClick={() => aplicar(faixa)}>Aplicar</Botao>
-              <span className="ch-faixa-dica">Tab aplica</span>
+              <span className="ch-faixa-dica">Tab</span>
               <Botao tipo="icone" title="Dispensar" aria-label="Dispensar" onClick={() => setCorrecao({ ...faixa, dispensada: true })}>
                 <X size={12} />
               </Botao>
@@ -520,13 +615,13 @@ export default function Chat({ ativa }: { ativa: boolean }) {
                 rows={Math.min(6, texto.split('\n').length)}
                 placeholder={`Mensagem para ${c.nome}`}
                 value={texto}
-                readOnly={melhorando || !!corrigindo} // o texto do Claude não atropela o que fosse digitado enquanto ele trabalha
+                readOnly={melhorando || corrigindo} // o texto do Claude não atropela o que fosse digitado enquanto ele trabalha
                 onChange={(e) => (editar(e.target.value), verMencao(e.target))}
                 onSelect={(e) => verMencao(e.currentTarget)}
                 onBlur={() => setMencao(null)}
                 onKeyDown={teclas}
               />
-              <Botao tipo="icone" title="Emoji (Win+. abre o seletor do sistema)" disabled={melhorando || !!corrigindo} onClick={(e) => setPaleta(paleta ? null : e.currentTarget)}>
+              <Botao tipo="icone" title="Emoji (Win+. abre o seletor do sistema)" disabled={melhorando || corrigindo} onClick={(e) => setPaleta(paleta ? null : e.currentTarget)}>
                 <Smile size={20} />
               </Botao>
               {paleta && (
@@ -541,35 +636,47 @@ export default function Chat({ ativa }: { ativa: boolean }) {
               <Botao
                 tipo="icone"
                 title="Corrige o português com o Claude (Haiku, quase sem custo)"
-                disabled={!texto.trim() || !!corrigindo || melhorando || enviando}
+                disabled={!texto.trim() || corrigindo || melhorando || enviando}
                 onClick={corrigir}
               >
-                {corrigindo === 'botao' ? <Carregando tamanho={20} /> : <SpellCheck size={20} />}
+                {corrigindo ? <Carregando tamanho={20} /> : <SpellCheck size={20} />}
               </Botao>
-              <Botao tipo="icone" title="Melhora a mensagem com o Claude (usa tokens)" disabled={!texto.trim() || melhorando || !!corrigindo || enviando} onClick={melhorar}>
+              <Botao tipo="icone" title="Melhora a mensagem com o Claude (usa tokens)" disabled={!texto.trim() || melhorando || corrigindo || enviando} onClick={melhorar}>
                 {melhorando ? <Carregando tamanho={20} /> : <Sparkles size={20} />}
               </Botao>
+              <Botao
+                tipo="icone"
+                title="Programar envio"
+                disabled={!podeEnviar}
+                // abre na próxima hora cheia
+                onClick={(e) => (setQuando(emPonto(0, new Date().getHours() + 1)), setRelogio(relogio ? null : e.currentTarget))}
+              >
+                <Clock size={20} />
+              </Botao>
+              {relogio && (
+                <Flutuante ancora={relogio} fechar={() => setRelogio(null)} largura={250}>
+                  <div className="lista-menu">
+                    <button type="button" onClick={() => programar(local(new Date(Date.now() + 3_600_000)))}>Daqui a 1 hora</button>
+                    <button type="button" onClick={() => programar(emPonto(1, 9))}>Amanhã às 9:00</button>
+                    <hr />
+                  </div>
+                  <div className="ch-programar">
+                    <input
+                      type="datetime-local"
+                      className="campo"
+                      min={local(new Date())}
+                      value={quando}
+                      onChange={(e) => setQuando(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && quando && programar(quando)}
+                    />
+                    <Botao tipo="primario" pequeno disabled={!quando} onClick={() => programar(quando)}>Programar</Botao>
+                  </div>
+                </Flutuante>
+              )}
               <button type="button" className={`ch-enviar ${podeEnviar ? 'pode' : ''}`} disabled={!podeEnviar} title="Enviar (Enter)" onClick={enviar}>
-                {corrigindo === 'envio' ? (
-                  <span className="texto2 pequeno-texto linha-h ch-esperando"><Carregando /> Corrigindo…</span>
-                ) : enviando ? (
-                  <Carregando />
-                ) : (
-                  <CircleArrowUp size={24} />
-                )}
+                {enviando ? <Carregando /> : <CircleArrowUp size={24} />}
               </button>
             </div>
-          )}
-          {!soLeitura && (
-            <span className="ch-nota">
-              <Caixa
-                marcado={corrigirAoEnviar}
-                mudar={CORRIGIR_AO_ENVIAR.set}
-                title="Antes de sair, o Claude corrige o português. Se a correção demorar mais de 5 s, a mensagem vai como está"
-              >
-                <span className="texto2 pequeno-texto">Corrigir ao enviar</span>
-              </Caixa>
-            </span>
           )}
         </div>
       ) : (

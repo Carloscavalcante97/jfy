@@ -577,10 +577,12 @@ private struct BotaoDialogo: PrimitiveButtonStyle {
 }
 
 /// O calendário da Souv: o mês com a semana começando no domingo, o dia escolhido em Vivid Blue e hoje com o anel de
-/// destaque. Mantém a hora da data. `ate` bloqueia os dias depois dele (as horas não vão para o futuro).
+/// destaque. Mantém a hora da data. `ate` bloqueia os dias depois dele (as horas não vão para o futuro); `desde`, os de
+/// antes (a mensagem programada não vai para o passado).
 struct CalendarioSouv: View {
     @Binding var data: Date
     var ate: Date?
+    var desde: Date?
     var escolheu: (() -> Void)?
     @State private var mes: Date?
 
@@ -598,12 +600,12 @@ struct CalendarioSouv: View {
         let primeiro = mostrado
         let vazios = (cal.component(.weekday, from: primeiro) - cal.firstWeekday + 7) % 7
         let dias = cal.range(of: .day, in: .month, for: primeiro)?.count ?? 30
-        let limite = ate.map { cal.startOfDay(for: $0) }
+        let limite = ate.map { cal.startOfDay(for: $0) }, inicio = desde.map { cal.startOfDay(for: $0) }
         let proximo = cal.date(byAdding: .month, value: 1, to: primeiro) ?? primeiro
         VStack(spacing: 8) {
             HStack {
                 Button { mes = cal.date(byAdding: .month, value: -1, to: primeiro) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.souvIcone)
+                    .buttonStyle(.souvIcone).disabled(inicio.map { primeiro <= $0 } ?? false)
                 Spacer()
                 let titulo = primeiro.formatted(.dateTime.month(.wide).year().locale(Locale(identifier: "pt_BR")))
                 Text(titulo.prefix(1).uppercased() + titulo.dropFirst())
@@ -621,7 +623,7 @@ struct CalendarioSouv: View {
                     if i < vazios {
                         Color.clear.frame(height: 26)
                     } else if let d = cal.date(byAdding: .day, value: i - vazios, to: primeiro) {
-                        celula(d, bloqueado: limite.map { d > $0 } ?? false)
+                        celula(d, bloqueado: (limite.map { d > $0 } ?? false) || (inicio.map { d < $0 } ?? false))
                     }
                 }
             }
@@ -654,6 +656,7 @@ struct CalendarioSouv: View {
 struct CampoDataSouv: View {
     @Binding var data: Date
     var ate: Date?
+    var desde: Date?
     var comHora = false
     @State private var aberto = false
 
@@ -663,7 +666,7 @@ struct CampoDataSouv: View {
                 Label(data.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "pt_BR"))), systemImage: "calendar")
             }
             .popover(isPresented: $aberto, arrowEdge: .bottom) {
-                CalendarioSouv(data: $data, ate: ate) { aberto = false }.background(Souv.superficie).identidadeSouv()
+                CalendarioSouv(data: $data, ate: ate, desde: desde) { aberto = false }.background(Souv.superficie).identidadeSouv()
             }
             if comHora {
                 let c = Calendar.current.dateComponents([.hour, .minute], from: data)

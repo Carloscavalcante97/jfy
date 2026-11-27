@@ -101,7 +101,7 @@ function BarraLateral() {
   const sinos = useSinos()
   const algumSino = lista.some((a) => sinos.has(a.id))
   const selo: Partial<Record<Tela, number>> = {
-    'Notificações': n.notificacoes, Emails: n.emails, Portas: n.portas, Contexto: itens.length
+    'Notificações': n.notificacoes, Emails: n.emails, Chat: n.chat, Portas: n.portas, Contexto: itens.length
   }
 
   return (

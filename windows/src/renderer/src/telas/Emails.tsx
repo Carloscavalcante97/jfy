@@ -25,6 +25,13 @@ async function lerCaixa() {
     /* arquivo pela metade: fica 0 até a próxima */
   }
   if (n !== selos.get().emails) selos.set((s) => ({ ...s, emails: n }))
+  let c = 0 // e as conversas do chat com mensagem não lida (o jfy guarda os ids)
+  try {
+    c = JSON.parse((await api.lerJfy('chat-nao-lidas.json')) ?? '[]').length ?? 0
+  } catch {
+    /* idem */
+  }
+  if (c !== selos.get().chat) selos.set((s) => ({ ...s, chat: c }))
 }
 lerCaixa()
 setInterval(lerCaixa, 10_000)

@@ -138,7 +138,7 @@ export function useACada(f: () => void, ms: number, ativo = true) {
 }
 
 // ---------- os números da barra lateral: cada tela põe o seu (emails não lidos, notificações novas, portas abertas) ----------
-export const selos = loja<{ emails: number; notificacoes: number; portas: number }>({ emails: 0, notificacoes: 0, portas: 0 })
+export const selos = loja<{ emails: number; chat: number; notificacoes: number; portas: number }>({ emails: 0, chat: 0, notificacoes: 0, portas: 0 })
 
 // ---------- sessão (Login.swift): os primeiros passos e o aviso "a conta do Google mudou, confira a sessão" ----------
 export const passos = loja('', 'primeirosPassos.estado') // "" nunca feito, "feito", "refazer"

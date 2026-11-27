@@ -3,7 +3,8 @@ import SwiftUI
 
 /// Chat do time do Journify: as conversas entre colaboradores. O app só desenha; quem fala com o Journify (pelo MCP) é
 /// o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida lá), `--chat <id> <texto> [ids]` (envia,
-/// avisando quem foi marcado com @), `--chat-ia` (o Melhorar, pelo Claude) e `--corrigir` (o corretor, nos bastidores).
+/// avisando quem foi marcado com @), `--chat-ia` (o Melhorar, pelo Claude), `--corrigir` (o corretor, nos bastidores) e
+/// `--chat-programar`/`--chat-programadas`/`--chat-desprogramar` (a mensagem programada, que o relógio do jfy manda na hora).
 struct ChatTela: View {
     /// Só busca com a tela à vista: abrir uma conversa marca como lida no Journify, e ninguém leu nada com a tela escondida.
     let ativa: Bool
@@ -32,12 +33,19 @@ struct ChatTela: View {
     /// Quem dá para marcar com @.
     struct Pessoa: Identifiable, Hashable { let id, nome: String }
 
-    /// O `jfy --corrigir`: o texto corrigido e as palavras trocadas (descartada: a correção mudou demais e não vale).
+    /// O `jfy --corrigir`: o texto corrigido e as palavras trocadas (a correção que mudou demais vem sem trocas).
     struct Correcao: Decodable {
         struct Troca: Decodable { let de, para: String }
         let texto: String
         let trocas: [Troca]
-        var descartada: Bool? = nil
+    }
+
+    /// Uma mensagem do `jfy --chat-programadas`: o jfy manda sozinho na hora. Com `erro`, não foi e espera você decidir.
+    struct Programada: Decodable, Identifiable, Equatable {
+        let id, conversa, texto: String
+        let mencoes: String?  // os ids marcados com @, separados por vírgula
+        let quando: Double  // epoch, em segundos
+        let erro: String?
     }
 
     private static let maxFixas = 3  // por tipo: 3 diretas e 3 grupos
@@ -55,9 +63,10 @@ struct ChatTela: View {
     @State private var corrigindo = false  // o botão Corrigir esperando o corretor
     @State private var pronta: (de: String, c: Correcao)?  // a correção que o corretor devolveu e o texto que foi para ele
     @State private var dispensada: String?  // o texto em que a faixa da correção foi fechada (volta quando o texto muda)
-    @State private var aguardando: String?  // o envio esperando a correção (o Corrigir ao enviar), no máximo 5 s
-    @State private var nota: String?  // "Nada para corrigir.", por uns segundos
-    @AppStorage("chat.corrigirAoEnviar") private var corrigirAoEnviar = false
+    @State private var nadaACorrigir = false  // o "Nada para corrigir." do botão Corrigir, por 2 s
+    @State private var programadas: [Programada] = []  // as da conversa aberta que esperam a hora
+    @State private var programando = false  // o popover do relógio
+    @State private var programarPara = Date()
     @State private var marcados: [Pessoa] = []  // escolhidos na sugestão do @
     @State private var fechadaEm: String?  // o texto quando o Esc fechou a sugestão do @ (reabre quando o texto muda)
     @State private var paleta = false
@@ -98,6 +107,7 @@ struct ChatTela: View {
             JFY.aquecerCorretor()  // a primeira correção já acha o Claude aberto
             while !Task.isCancelled {
                 await carregarMensagens(cid)
+                await carregarProgramadas(cid)  // a que o relógio mandou sai daqui e aparece na conversa
                 try? await Task.sleep(for: .seconds(5))
             }
         }
@@ -257,27 +267,28 @@ struct ChatTela: View {
 
     private func escrever(_ c: Conversa) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            ForEach(programadas.filter { $0.conversa == c.id }) { linhaProgramada($0) }  // filtro: a lista da anterior até recarregar
             if consulta != nil { sugestoes }
             if melhorando {
                 Text("O Claude está melhorando a mensagem…").font(.caption).foregroundStyle(Souv.texto2)
             } else if let d = desfazer, d.depois == texto {
                 HStack(spacing: 6) {
-                    Text(d.nota).foregroundStyle(Souv.texto2)
+                    if !d.nota.isEmpty { Text(d.nota).foregroundStyle(Souv.texto2) }  // a correção não tem nota: só o Desfazer
                     // dispensada: a faixa não volta oferecendo a correção que você acabou de desfazer
                     Button("Desfazer") { texto = d.antes; dispensada = d.antes; desfazer = nil; focado = true }.buttonStyle(.souvLink)
                 }
                 .font(.caption)
             } else if let c = faixa {
                 faixaCorrecao(c)
-            } else if let nota {
-                Text(nota).font(.caption).foregroundStyle(Souv.texto2)
+            } else if nadaACorrigir {
+                Text("Nada para corrigir.").font(.caption).foregroundStyle(Souv.texto2)
             }
             HStack(alignment: .bottom, spacing: 10) {
                 Button { paleta.toggle() } label: { Label("Emojis", systemImage: "face.smiling").labelStyle(.iconOnly).font(.title3) }
                     .buttonStyle(.souvIcone).disabled(melhorando).help("Emojis")
                     .popover(isPresented: $paleta, arrowEdge: .top) { paletaEmojis }
                 TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
-                    .textFieldStyle(.plain).lineLimit(1...6).focused($focado).disabled(melhorando || corrigindo || aguardando != nil)
+                    .textFieldStyle(.plain).lineLimit(1...6).focused($focado).disabled(melhorando || corrigindo)
                     .onSubmit { if let p = sugeridas.first { mencionar(p) } else { enviar() } }  // Enter: escolhe a sugestão do @ ou envia
                     .onKeyPress(.return, phases: .down) { k in
                         // Shift+Enter quebra a linha onde está o cursor; o Enter sozinho segue para o onSubmit
@@ -311,10 +322,20 @@ struct ChatTela: View {
                 .buttonStyle(.souvIcone)
                 .disabled(!podeMelhorar)
                 .help("Melhora a mensagem com o Claude (usa tokens)")
+                Button {
+                    // padrão: a próxima hora cheia
+                    programarPara = Calendar.current.nextDate(after: Date(), matching: DateComponents(minute: 0, second: 0),
+                                                              matchingPolicy: .nextTime) ?? Date()
+                    programando = true
+                } label: {
+                    Label("Programar envio", systemImage: "clock").labelStyle(.iconOnly).font(.title3)
+                }
+                .buttonStyle(.souvIcone)
+                .disabled(!podeEnviar)
+                .help("Programar envio")
+                .popover(isPresented: $programando, arrowEdge: .top) { escolherHora }
                 Button(action: enviar) {
-                    if aguardando != nil {
-                        HStack(spacing: 4) { ProgressView().controlSize(.small); Text("Corrigindo…").font(.caption) }
-                    } else if enviando {
+                    if enviando {
                         ProgressView().controlSize(.small)
                     } else {
                         Image(systemName: "arrow.up.circle.fill").font(.title2)
@@ -325,7 +346,6 @@ struct ChatTela: View {
                 .disabled(!podeEnviar)
                 .help("Enviar (Enter; Shift+Enter quebra a linha)")
             }
-            Toggle("Corrigir ao enviar", isOn: $corrigirAoEnviar).font(.caption).foregroundStyle(Souv.texto2)
         }
         .padding(14)
         .task(id: texto) {  // nos bastidores: 1,5 s depois de parar de digitar, sem carregando e sem erro na tela
@@ -336,19 +356,62 @@ struct ChatTela: View {
         }
     }
 
-    /// A faixa acima do campo quando a correção dos bastidores achou algo: "✓ 2 correções · de → para · Aplicar".
+    /// A faixa acima do campo quando a correção dos bastidores achou algo: "de → para · de → para … Aplicar Tab ✕".
     private func faixaCorrecao(_ c: Correcao) -> some View {
-        let n = c.trocas.count
-        return HStack(spacing: 8) {
-            Label(n == 1 ? "1 correção" : "\(n) correções", systemImage: "checkmark").foregroundStyle(Souv.destaque)
-            Text(c.trocas.prefix(3).map { "\($0.de) → \($0.para)" }.joined(separator: " · ") + (n > 3 ? " +\(n - 3)" : ""))
+        HStack(spacing: 8) {
+            Text(c.trocas.prefix(3).map { "\($0.de) → \($0.para)" }.joined(separator: " · ") + (c.trocas.count > 3 ? " …" : ""))
                 .foregroundStyle(Souv.texto2).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             Button("Aplicar") { aplicar(c) }.buttonStyle(.souvLink)
-            Text("Tab aplica").foregroundStyle(.tertiary)
+            Text("Tab").foregroundStyle(.tertiary)
             Button { dispensada = texto } label: { Image(systemName: "xmark") }.buttonStyle(.souvIcone).help("Dispensar")
         }
         .font(.caption)
+    }
+
+    /// Uma programada desta conversa numa linha: quando, o texto e as ações. Com erro (não foi), o motivo e o Enviar agora.
+    private func linhaProgramada(_ p: Programada) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "clock").foregroundStyle(p.erro == nil ? Souv.destaque : Souv.perigo)
+            Text(quandoSai(p.quando)).foregroundStyle(Souv.texto2)
+            // os textos cedem espaço primeiro: o quando e as ações ficam inteiros
+            Text(p.texto).foregroundStyle(Souv.texto).lineLimit(1).layoutPriority(-1).help(p.texto)
+            if let e = p.erro { Text(e).foregroundStyle(Souv.perigo).lineLimit(1).layoutPriority(-1).help(e) }
+            Spacer(minLength: 4)
+            if p.erro != nil {
+                Button("Enviar agora") { enviarProgramada(p) }.buttonStyle(.souvLink).disabled(enviando)
+            } else {
+                Button("Editar") { editar(p) }.buttonStyle(.souvLink)
+                    .disabled(!texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)  // não pisa no que está no campo
+                    .help("Tira da fila e volta o texto para o campo (com o campo vazio)")
+            }
+            Button("Cancelar") { Task { await desprogramar(p) } }.buttonStyle(.souvLink)
+        }
+        .font(.caption)
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Souv.superficie2))
+    }
+
+    /// O popover do relógio: os atalhos, ou o dia e a hora (a partir de agora) e o Programar.
+    private var escolherHora: some View {
+        let cal = Calendar.current
+        let amanha9 = cal.date(bySettingHour: 9, minute: 0, second: 0, of: cal.date(byAdding: .day, value: 1, to: Date()) ?? Date()) ?? Date()
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Programar envio").font(.headline).foregroundStyle(Souv.texto)
+            HStack(spacing: 8) {
+                Button("Daqui a 1 hora") { programar(Date().addingTimeInterval(3600)) }
+                Button("Amanhã às 9:00") { programar(amanha9) }
+            }
+            Divider()
+            CampoDataSouv(data: $programarPara, desde: Date(), comHora: true)
+            HStack {
+                if programarPara <= Date() { Text("Esse horário já passou.").font(.caption).foregroundStyle(Souv.perigo) }
+                Spacer()
+                Button("Programar") { programar(programarPara) }.buttonStyle(.souvPrimario).disabled(programarPara <= Date())
+            }
+        }
+        .padding(12)
+        .background(Souv.superficie).identidadeSouv()
     }
 
     private var paletaEmojis: some View {
@@ -448,12 +511,13 @@ struct ChatTela: View {
         return (r, msg)
     }
 
-    /// Troca o texto pelo corrigido, com o Desfazer. O corrigido já fica com a correção pronta (vazia): não volta ao corretor.
+    /// Troca o texto pelo corrigido, com o Desfazer (sem nota). O corrigido já fica com a correção pronta (vazia): não
+    /// volta ao corretor.
     private func aplicar(_ c: Correcao) {
-        let antes = texto, n = c.trocas.count
+        let antes = texto
         texto = c.texto
         pronta = (c.texto, Correcao(texto: c.texto, trocas: []))
-        desfazer = (antes, c.texto, (n == 1 ? "1 correção" : "\(n) correções") + " do Claude.")
+        desfazer = (antes, c.texto, "")
         focado = true
     }
 
@@ -469,9 +533,8 @@ struct ChatTela: View {
         guard texto == antes else { return }  // o campo mudou no meio: não pisa no que está lá
         guard let r else { erro = msg; return }
         if !r.trocas.isEmpty { return aplicar(r) }
-        let n = r.descartada == true ? "O Claude mudou demais: ficou como estava." : "Nada para corrigir."
-        nota = n
-        Task { try? await Task.sleep(for: .seconds(2.5)); if nota == n { nota = nil } }
+        nadaACorrigir = true  // também quando o Claude mudou demais e as travas descartaram
+        Task { try? await Task.sleep(for: .seconds(2)); nadaACorrigir = false }
     }
 
     private func melhorar() {
@@ -506,7 +569,7 @@ struct ChatTela: View {
 
     // ---------- jfy --chat ----------
     private var podeEnviar: Bool {
-        !enviando && !melhorando && !corrigindo && aguardando == nil && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !enviando && !melhorando && !corrigindo && !texto.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func carregarConversas() async {
@@ -531,46 +594,88 @@ struct ChatTela: View {
         }
     }
 
-    /// Com o Corrigir ao enviar, vai o texto corrigido: na hora, se a correção dos bastidores já chegou; senão espera por
-    /// ela até 5 s ("Corrigindo…") e, passado o prazo ou com erro, vai como está. Nunca segura o envio.
-    private func enviar() {
-        let t = texto, cid = selecionada
-        guard podeEnviar else { return }
-        guard corrigirAoEnviar, palavras(t) >= 3 else { return enviarAgora() }
-        if let p = pronta, p.de == t { texto = p.c.texto; return enviarAgora() }
-        aguardando = t
-        func fim(_ corrigido: String?) {
-            guard aguardando == t else { return }  // a correção ou o prazo já resolveu
-            aguardando = nil
-            DispatchQueue.main.async { focado = true }
-            guard selecionada == cid else { return }  // trocou de conversa no meio: o texto fica no campo
-            if let corrigido { texto = corrigido }
-            enviarAgora()
-        }
-        Task { fim(await correcao(t).0?.texto) }
-        Task { try? await Task.sleep(for: .seconds(5)); fim(nil) }
+    /// Os ids de quem foi escolhido no @ (separados por vírgula), se o "@Nome" ainda está no texto e a pessoa é desta
+    /// conversa. O envio e a programada avisam os mesmos.
+    private func mencoes(_ t: String) -> String {
+        marcados.filter { t.contains("@" + $0.nome) && pessoas.contains($0) }.map(\.id).joined(separator: ",")
     }
 
-    private func enviarAgora() {
+    private func enviar() {
         let t = texto.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let cid = selecionada, !t.isEmpty, !enviando, !melhorando, !corrigindo,
-              conversas.first(where: { $0.id == cid })?.membro != false else { return }
-        // avisa quem foi escolhido no @, se o "@Nome" ainda está no texto e a pessoa é desta conversa
-        let ids = marcados.filter { t.contains("@" + $0.nome) && pessoas.contains($0) }.map(\.id)
+        guard podeEnviar, let cid = selecionada, conversas.first(where: { $0.id == cid })?.membro != false else { return }
+        let ids = mencoes(t)
         enviando = true
+        desfazer = nil
+        texto = ""
+        Task {
+            if await mandar(cid, t, ids) { marcados = [] } else { texto = t }  // não perde o que foi escrito
+        }
+    }
+
+    /// Manda pelo `jfy --chat` e põe a mensagem na conversa (quem chama já ligou o `enviando`: o segundo clique não manda
+    /// de novo). false: não foi, e o motivo fica no aviso.
+    private func mandar(_ cid: String, _ t: String, _ ids: String) async -> Bool {
+        erro = nil
+        let r = await JFY.rodar(["--chat", cid, t] + (ids.isEmpty ? [] : [ids]))
+        enviando = false
+        guard r.status == 0, let m: Mensagem = decodificar(r.saida) else { erro = motivo(r); return false }
+        if selecionada == cid { mensagens.append(m) }
+        return true
+    }
+
+    // ---------- mensagem programada ----------
+    private func carregarProgramadas(_ cid: String) async {
+        let (r, _): ([Programada]?, String?) = await JFY.ler(["--chat-programadas", cid])
+        if let r, r != programadas, selecionada == cid { programadas = r }
+    }
+
+    /// Guarda o texto do campo para o jfy mandar em `d` (com os marcados no @); deu certo, o campo limpa como num envio.
+    private func programar(_ d: Date) {
+        let t = texto.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard podeEnviar, let cid = selecionada else { return }
+        let ids = mencoes(t), h = Calendar.current.dateComponents([.hour, .minute], from: d)
+        programando = false
         erro = nil
         desfazer = nil
         texto = ""
         Task {
-            let r = await JFY.rodar(["--chat", cid, t] + (ids.isEmpty ? [] : [ids.joined(separator: ",")]))
-            enviando = false
-            if r.status == 0, let m: Mensagem = decodificar(r.saida) {
-                marcados = []
-                if selecionada == cid { mensagens.append(m) }
-            } else {
-                texto = t  // não perde o que foi escrito
-                erro = motivo(r)
+            // AAAA-MM-DDTHH:MM na hora local, como o jfy espera
+            let quando = diaLocal(d) + String(format: "T%02d:%02d", h.hour ?? 0, h.minute ?? 0)
+            if let e = await JFY.fazer(["--chat-programar", cid, quando, t] + (ids.isEmpty ? [] : [ids])) {
+                texto = t
+                erro = e
+                return
             }
+            marcados = []
+            await carregarProgramadas(cid)
+        }
+    }
+
+    /// Tira da fila (o Cancelar, e o Editar e o Enviar agora no fim) e recarrega a lista. false: o motivo fica no aviso.
+    @discardableResult private func desprogramar(_ p: Programada) async -> Bool {
+        let e = await JFY.fazer(["--chat-desprogramar", p.id])
+        if let e { erro = e }
+        await carregarProgramadas(p.conversa)
+        return e == nil
+    }
+
+    /// Tira da fila e devolve o texto para o campo, com as menções guardadas (de quem ainda dá para marcar).
+    private func editar(_ p: Programada) {
+        Task {
+            guard await desprogramar(p) else { return }
+            let ids = (p.mencoes ?? "").split(separator: ",").map(String.init)
+            texto = p.texto
+            marcados = pessoas.filter { ids.contains($0.id) }
+            focado = true
+        }
+    }
+
+    /// A que não foi (erro): manda agora como um envio, com as menções guardadas, e só então tira da fila.
+    private func enviarProgramada(_ p: Programada) {
+        guard !enviando else { return }
+        enviando = true
+        Task {
+            if await mandar(p.conversa, p.texto, p.mencoes ?? "") { await desprogramar(p) }
         }
     }
 
@@ -670,4 +775,12 @@ private func hora(_ iso: String?) -> String {
     let br = Locale(identifier: "pt_BR")
     return Calendar.current.isDateInToday(d) ? d.formatted(.dateTime.hour().minute().locale(br))
         : d.formatted(.dateTime.day().month(.twoDigits).locale(br))
+}
+
+/// Quando sai uma mensagem programada: "hoje 14:30", "amanhã 09:00" ou "sex 28/11 14:30".
+private func quandoSai(_ epoch: Double) -> String {
+    let d = Date(timeIntervalSince1970: epoch), cal = Calendar.current, f = DateFormatter()
+    f.locale = Locale(identifier: "pt_BR")
+    f.dateFormat = cal.isDateInToday(d) ? "'hoje' HH:mm" : cal.isDateInTomorrow(d) ? "'amanhã' HH:mm" : "EEE dd/MM HH:mm"
+    return f.string(from: d).replacingOccurrences(of: ".", with: "")  // o "sex." do pt_BR sem o ponto
 }

@@ -43,18 +43,24 @@
 .ch-msg.minha .ch-citacao { border-color: rgba(255, 255, 255, .5); color: rgba(255, 255, 255, .8); }
 .ch-hora { color: color-mix(in srgb, var(--texto2) 70%, transparent); }
 .ch-erro, .ch-nota { padding: 0 16px 6px; }
-.ch-nota .botao.link { font-size: inherit; }
+.ch-nota .botao.link, .ch-faixa .botao.link, .ch-prog .botao.link { font-size: inherit; }
 .ch-aviso-campo { padding: 0 14px 6px; }
 /* a correção que voltou dos bastidores, logo acima do campo: discreta, uma linha só */
 .ch-faixa { display: flex; align-items: center; gap: 8px; padding: 0 16px 6px; min-width: 0; white-space: nowrap; }
-.ch-faixa-ok { color: #00B894; flex: none; }
-.ch-faixa-n { flex: none; }
 .ch-troca { overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 200px; }
 .ch-troca strong { color: var(--texto); font-weight: 600; }
-.ch-faixa .botao.link { font-size: inherit; }
 .ch-faixa .botao.icone { padding: 2px; }
 .ch-faixa-dica { color: color-mix(in srgb, var(--texto2) 70%, transparent); }
-.ch-esperando { gap: 5px; white-space: nowrap; }
+/* as programadas desta conversa: uma linha cada, o texto cortado para as ações caberem sempre */
+.ch-programadas { display: grid; gap: 3px; padding: 0 16px 6px; }
+.ch-prog { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
+.ch-prog > * { flex: none; }
+.ch-prog-quando { color: var(--texto); }
+.ch-prog > .ch-prog-texto { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ch-prog > .ch-prog-erro { flex: 0 1 auto; min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+/* o "Programar envio": os atalhos e, embaixo, o dia e a hora escolhidos */
+.ch-programar { display: flex; align-items: center; gap: 6px; padding: 2px 4px 4px; }
+.ch-programar .campo { width: auto; flex: 1; min-width: 0; }
 .ch-escrever { position: relative; display: flex; align-items: flex-end; gap: 10px; padding: 14px; border-top: 1px solid var(--borda); }
 .ch-escrever textarea {
   flex: 1; resize: none; border: 0; outline: none; background: none; color: var(--texto); font: 13px 'Roboto'; line-height: 1.4;

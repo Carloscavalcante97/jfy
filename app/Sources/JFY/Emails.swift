@@ -7,6 +7,8 @@ final class CaixaEmail: ObservableObject {
     private struct Estado: Decodable { let ids: [String]? }
     static let arquivo = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/email.json")
     @Published private(set) var naoLidos = 0
+    @Published private(set) var chatNaoLidas = 0  // conversas do chat com mensagem não lida (o jfy guarda os ids)
+    static let chat = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/chat-nao-lidas.json")
     private var timer: Timer?
 
     init() {
@@ -17,6 +19,8 @@ final class CaixaEmail: ObservableObject {
     func ler() {
         let n = (try? JSONDecoder().decode(Estado.self, from: Data(contentsOf: Self.arquivo)))?.ids?.count ?? 0
         if n != naoLidos { naoLidos = n }
+        let c = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: Self.chat)))?.count ?? 0
+        if c != chatNaoLidas { chatNaoLidas = c }
     }
 }
 
