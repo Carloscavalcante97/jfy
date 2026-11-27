@@ -1,0 +1,132 @@
+/* A identidade visual da Souv (manual v1, 2024), a mesma do app do Mac (app/Sources/JFY/Souv.swift): no escuro,
+   Midnight Blue e Eletric Cyan; no claro, Cloud White e Vivid Blue. Lexend nos títulos, Roboto no texto. */
+@font-face { font-family: 'Lexend'; src: url('@marca/Lexend.ttf'); font-weight: 100 900; }
+@font-face { font-family: 'Roboto'; src: url('@marca/Roboto.ttf'); font-weight: 100 900; }
+@font-face { font-family: 'JFY Mono'; src: url('@fonte/JFYMono.ttf'); }
+
+:root {
+  --fundo: #f7f7f7;
+  --superficie: #ffffff;
+  --superficie2: #eef0f7;
+  --borda: #dce0ec;
+  --texto: #0a0e2d;
+  --texto2: #616161;
+  --primaria: #2054e1;
+  --destaque: #2054e1;
+  --perigo: #d93a3f;
+  --barra: rgba(238, 240, 247, 0.85);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fundo: #0a0e2d;
+    --superficie: #12183a;
+    --superficie2: #1c244a;
+    --borda: #272f53;
+    --texto: #f7f7f7;
+    --texto2: #b0b0b0;
+    --destaque: #61fafa;
+    --perigo: #f2555a;
+    --barra: rgba(10, 14, 45, 0.82);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #raiz { height: 100%; margin: 0; }
+body {
+  font: 13px 'Roboto', system-ui, sans-serif;
+  background: var(--fundo);
+  color: var(--texto);
+  overflow: hidden;
+  user-select: none;
+}
+::selection { background: color-mix(in srgb, var(--primaria) 35%, transparent); }
+h1, h2, h3 { font-family: 'Lexend', sans-serif; font-weight: 300; margin: 0; }
+
+/* ---------- casca: barra de cima, barra lateral, telas ---------- */
+.app { display: grid; grid-template-columns: 200px 1fr; grid-template-rows: 44px 1fr; height: 100%; }
+.topo {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--borda);
+  background: var(--barra);
+}
+.marca { display: flex; align-items: center; gap: 8px; }
+.marca .simbolo { width: 20px; height: 20px; background: var(--destaque); mask: var(--svg) center / contain no-repeat; }
+.marca .nome { width: 52px; height: 14px; background: var(--texto); mask: var(--svg) center / contain no-repeat; }
+.marca .divisor { width: 1px; height: 16px; background: var(--borda); }
+.marca .jfy { font: 500 15px 'Lexend'; letter-spacing: 2px; }
+
+.lateral { background: var(--barra); border-right: 1px solid var(--borda); overflow-y: auto; padding: 8px; }
+.linha {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; margin: 1px 0;
+  border-radius: 8px;
+  cursor: default;
+  white-space: nowrap; overflow: hidden;
+}
+.linha:hover { background: color-mix(in srgb, var(--texto) 5%, transparent); }
+.linha.marcada { background: color-mix(in srgb, var(--primaria) 22%, transparent); font-weight: 500; }
+.linha.marcada::before {
+  content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--destaque);
+}
+.linha .icone { width: 18px; display: flex; justify-content: center; color: var(--texto2); flex: none; }
+.linha.marcada .icone { color: var(--destaque); }
+.linha .rotulo { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.linha.sub { padding-left: 28px; font-size: 12.5px; }
+.bolinha { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.sino { width: 7px; height: 7px; border-radius: 50%; background: #e5484d; flex: none; }
+.selo {
+  font: 600 10.5px 'Roboto'; font-variant-numeric: tabular-nums;
+  color: #fff; background: var(--primaria); border-radius: 99px; padding: 1px 6px;
+}
+.setinha { background: none; border: 0; color: var(--texto2); padding: 0 2px; display: flex; transition: transform .2s; }
+.setinha.aberta { transform: rotate(90deg); }
+
+/* todas as telas ficam montadas (trocar de tela não reinicia o terminal); a escondida só não aparece */
+.telas { position: relative; overflow: hidden; }
+.tela { position: absolute; inset: 0; overflow: auto; }
+.tela.escondida { visibility: hidden; pointer-events: none; }
+.vazio { height: 100%; display: grid; place-content: center; text-align: center; gap: 8px; color: var(--texto2); }
+.vazio h2 { color: var(--texto); }
+
+/* ---------- terminal ---------- */
+.palco-terminal { position: absolute; inset: 0; background: #0a0e2d; padding: 6px 0 0 8px; }
+.palco-terminal .xt { position: absolute; inset: 6px 0 0 8px; }
+.palco-terminal .xt.escondida { visibility: hidden; }
+.encerrado {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px;
+  background: var(--superficie); color: var(--texto); border: 1px solid var(--borda); border-radius: 10px; padding: 10px 14px;
+}
+
+/* ---------- interações da Souv: botões, campos, modal ---------- */
+.botao {
+  font: 500 13px 'Roboto'; border-radius: 8px; padding: 6px 14px; border: 1px solid var(--borda);
+  background: var(--superficie2); color: var(--texto); cursor: pointer;
+}
+.botao:hover { filter: brightness(1.08); }
+.botao.primario { background: var(--primaria); border-color: var(--primaria); color: #fff; }
+.botao.perigo { background: var(--perigo); border-color: var(--perigo); color: #fff; }
+.campo {
+  font: 13px 'Roboto'; width: 100%; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--borda); background: var(--superficie2); color: var(--texto); outline: none;
+}
+.campo:focus { border-color: var(--destaque); }
+.veu { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: grid; place-items: center; z-index: 50; }
+.modal {
+  width: 380px; background: var(--superficie); border: 1px solid var(--borda); border-radius: 14px; padding: 20px;
+  display: grid; gap: 12px; box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+}
+.modal h3 { font-size: 17px; }
+.modal p { margin: 0; color: var(--texto2); line-height: 1.45; }
+.modal .acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.menu-contexto {
+  position: fixed; z-index: 60; min-width: 160px; padding: 4px;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, .3);
+}
+.menu-contexto div { padding: 6px 10px; border-radius: 6px; }
+.menu-contexto div:hover { background: var(--primaria); color: #fff; }
+.menu-contexto .perigo { color: var(--perigo); }

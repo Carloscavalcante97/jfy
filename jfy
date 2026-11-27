@@ -23,6 +23,11 @@ CATEGORIA = {"pipeline": "Desenvolvimento", "sessao": "Desenvolvimento", "livre"
 JORNADA = 8 * 60  # minutos; o cronômetro fica verde e avisa ao chegar aqui
 SELF = os.path.realpath(__file__)
 TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(HOME, "tmux.conf")]  # tmux.conf do repo já com as cores do tema
+WIN = os.name == "nt"
+# app do Windows (windows/, Electron): ele hospeda as abas no lugar do tmux e põe JFY_APP="url|token" em cada aba e
+# comando que roda; JFY_ABA="@n" diz em que aba este jfy está. No Mac, JFY_ABAS=app no app de teste faz o mesmo.
+APP = os.environ.get("JFY_APP")
+EU = [sys.executable, SELF]  # rodar o jfy de novo: no Windows não há shebang
 FINAIS = ["em_teste", "em_revisao", "fechado"]  # task pronta: quem encerra escolhe para onde vai (ao iniciar: em_progresso)
 # ordem na tela do projeto: o que dá para tocar agora primeiro, o que espera os outros depois
 ORDEM = ["em_progresso", "priorizado", "em_aberto", "criando_escopo", "em_revisao", "em_teste",
@@ -197,18 +202,52 @@ def ask_texto(msg):
             linhas.append("")
 
 
+@contextlib.contextmanager
+def teclado():
+    """Teclas sem Enter: devolve (ler, esperar). ler() dá um caractere ("" no meio de um acento); esperar(s) diz se
+    chegou outra tecla em até s segundos. No Windows pelo msvcrt (o console do app é um ConPTY de verdade)."""
+    if WIN:
+        import msvcrt
+
+        def ler():
+            ch = msvcrt.getwch()
+            if ch == "\x03":
+                raise KeyboardInterrupt
+            if ch in ("\x00", "\xe0") and msvcrt.kbhit():  # seta e tecla de função: dois códigos, nenhum é opção
+                msvcrt.getwch()
+                return ""
+            return ch
+
+        def esperar(s):
+            fim = time.time() + s
+            while time.time() < fim:
+                if msvcrt.kbhit():
+                    return True
+                time.sleep(0.02)
+            return False
+        yield ler, esperar
+        return
+    import codecs, termios, tty
+    fd, dec = sys.stdin.fileno(), codecs.getincrementaldecoder("utf-8")(errors="ignore")
+    antes = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        # os.read, não sys.stdin: o buffer do Python esconderia do select o dígito já digitado
+        yield (lambda: dec.decode(os.read(fd, 1))), (lambda s: bool(select.select([fd], [], [], s)[0]))
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
+
+
 def escolha(prompt, teclas="", n=0, prefixos=None):
     """Lê a opção de um menu sem Enter. Letra de `teclas` (e o 0) vale na hora. Número de 1 a `n` (ou letra de
     `prefixos` + número, como a3 = {"a": nº de anexos}) vale assim que não puder crescer: com até 9 opções, na hora;
     com 12, o 1 espera um instante pelo 2º dígito. Texto livre (nome, caminho) vai até o Enter, com backspace.
     Fora de um terminal, cai no input normal."""
-    import codecs, termios, tty
     if not sys.stdin.isatty():
         return ask(prompt)
     prefixos = prefixos or {}
     print(prompt, end="", flush=True)
-    fd, buf, dec = sys.stdin.fileno(), "", codecs.getincrementaldecoder("utf-8")(errors="ignore")
-    antes = termios.tcgetattr(fd)
+    buf = ""
 
     def numero():  # "fim": não cresce mais; "talvez": um dígito a mais ainda vale; None: não é opção numerada
         m = re.fullmatch(r"([a-z]?)(\d+)", buf)
@@ -218,32 +257,29 @@ def escolha(prompt, teclas="", n=0, prefixos=None):
         return "talvez" if int(m[2]) * 10 <= maior else "fim"
 
     try:
-        tty.setcbreak(fd)
-        while True:
-            # os.read, não sys.stdin: o buffer do Python esconderia do select o dígito já digitado
-            ch = dec.decode(os.read(fd, 1))
-            if not ch:
-                continue  # meio de um caractere com acento
-            if ch in ("\n", "\r"):
-                break
-            if ch in ("\x7f", "\b"):
-                if buf:
-                    buf = buf[:-1]
-                    print("\b \b", end="", flush=True)
-            elif not buf and ch in teclas + "0":
-                buf = ch
-                break
-            elif ch.isprintable():
-                buf += ch
-                print(ch, end="", flush=True)
-                st = numero()
-                if st == "fim" or (st == "talvez" and not select.select([fd], [], [], 0.7)[0]):
+        with teclado() as (ler, esperar):
+            while True:
+                ch = ler()
+                if not ch:
+                    continue  # meio de um caractere com acento
+                if ch in ("\n", "\r"):
                     break
+                if ch in ("\x7f", "\b"):
+                    if buf:
+                        buf = buf[:-1]
+                        print("\b \b", end="", flush=True)
+                elif not buf and ch in teclas + "0":
+                    buf = ch
+                    break
+                elif ch.isprintable():
+                    buf += ch
+                    print(ch, end="", flush=True)
+                    st = numero()
+                    if st == "fim" or (st == "talvez" and not esperar(0.7)):
+                        break
     except KeyboardInterrupt:
         print()
         sys.exit(0)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
     print(buf if len(buf) == 1 and buf in teclas + "0" else "")
     return buf.strip()
 
@@ -526,6 +562,8 @@ def notificar(titulo, texto, abrir=None, executar=None, app=None):
         pass  # sem histórico, o aviso sai do mesmo jeito
     if app_notifica():
         return  # o jfy.app está aberto e pode notificar: ele põe o aviso na tela, com o ícone dele e o clique certo
+    if WIN:
+        return  # no Windows quem notifica é o app; fechado, o aviso fica no histórico e ele mostra ao abrir
     tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
                                                                  "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
     if tn:
@@ -625,15 +663,56 @@ GOOGLE_JSON = "https://drive.google.com/file/d/12zl0qgv3LfCi5dNgVzhNtyvpgUzZOS8a
 GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 
 
+def dpapi(dados, cifrar):
+    """Cifra (ou decifra) com a DPAPI do Windows: só o mesmo usuário, nesta máquina, abre de volta."""
+    import ctypes
+    from ctypes import wintypes as w
+
+    class Blob(ctypes.Structure):
+        _fields_ = [("n", w.DWORD), ("p", ctypes.POINTER(ctypes.c_char))]
+    buf = ctypes.create_string_buffer(dados, len(dados))
+    ent, sai = Blob(len(dados), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), Blob()
+    f = ctypes.windll.crypt32.CryptProtectData if cifrar else ctypes.windll.crypt32.CryptUnprotectData
+    if not f(ctypes.byref(ent), None, None, None, None, 0, ctypes.byref(sai)):
+        raise OSError(f"DPAPI falhou ({ctypes.GetLastError()})")
+    try:
+        return ctypes.string_at(sai.p, sai.n)
+    finally:
+        ctypes.windll.kernel32.LocalFree(sai.p)
+
+
 def chaves(servico, valor=None):
     """Lê (ou grava, com valor) um segredo no Chaves do macOS. Grava pelo stdin do 'security -i', fora da linha
-    de comando (que aparece no ps)."""
+    de comando (que aparece no ps). No Windows, um arquivo cifrado pela DPAPI em ~/.jfy/segredos."""
+    if WIN:  # ponytail: DPAPI e não o Gerenciador de Credenciais, que corta o segredo em 2,5 KB
+        arq = os.path.join(HOME, "segredos", servico)
+        if valor is None:
+            try:
+                return dpapi(open(arq, "rb").read(), False).decode()
+            except (OSError, ValueError):
+                return ""
+        os.makedirs(os.path.dirname(arq), exist_ok=True)
+        open(arq, "wb").write(dpapi(valor.encode(), True))
+        return
     if valor is None:
         return subprocess.run(["security", "find-generic-password", "-a", "jfy", "-s", servico, "-w"],
                               capture_output=True, text=True).stdout.strip()
     esc = valor.replace("\\", "\\\\").replace('"', '\\"')
     subprocess.run(["security", "-i"], input=f'add-generic-password -U -a jfy -s {servico} -w "{esc}"\n',
                    text=True, check=True, capture_output=True)
+
+
+def chaves_apagar(servico):
+    if WIN:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(HOME, "segredos", servico))
+    else:
+        subprocess.run(["security", "delete-generic-password", "-a", "jfy", "-s", servico], capture_output=True)
+
+
+def abrir_link(alvo):
+    """Abre um link ou arquivo no app padrão (navegador, visualizador de imagem...)."""
+    return os.startfile(alvo) if WIN else subprocess.run(["open", alvo])
 
 
 def http_json(url, dados=None, token=None, corpo=None, metodo=None):
@@ -698,7 +777,7 @@ def sessao_json(forcar=None):
     if not (cfg.get("google") and chaves("jfy-google")):
         return base
     if forcar:  # sem o token guardado, o google_token() pede um novo ao Google com o refresh token
-        subprocess.run(["security", "delete-generic-password", "-a", "jfy", "-s", "jfy-google-acesso"], capture_output=True)
+        chaves_apagar("jfy-google-acesso")
     try:
         conta = conta_gmail(google_token())
     except Exception as e:
@@ -719,7 +798,7 @@ def login():
     if not cfg.get("google") and cfg.get("google_cliente"):  # desconectado pelo app: o client do jfy ficou guardado
         cfg["google"] = cfg.pop("google_cliente")
     if not cfg.get("google"):
-        subprocess.run(["open", GOOGLE_JSON])
+        abrir_link(GOOGLE_JSON)
         guardar_cliente(ask(f"Abri no navegador o JSON do app jfy da Souv ({GOOGLE_JSON}).\n"
                             "Baixe o arquivo, arraste ele aqui e dê Enter:\n> "))
         cfg = load()
@@ -745,7 +824,7 @@ def login():
         "code_challenge": desafio, "code_challenge_method": "S256", "state": estado,
         "access_type": "offline", "prompt": "select_account consent",  # escolhe a conta: dá para trocar
         "hd": DOMINIO})  # o Google mostra só as contas da Souv (é só uma dica: o email é conferido abaixo)
-    subprocess.run(["open", url])
+    abrir_link(url)
     print(f"Abri o login do Google no navegador. Se não abriu, cole isto nele:\n{url}\n")
     srv.timeout, fim = 5, time.time() + 300  # o app espera por aqui: navegador fechado não deixa o jfy preso
     while "code" not in recebido and "error" not in recebido and time.time() < fim:  # ignora /favicon.ico e afins
@@ -1027,7 +1106,7 @@ def ler_emails():
         try:
             if op.startswith("o"):
                 m = http_json(f"{GMAIL}/{ids[int(n) - 1]}?format=minimal", token=tok)
-                subprocess.run(["open", link_gmail(tok, m["threadId"])])
+                abrir_link(link_gmail(tok, m["threadId"]))
             else:
                 ler_email(tok, ids[int(n) - 1])
         except Exception as e:
@@ -1094,7 +1173,7 @@ def relogio():
     while os.path.getmtime(SELF) == versao:
         if time.time() - vigia > 120:  # PRs e agenda: em outro processo, para a barra não travar na rede
             vigia = time.time()
-            subprocess.Popen([SELF, "--vigiar"], start_new_session=True, stdin=subprocess.DEVNULL,
+            subprocess.Popen([*EU, "--vigiar"], start_new_session=True, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "vigiar.log"), "a"))
         TEMA = TEMAS.get(load().get("tema"), {})  # tema trocado no menu vale aqui sem reiniciar
         m, rodando = cronometro()
@@ -1206,8 +1285,9 @@ def entrar():
     """Ctrl-b m: abre a chamada da reunião que está rolando ou da próxima de hoje."""
     ev = next((e for e in eventos_hoje() if e[1] > time.time() and len(e) > 3 and e[3]), None)
     if ev:
-        return subprocess.run(["open", ev[3]])
-    subprocess.run(TMUX + ["display-message", "jfy: nenhuma reunião com link pela frente hoje"])
+        return abrir_link(ev[3])
+    msg = "jfy: nenhuma reunião com link pela frente hoje"
+    app_abas("mensagem", texto=msg) if APP else subprocess.run(TMUX + ["display-message", msg])
 
 
 def atualizar():
@@ -1238,7 +1318,6 @@ def atualizar():
 
 def atalhos():
     """Ctrl-b c: todos os comandos do jfy num popup do tmux; qualquer tecla fecha."""
-    import termios, tty
     secoes = [
         ("Em qualquer aba: Ctrl-b e depois", [("0", "menu"), ("1 2 3...", "vai para a aba"), ("w", "todas as abas com prévia"),
                                               ("m", "entra na chamada da reunião atual ou da próxima"),
@@ -1262,13 +1341,8 @@ def atalhos():
         print(c(titulo, 255, True))
         print("\n".join(f"  {c(k.ljust(15), 39, True)}{txt}" for k, txt in itens) + "\n")
     print(dim("qualquer tecla fecha"), end="", flush=True)
-    fd = sys.stdin.fileno()
-    antes = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
+    with teclado() as (ler, _):
+        ler()
 
 
 def avisar():
@@ -1277,6 +1351,16 @@ def avisar():
     if os.environ.get("JFY_SEM_AVISO"):  # claude -p do fechar(): ninguém está esperando essa resposta
         return
     d = json.load(sys.stdin)
+    titulo = "Claude precisa de você" if d.get("hook_event_name") == "Notification" else "Claude respondeu"
+    texto = " ".join((d.get("message") or d.get("last_assistant_message") or "").split())[:140] or "pronto"
+    if APP or WIN:  # abas do app: ele diz se a aba deste Claude está na frente
+        aba_id, info = os.environ.get("JFY_ABA"), None
+        with contextlib.suppress(OSError, ValueError):
+            info = next((x for x in app_abas("listar")["abas"] if x["id"] == aba_id), None) if APP and aba_id else None
+        if info and info.get("ativa") and info.get("focada"):
+            return
+        return notificar(f"{titulo} · {info['nome'] if info else os.path.basename(d.get('cwd', ''))}", texto,
+                         app=f"aba/{aba_id}" if info else None)
     pane = os.environ.get("TMUX_PANE")  # "tmux" sem -L usa o servidor do $TMUX: serve para o jfy e para outro tmux
     tm = lambda fmt: subprocess.run(["tmux", "display", "-p", "-t", pane, fmt], capture_output=True, text=True).stdout.strip()
     sh = lambda *a: subprocess.run(a, capture_output=True, text=True).stdout.strip()
@@ -1286,13 +1370,11 @@ def avisar():
     if na_frente and aba_aberta:
         return
     onde = tm("#W") if pane else os.path.basename(d.get("cwd", ""))
-    titulo = "Claude precisa de você" if d.get("hook_event_name") == "Notification" else "Claude respondeu"
     import shlex
     sock = os.environ.get("TMUX", "").split(",")[0]
     ir = (" ".join(shlex.quote(x) for x in [shutil.which("tmux") or "tmux", "-S", sock, "select-window", "-t", pane])
           if pane and sock else None)  # clique na notificação: terminal na frente, já na aba deste Claude
-    notificar(f"{titulo} · {onde}", " ".join((d.get("message") or d.get("last_assistant_message") or "").split())[:140] or "pronto",
-              executar=ir, app=f"aba/{pane}" if pane else None)
+    notificar(f"{titulo} · {onde}", texto, executar=ir, app=f"aba/{pane}" if pane else None)
 
 
 # ---------- horas (minhas-horas do Journify) ----------
@@ -1709,8 +1791,9 @@ def portas():
     cwd = {pid: os.path.realpath(ns[0]) for pid, ns in
            (lsof_campos("-a", "-d", "cwd", "-Fn", "-p", ",".join(map(str, [*abertas, *claudes]))) if abertas else {}).items()}
     raizes = [(os.path.realpath(r), k) for k, pr in cfg["projetos"].items() for r in repos_de(pr)]
-    paineis = [l.split("\t", 1) for l in subprocess.run(TMUX + ["list-panes", "-a", "-F", "#{pane_current_path}\t#{window_name}"],
-                                                         capture_output=True, text=True).stdout.splitlines() if "\t" in l]
+    paineis = ([[x["cwd"], x["nome"]] for x in app_abas("listar")["abas"]] if APP else
+               [l.split("\t", 1) for l in subprocess.run(TMUX + ["list-panes", "-a", "-F", "#{pane_current_path}\t#{window_name}"],
+                                                          capture_output=True, text=True).stdout.splitlines() if "\t" in l])
     dentro = lambda pasta, raiz: pasta == raiz or pasta.startswith(raiz + "/")
     docker, linhas = containers(), []
 
@@ -2798,6 +2881,9 @@ def contexto_enviar(pasta, destino, alvo=""):
     if destino == "aba":
         if not re.fullmatch(r"@\d+", alvo or ""):
             sys.exit("Escolha uma aba aberta do jfy.")
+        if APP:
+            app_abas("escrever", id=alvo, texto=ler + "\r")
+            return app_abas("ir", id=alvo)
         subprocess.run(TMUX + ["send-keys", "-t", alvo, "-l", ler], check=True)
         subprocess.run(TMUX + ["send-keys", "-t", alvo, "Enter"])
         return subprocess.run(TMUX + ["select-window", "-t", alvo])
@@ -3043,7 +3129,8 @@ def aplicar_tema(nome):
     cfg["tema"] = nome
     save(cfg)
     TEMA = TEMAS[nome]
-    subprocess.run(TMUX + ["source-file", tmux_conf()], capture_output=True)
+    if not APP:
+        subprocess.run(TMUX + ["source-file", tmux_conf()], capture_output=True)
 
 
 # ---------- GitHub (aba GitHub do app): PRs e git dos repositórios dos projetos, pelo gh ----------
@@ -3224,7 +3311,7 @@ def repo_acao(pasta, acao):
 def pr_revisar(repo, n):
     """"Revisar com o Claude" da aba GitHub: numa aba do jfy, o Claude revisa o PR. Repositório de um projeto: o
     /code-review do Claude Code na pasta dele. Outro: pelo gh, sem a pasta. Só mostra o que achou; não comenta no PR."""
-    if not os.environ.get("TMUX"):
+    if not na_aba():
         return abrir_aba(f"review: {repo.split('/')[-1][:14]} #{n}", repo, "--pr-revisar", repo, n)
     pasta = repos_github(load()).get(repo, (None, None))[1]
     pedido = (f"/code-review {n}" if pasta else
@@ -3281,7 +3368,7 @@ def google_sair():
         except RuntimeError:
             pass  # já revogado ou expirado: segue apagando daqui
     for servico in ("jfy-google", "jfy-google-acesso"):
-        subprocess.run(["security", "delete-generic-password", "-a", "jfy", "-s", servico], capture_output=True)
+        chaves_apagar(servico)
     if cfg.get("google"):
         cfg["google_cliente"] = {k: cfg["google"][k] for k in ("client_id", "client_secret") if k in cfg["google"]}
         cfg.pop("google")
@@ -3319,7 +3406,7 @@ def journify_sair():
 
 def github_login():
     """Conecta uma conta do GitHub: o gh auth login roda numa aba do jfy (ele pede para abrir o navegador)."""
-    if not os.environ.get("TMUX"):
+    if not na_aba():
         return abrir_aba("GitHub: login", "github", "--github-login")
     subprocess.call(["gh", "auth", "login", "-h", "github.com", "--web", "--git-protocol", "https"])
     ask(dim("\nEnter fecha esta aba. Atualize a aba GitHub do app."))
@@ -3874,7 +3961,7 @@ def pr_abrir(pasta):
     branch = git(pasta, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
     if not BRANCH_OK.match(branch):
         sys.exit(f"PR sai de uma branch feature/, bugfix/, hotfix/ ou release/; a atual é '{branch}'.")
-    if not os.environ.get("TMUX"):
+    if not na_aba():
         return abrir_aba(f"PR: {os.path.basename(pasta)[:14]}", pasta, "--pr-abrir", pasta)
     pedido = (f"Abra o pull request da branch {branch} seguindo as regras do agente pr-creator, em ~/.claude/agents/pr-creator.md "
               "(leia o arquivo). Isto é fora da pipeline: não há .pipeline/, então pule as pré-condições que dependem dela. As tasks "
@@ -4067,7 +4154,7 @@ def fechar(sid, pastas, pedido):
     # ponytail: reabrir a task no mesmo repo antes disso acabar (~1 min) pode cruzar com a escrita do handoff.md
     arq = os.path.join(RUN_DIR, sid + ".fechar")
     open(arq, "w").write(pedido)
-    subprocess.Popen([SELF, "--fechar", sid, pastas[0], arq, *pastas[1:]], start_new_session=True, stdin=subprocess.DEVNULL,
+    subprocess.Popen([*EU, "--fechar", sid, pastas[0], arq, *pastas[1:]], start_new_session=True, stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "fechar.log"), "a"))
     print(dim("handoff.md e memória do projeto: atualizando em segundo plano."))
 
@@ -4302,8 +4389,27 @@ Não crie task para a reunião nem para o que sair dela: o tempo de reunião vai
     registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "reuniao", pid=pid or info.get("projeto"), titulo=f"Preparação: {info.get('contexto') or titulo}")
 
 
+def app_abas(acao, **dados):
+    """As abas do app do Windows (Electron, node-pty no lugar do tmux): POST /abas/<acao> no app, que está em JFY_APP.
+    listar → {"abas": [{id, nome, chave, cwd, ativa, focada}]}; abrir {nome, cor, chave, argv}; ir {id};
+    escrever {id, texto}; mensagem {texto}."""
+    url, tok = APP.rsplit("|", 1)
+    req = urllib.request.Request(f"{url}/abas/{acao}", json.dumps(dados).encode(),
+                                 {"Content-Type": "application/json", "Authorization": f"Bearer {tok}"})
+    # sem proxy: um proxy da empresa (que o Windows passa ao Python) não alcança o 127.0.0.1 do app
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=10) as r:
+        return json.load(r)
+
+
+def na_aba():
+    """Este jfy roda dentro de uma aba (do tmux ou do app), e não num comando de fundo do app."""
+    return bool(os.environ.get("TMUX") or os.environ.get("JFY_ABA"))
+
+
 def aba(chave):
     """Id da aba que já roda esta coisa ('--run <id>', '--livre <pasta>'...), ou None."""
+    if APP:
+        return next((x["id"] for x in app_abas("listar")["abas"] if x.get("chave") == chave), None)
     abas = subprocess.run(TMUX + ["list-windows", "-F", "#{window_id}\t#{@jfy}"], capture_output=True, text=True).stdout
     return next((w for w, k in (l.split("\t", 1) for l in abas.splitlines() if "\t" in l) if k == chave), None)
 
@@ -4313,6 +4419,8 @@ def abrir_aba(nome, pid_proj, *args):
     task brigava pelo worktree e a segunda aba quebrava."""
     chave = " ".join(args[:2])  # --run <id> vale para /pipeline e livre
     wid = aba(chave)
+    if APP:
+        return app_abas("ir", id=wid) if wid else app_abas("abrir", nome=nome, cor=cor_hex(pid_proj), chave=chave, argv=[*EU, *args])
     if wid:
         return subprocess.run(TMUX + ["select-window", "-t", wid])
     # o tmux expande formatos no nome da janela: "#" vira "##" para o título (de task, reunião, PR) aparecer como é,
@@ -4382,9 +4490,9 @@ def tela_task(cfg, t):
                 topo + ["", c("O QUE FAZER", 244, True)] + (desc or [dim("(sem descrição)")]) + [""] + base
                 + ([""] + coms if len(coms) > 1 else [])) + "\n")
         elif op == "w":
-            subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/projects/{t['projectId']}?task={t['id']}"])
+            abrir_link(f"{cfg.get('journify', JOURNIFY)}/projects/{t['projectId']}?task={t['id']}")
         elif op[:1] == "a" and op[1:].isdigit() and 1 <= int(op[1:]) <= len(anexos):
-            subprocess.run(["open", anexos[int(op[1:]) - 1]["url"]])  # só o link: nada é baixado para o disco
+            abrir_link(anexos[int(op[1:]) - 1]["url"])  # só o link: nada é baixado para o disco
         elif op == "p":
             d = ler_data(ask("Prazo (25/11, 25/11/2026 ou +3 = daqui a 3 dias): "))
             if d:
@@ -4444,7 +4552,7 @@ def tela_projeto(cfg, pid):
         if op == "c":
             configurar(cfg, pid)
         elif op == "w":
-            subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/projects/{pid}"])
+            abrir_link(f"{cfg.get('journify', JOURNIFY)}/projects/{pid}")
         elif op == "l":
             abrir_aba(cfg["projetos"][pid]["nome"][:20] + ": livre", pid, "--livre", cfg["projetos"][pid]["repo"])
         elif op == "s":
@@ -4486,22 +4594,23 @@ def principal():
             itens = (([("FOCO",)] + [linha_foco(cfg, t, larg) for t in urgentes] if urgentes else [])
                      + ([("PROJETOS",)] + [linha_proj(p) for p in com] if com else [])
                      + ([("SEM TASK", "manutenção: terminal livre ou sessão")] + [linha_proj(p) for p in sem] if sem else []))
-            abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
+            abas = (len(app_abas("listar")["abas"]) if APP else
+                    int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1))
             dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
-            op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
+            op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra {'lateral' if APP else 'de baixo'}" if abas > 1 else ""), itens,
                       [("l", "terminal livre"), ("o", "portas"), ("j", "Journify"), ("enter", "atualiza")], "sai", teclas="loj")
             if op == "":  # Enter não sai mais: atualiza as tasks
                 buscado = 0
                 continue
             if op == "0":
-                if abas > 1 and (escolha("Tasks ainda rodando. Sair e deixar elas rodando? Volte com 'jfy'. (s/n) [s] ", "sn") or "s") == "s":
+                if abas > 1 and not APP and (escolha("Tasks ainda rodando. Sair e deixar elas rodando? Volte com 'jfy'. (s/n) [s] ", "sn") or "s") == "s":
                     subprocess.run(TMUX + ["detach-client"])
                     continue
                 return
             if op == "o":
                 tela_portas()
             if op == "j":
-                subprocess.run(["open", cfg.get("journify", JOURNIFY)])
+                abrir_link(cfg.get("journify", JOURNIFY))
             if op == "l":
                 pasta = escolher_pasta(ultima_pasta(cfg))
                 if pasta:
@@ -4535,7 +4644,7 @@ def ok_journify():
 
 def guia_journify(cfg):
     import getpass
-    subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/settings"])
+    abrir_link(f"{cfg.get('journify', JOURNIFY)}/settings")
     print(" Abri as Configurações do Journify. Em " + c("Conectar meu Claude", 255, True) + ", clique em "
           + c("Gerar token", 255, True) + " e copie o token.\n Ele é pessoal: não aparece na tela nem vai para outro lugar.\n")
     tok = getpass.getpass(" Cole o token e dê Enter (vazio volta): ").strip().removeprefix("Bearer ").strip()
@@ -4794,7 +4903,7 @@ def main():
     if a[:1] == ["--horas-mover"]:  # aba Horas do app: jfy --horas-mover <AAAA-MM-DD> <linha> <AAAA-MM-DD novo>
         return app(mover_horas, *a[1:4])
     if a[:1] == ["--horas-lancar"]:  # aba Horas do app: abre uma aba do jfy e, dentro dela, o Claude lança pelo Chrome
-        if os.environ.get("TMUX"):
+        if na_aba():
             return lancar_horas(load(), date.fromisoformat(a[1]))
         return abrir_aba("horas " + date.fromisoformat(a[1]).strftime("%d/%m"), "horas", "--horas-lancar", a[1])
     if a[:1] == ["--reuniao"]:
@@ -4819,7 +4928,7 @@ def main():
         if novo and novo not in FINAIS:
             return print(c(f"--status precisa ser um destes: {', '.join(FINAIS)}", 203))
         return fim(a[1], int(arg("--min")) if arg("--min") else None, novo, "--nada" in a, video=arg("--video"), motivo=arg("--sem-video"))
-    if os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
+    if APP or os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
         return principal()
     # fora do tmux: entra (ou volta) na sessão jfy, garantindo a aba do menu
     cfg = load()
@@ -4848,14 +4957,14 @@ def selftest():
     assert not GOOGLE_ARQ.search("https://www.figma.com/design/i0FGbG8PbObEPXO67a3753/x")
     assert os.path.basename(nome_livre("/nao/existe", "a/b:c?.pdf")) == "a_b_c_.pdf"
     assert [categoria_arquivo(*x) for x in (("a.png", "image/png"), ("b.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), ("c.pdf", "application/pdf"), ("d.mp4", "video/mp4"), ("e.csv", ""))] == ["Imagens", "Planilhas", "Documentos", "Outros", "Planilhas"]
-    salvo = {k: globals()[k] for k in ("load", "save", "chaves", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
+    salvo = {k: globals()[k] for k in ("load", "save", "chaves", "chaves_apagar", "http_json", "EMAIL", "CONTATOS", "VIGIAS")}
     cfg_f, apagados = {"google": {"client_id": "i", "client_secret": "s", "conta": "a@b"}}, []
     tmp = os.path.join(RUN_DIR, "teste-sair")
     os.makedirs(tmp, exist_ok=True)
     for n in ("email", "contatos"):
         open(os.path.join(tmp, n), "w").write("{}")
     json.dump({"agenda": {"x": 1}, "prs": [1]}, open(os.path.join(tmp, "vigias"), "w"))
-    globals().update(load=lambda: cfg_f, save=lambda c: None, chaves=lambda s, v=None: "rt",
+    globals().update(load=lambda: cfg_f, save=lambda c: None, chaves=lambda s, v=None: "rt", chaves_apagar=apagados.append,
                      http_json=lambda *a, **k: apagados.append(a[0]) or {},
                      EMAIL=os.path.join(tmp, "email"), CONTATOS=os.path.join(tmp, "contatos"), VIGIAS=os.path.join(tmp, "vigias"))
     sub = subprocess.run
