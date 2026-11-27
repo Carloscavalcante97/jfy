@@ -1,11 +1,11 @@
 import SwiftUI
 
-/// Chat do time do Journify: as conversas entre colaboradores. O app só desenha; quem fala com o Journify é o jfy:
-/// `--chat` (conversas), `--chat <id>` (mensagens), `--chat <id> <texto>` (envia). Enquanto o MCP do Journify não
-/// tiver o chat, o jfy responde com o motivo e a tela mostra isso.
+/// Chat do time do Journify: as conversas entre colaboradores. O app só desenha; quem fala com o Journify (pelo MCP) é
+/// o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida lá), `--chat <id> <texto>` (envia).
 struct ChatTela: View {
-    /// Só busca mensagens novas com a tela à vista.
+    /// Só busca com a tela à vista: abrir uma conversa marca como lida no Journify, e ninguém leu nada com a tela escondida.
     let ativa: Bool
+    @ObservedObject var nav: Navegacao
 
     struct Mensagem: Decodable, Identifiable, Equatable {
         let id, autor, texto: String
@@ -15,12 +15,14 @@ struct ChatTela: View {
 
     struct Conversa: Decodable, Identifiable, Hashable {
         struct Ultima: Decodable, Hashable {
-            let autor, texto: String
+            let autor: String?  // o MCP não diz quem mandou a última
+            let texto: String
             let quando: String?
         }
         let id, nome: String
         let tipo: String?
         let naoLidas: Int?
+        let membro: Bool?  // false: canal que você vê sem participar (só leitura)
         let ultima: Ultima?
     }
 
@@ -30,7 +32,7 @@ struct ChatTela: View {
     @State private var texto = ""
     @State private var enviando = false
     @State private var erroEnvio: String?
-    @State private var fora: String?  // por que o chat não está disponível
+    @State private var fora: String?  // por que o chat não carregou (sem rede, MCP sem token…)
     @FocusState private var focado: Bool
 
     var body: some View {
@@ -54,18 +56,23 @@ struct ChatTela: View {
         // ponytail: busca de tempos em tempos (conversas a cada 15 s, mensagens a cada 5 s); tempo real
         // (SSE ou websocket) se o MCP do Journify oferecer
         .task(id: ativa) {
-            repeat {
+            while ativa && !Task.isCancelled {
                 await carregarConversas()
                 try? await Task.sleep(for: .seconds(15))
-            } while ativa && fora == nil && !Task.isCancelled
+            }
         }
         .task(id: "\(selecionada ?? "")|\(ativa)") {
-            guard let cid = selecionada else { return }
+            guard let cid = selecionada, ativa else { return }
             while !Task.isCancelled {
                 await carregarMensagens(cid)
-                guard ativa else { break }
                 try? await Task.sleep(for: .seconds(5))
             }
+        }
+        .task(id: nav.abrirConversa) {  // o clique na notificação de mensagem nova
+            guard let cid = nav.abrirConversa else { return }
+            nav.abrirConversa = nil
+            selecionada = cid
+            await carregarConversas()
         }
     }
 
@@ -81,7 +88,7 @@ struct ChatTela: View {
                         Text(hora(c.ultima?.quando)).font(.caption2).foregroundStyle(.secondary)
                     }
                     HStack(alignment: .firstTextBaseline) {
-                        Text(c.ultima.map { "\($0.autor): \($0.texto)" } ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(c.ultima.map { ($0.autor.map { "\($0): " } ?? "") + $0.texto } ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         Spacer(minLength: 4)
                         if let n = c.naoLidas, n > 0 {
                             Text("\(n)").font(.caption2.bold()).foregroundStyle(.white)
@@ -128,18 +135,23 @@ struct ChatTela: View {
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16)
             }
             Divider()
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
-                    .textFieldStyle(.plain).lineLimit(1...6).focused($focado).onSubmit(enviar)
-                Button(action: enviar) {
-                    if enviando { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+            if c.membro == false {
+                Label("Você não participa desta conversa: só leitura.", systemImage: "eye")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(14)
+            } else {
+                HStack(alignment: .bottom, spacing: 10) {
+                    TextField("Mensagem para \(c.nome)", text: $texto, axis: .vertical)
+                        .textFieldStyle(.plain).lineLimit(1...6).focused($focado).onSubmit(enviar)
+                    Button(action: enviar) {
+                        if enviando { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
+                    .disabled(!podeEnviar)
+                    .help("Enviar (Enter)")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(podeEnviar ? Souv.primaria : .secondary)
-                .disabled(!podeEnviar)
-                .help("Enviar (Enter)")
+                .padding(14)
             }
-            .padding(14)
         }
         .onAppear { focado = true }
     }
@@ -160,7 +172,8 @@ struct ChatTela: View {
     private func carregarConversas() async {
         let r = await JFY.rodar(["--chat"])
         guard r.status == 0, let lista: [Conversa] = decodificar(r.saida) else {
-            fora = r.status == 0 ? "Não entendi a lista de conversas do jfy --chat." : motivo(r)
+            // com a lista na tela, uma falha passageira (rede) não tira a lista: a próxima busca tenta de novo
+            if conversas.isEmpty { fora = r.status == 0 ? "Não entendi a lista de conversas do jfy --chat." : motivo(r) }
             return
         }
         fora = nil
@@ -177,7 +190,8 @@ struct ChatTela: View {
 
     private func enviar() {
         let t = texto.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let cid = selecionada, !t.isEmpty, !enviando else { return }
+        guard let cid = selecionada, !t.isEmpty, !enviando,
+              conversas.first(where: { $0.id == cid })?.membro != false else { return }
         enviando = true
         erroEnvio = nil
         texto = ""

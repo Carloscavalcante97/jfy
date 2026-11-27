@@ -154,9 +154,10 @@ final class Navegacao: ObservableObject {
     @Published var abrirProjeto: String?
     @Published var abrirEmail: String?
     @Published var abrirEvento: String?
+    @Published var abrirConversa: String?  // conversa do chat (o clique na notificação de mensagem nova)
     @Published var abrirAba: String?  // janela do tmux do jfy (o clique na notificação do Claude)
 
-    /// jfy://<destino>, o clique nas notificações do jfy: email/<id>, pr/<dono>/<repo>#<n>, evento/<id>,
+    /// jfy://<destino>, o clique nas notificações do jfy: email/<id>, pr/<dono>/<repo>#<n>, evento/<id>, chat/<conversa>,
     /// aba/<janela do tmux>, horas, agenda, emails, github, notificacoes.
     func abrir(_ url: URL) {
         guard url.scheme == "jfy", let destino = url.host else { return }
@@ -165,6 +166,7 @@ final class Navegacao: ObservableObject {
         case "email": abrirEmail = resto; tela = .emails
         case "pr": abrirPR = resto; tela = .github
         case "evento": abrirEvento = resto; tela = .reunioes
+        case "chat": abrirConversa = resto; tela = .chat
         case "aba": abrirAba = resto; tela = .terminal
         case "horas": tela = .horas
         case "agenda": tela = .reunioes
@@ -294,12 +296,12 @@ struct Principal: View {
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.contexto) { ContextoTela(ativa: tela == .contexto, irParaJFY: irParaJFY, abas: abas) }
                 mostrar(.github) { GithubTela(ativa: tela == .github, nav: nav, irParaJFY: irParaJFY) }
-                mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: irParaJFY) }
+                mostrar(.horas) { HorasTela(ativa: tela == .horas) }
                 mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.emails) { EmailsTela(caixa: caixa, ativa: tela == .emails, nav: nav) }
                 mostrar(.portas) { PortasTela(portas: portas, ativa: tela == .portas) }
                 mostrar(.uso) { UsoTela() }
-                mostrar(.chat) { ChatTela(ativa: tela == .chat) }
+                mostrar(.chat) { ChatTela(ativa: tela == .chat, nav: nav) }
                 mostrar(.notificacoes) {
                     NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: irParaJFY)
                 }
