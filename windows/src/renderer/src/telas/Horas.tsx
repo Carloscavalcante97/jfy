@@ -1,6 +1,6 @@
 // As horas do dia para o minhas-horas, a mesma tabela do `h` do jfy: o que foi medido (tasks, terminal livre,
-// reuniões), com os seus ajustes (app/Sources/JFY/Horas.swift no app do Mac). Quem lê e grava é o jfy
-// (--horas-json, --horas-ajuste, --horas-mover, --horas-lancar).
+// reuniões), com os seus ajustes, e o que você registra à mão (app/Sources/JFY/Horas.swift no app do Mac). Quem lê e
+// grava é o jfy (--horas-json, --horas-ajuste, --horas-nova, --horas-mover, --horas-lancar).
 import { useEffect, useRef, useState } from 'react'
 import {
   BadgeCheck, Calendar, ChevronLeft, ChevronRight, CircleCheck, CirclePlus, Hand, Info, PencilLine, Trash2, TriangleAlert
@@ -48,7 +48,10 @@ export default function Horas({ ativa }: { ativa: boolean }) {
   const [movendo, setMovendo] = useState<{ item: Item; ancora: HTMLElement } | null>(null) // o seletor de dia aberto
   const [novoDia, setNovoDia] = useState(() => new Date())
   const [levou, setLevou] = useState<{ texto: string; dia: Date } | null>(null)
-  const [outro, setOutro] = useState<{ item: Item; campo: 'p' | 'cat' } | null>(null) // nome fora da lista
+  const [outro, setOutro] = useState<{ item: Item | null; campo: 'p' | 'cat' } | null>(null) // nome fora da lista (item null: a linha nova)
+  // o registro à mão: projeto, categoria, horas e descrição, como as linhas que o jfy mede sozinho
+  const [nova, setNova] = useState<{ p: string; cat: string; min: string; desc: string } | null>(null)
+  const [gravandoNova, setGravandoNova] = useState(false)
   const [textoOutro, setTextoOutro] = useState('')
 
   const hoje = inicioDia(new Date())
@@ -68,7 +71,7 @@ export default function Horas({ ativa }: { ativa: boolean }) {
   useEffect(() => {
     if (ativa) carregar()
   }, [ativa, iso])
-  useEffect(() => setLevou(null), [iso])
+  useEffect(() => (setLevou(null), setNova(null)), [iso])
 
   const mudar = (n: number) => {
     const d = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate() + n)
@@ -171,7 +174,24 @@ export default function Horas({ ativa }: { ativa: boolean }) {
     else irPara('jfy')
   }
 
-  const okOutro = () => (outro && textoOutro && ajustar(outro.item, outro.campo, textoOutro), setOutro(null))
+  const okOutro = () => {
+    if (outro && textoOutro)
+      outro.item ? ajustar(outro.item, outro.campo, textoOutro) : setNova((n) => n && { ...n, [outro.campo]: textoOutro })
+    setOutro(null)
+  }
+
+  /** A linha nova vai para o mesmo registro do dia que o jfy usa para as tasks: depois dá para editar, levar para outro
+   * dia, remover e lançar, como qualquer linha. */
+  async function registrar() {
+    if (!nova || !nova.p || !nova.cat || !nova.min.trim() || !nova.desc.trim() || gravandoNova) return
+    setGravandoNova(true)
+    const erro = await fazer(['--horas-nova', iso, nova.p, nova.cat, nova.min, nova.desc])
+    setGravandoNova(false)
+    if (erro) return setAviso(erro) // hora que o jfy não entendeu: o que foi digitado fica para corrigir
+    setNova(null)
+    setAviso(null)
+    await carregar()
+  }
 
   return (
     <div className="hr">
@@ -362,7 +382,81 @@ export default function Horas({ ativa }: { ativa: boolean }) {
             )}
           </>
         )}
+        {linhaNova(h)}
       </>
+    )
+  }
+
+  // ---------- registrar à mão ----------
+  function linhaNova(h: Dados) {
+    if (!nova)
+      return (
+        <Botao
+          tipo="link"
+          className="hr-registrar"
+          title="Um trabalho que o jfy não mediu (uma ligação, um trabalho fora do Claude): entra na tabela como as outras linhas"
+          onClick={() => setNova({ p: '', cat: h.categorias.includes('Desenvolvimento') ? 'Desenvolvimento' : h.categorias[0] ?? '', min: '', desc: '' })}
+        >
+          <CirclePlus size={14} /> Registrar horas à mão
+        </Botao>
+      )
+    const valida = !!(nova.p && nova.cat && nova.min.trim() && nova.desc.trim())
+    const enter = (ev: React.KeyboardEvent) => {
+      if (ev.key === 'Enter') registrar()
+      if (ev.key === 'Escape') setNova(null)
+    }
+    const doMenu = h.projetos.find((x) => x.id === nova.p)
+    return (
+      <div className="hr-tabela hr-nova">
+        <div className="hr-linha hr-cab">
+          <span>Projeto</span>
+          <span>Categoria</span>
+          <span>Trabalhado</span>
+          <span />
+          <span>Descrição</span>
+          <span />
+        </div>
+        <div className="hr-linha">
+          <span className="linha-h">
+            <Select
+              opcoes={h.projetos.map((x) => ({ valor: x.id, rotulo: x.nome, cor: x.cor }))}
+              valor={nova.p || null}
+              vazio="projeto"
+              rotuloLivre={!doMenu && nova.p ? nova.p : null}
+              extra={['Outro nome no Journify…', () => (setTextoOutro(''), setOutro({ item: null, campo: 'p' }))]}
+              mudar={(v) => setNova({ ...nova, p: v })}
+            />
+          </span>
+          <span className="linha-h">
+            <Select
+              opcoes={[...new Set([...h.categorias, nova.cat].filter(Boolean))].sort().map((c) => ({ valor: c, rotulo: c }))}
+              valor={nova.cat}
+              extra={['Outra…', () => (setTextoOutro(''), setOutro({ item: null, campo: 'cat' }))]}
+              mudar={(v) => setNova({ ...nova, cat: v })}
+            />
+          </span>
+          <span className="hr-campo">
+            <Campo autoFocus placeholder="1:20" value={nova.min} onChange={(ev) => setNova({ ...nova, min: ev.target.value })} onKeyDown={enter}
+              title="1:20, 1h20, 80 (minutos) ou 1,5 (horas). O fator vale em cima, como nas outras linhas." />
+          </span>
+          <span />
+          <span className="hr-campo">
+            <Campo placeholder="o que você fez" value={nova.desc} onChange={(ev) => setNova({ ...nova, desc: ev.target.value })} onKeyDown={enter} />
+          </span>
+          <span className="linha-h hr-acoes">
+            {gravandoNova ? (
+              <Carregando />
+            ) : (
+              <Botao tipo="icone" disabled={!valida} title="Registrar (Enter)" onClick={registrar}>
+                <CircleCheck size={16} className={valida ? 'hr-verde' : ''} />
+              </Botao>
+            )}
+            <Botao tipo="icone" title="Cancelar (Esc)" onClick={() => setNova(null)}>
+              <Trash2 size={14} />
+            </Botao>
+          </span>
+        </div>
+      </div>
     )
   }
 }

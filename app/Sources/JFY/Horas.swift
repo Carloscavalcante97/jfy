@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// As horas do dia para o minhas-horas, a mesma tabela do `h` do jfy: o que foi medido (tasks, terminal livre,
-/// reuniões), com os seus ajustes. Quem lê e grava é o jfy (`--horas-json`, `--horas-ajuste`, `--horas-lancar`).
+/// reuniões), com os seus ajustes, e o que você registra à mão. Quem lê e grava é o jfy (`--horas-json`,
+/// `--horas-ajuste`, `--horas-nova`, `--horas-lancar`).
 struct HorasTela: View {
     let ativa: Bool
     let irParaJFY: () -> Void
@@ -33,10 +34,18 @@ struct HorasTela: View {
         let lancado: Lancado?
     }
 
-    /// Projeto ou categoria fora da lista: o nome é digitado num alerta.
+    /// Projeto ou categoria fora da lista: o nome é digitado num alerta. Sem item: é a linha nova.
     private struct PedidoOutro {
-        let item: Horas.Item
+        let item: Horas.Item?
         let campo: String
+    }
+
+    /// O registro à mão: projeto, categoria, horas e descrição, como as linhas que o jfy mede sozinho.
+    private struct Nova {
+        var p = "", cat = "", min = "", desc = ""
+        var valida: Bool {
+            !p.isEmpty && !cat.isEmpty && !min.trimmingCharacters(in: .whitespaces).isEmpty && !desc.trimmingCharacters(in: .whitespaces).isEmpty
+        }
     }
 
     @State private var dia = Calendar.current.startOfDay(for: Date())
@@ -51,6 +60,8 @@ struct HorasTela: View {
     @State private var outro: PedidoOutro?
     @State private var textoOutro = ""
     @State private var confirmar = false
+    @State private var nova: Nova?
+    @State private var gravandoNova = false
 
     private var hoje: Date { Calendar.current.startOfDay(for: Date()) }
     /// O dia local (AAAA-MM-DD). O .iso8601 do Swift formata em UTC: num fuso adiantado sairia o dia anterior.
@@ -63,12 +74,14 @@ struct HorasTela: View {
         }
         .padding(24)
         .task(id: "\(ativa)|\(iso)") { if ativa { await carregar() } }
-        .onChange(of: iso) { levou = nil }
+        .onChange(of: iso) { levou = nil; nova = nil }
         .onChange(of: focado) { antigo, _ in if let antigo { salvar(antigo) } }  // saiu do campo: salva o que ficou
         .dialogoSouv(outro?.campo == "p" ? "Projeto no Journify" : "Categoria", isPresented: Binding(
             get: { outro != nil }, set: { if !$0 { outro = nil } })) {
             Button("OK") {
-                if let o = outro, !textoOutro.isEmpty { ajustar(o.item, o.campo, textoOutro) }
+                if let o = outro, !textoOutro.isEmpty {
+                    if let it = o.item { ajustar(it, o.campo, textoOutro) } else if o.campo == "p" { nova?.p = textoOutro } else { nova?.cat = textoOutro }
+                }
                 outro = nil
             }
         } message: {
@@ -139,7 +152,9 @@ struct HorasTela: View {
         }
         if h.itens.isEmpty {
             Text("Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.")
-                .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 24)
+            linhaNova(h)
+            Spacer(minLength: 0)
         } else {
             // linhas próprias, não Table: dentro da Table do macOS (uma NSTableView) o Enter dos campos não chega a eles
             ScrollView {
@@ -200,6 +215,68 @@ struct HorasTela: View {
                         }
                     }
                 }
+            }
+            linhaNova(h)
+        }
+    }
+
+    // ---------- registrar à mão ----------
+    /// O botão embaixo da tabela e, aberto, a linha nova com as mesmas colunas. Ela vai para o mesmo registro do dia
+    /// que o jfy usa para as tasks: depois dá para editar, levar para outro dia, remover e lançar, como qualquer linha.
+    @ViewBuilder private func linhaNova(_ h: Horas) -> some View {
+        if let n = nova {
+            HStack(spacing: 12) {
+                SouvSelect(opcoes: h.projetos.map { .init(valor: $0.id, rotulo: $0.nome, cor: Color(hex: $0.cor)) },
+                           selecionado: n.p.isEmpty ? nil : n.p, vazio: "projeto",
+                           rotuloLivre: n.p.isEmpty || h.projetos.contains { $0.id == n.p } ? nil : n.p,
+                           extra: ("Outro nome no Journify…", { textoOutro = ""; outro = PedidoOutro(item: nil, campo: "p") })) { nova?.p = $0 }
+                    .frame(width: 190, alignment: .leading)
+                SouvSelect(opcoes: Array(Set(h.categorias + [n.cat])).filter { !$0.isEmpty }.sorted().map { .init(valor: $0, rotulo: $0) },
+                           selecionado: n.cat,
+                           extra: ("Outra…", { textoOutro = ""; outro = PedidoOutro(item: nil, campo: "cat") })) { nova?.cat = $0 }
+                    .frame(width: 150, alignment: .leading)
+                TextField("1:20", text: Binding(get: { nova?.min ?? "" }, set: { nova?.min = $0 }))
+                    .onSubmit { registrar() }.onExitCommand { nova = nil }
+                    .campoSouv().frame(width: 92)
+                    .help("1:20, 1h20, 80 (minutos) ou 1,5 (horas). O fator vale em cima, como nas outras linhas.")
+                    .frame(width: 140, alignment: .leading)
+                Color.clear.frame(width: 84, height: 1)
+                TextField("o que você fez", text: Binding(get: { nova?.desc ?? "" }, set: { nova?.desc = $0 }))
+                    .onSubmit { registrar() }.onExitCommand { nova = nil }
+                    .campoSouv().frame(maxWidth: .infinity)
+                if gravandoNova {
+                    ProgressView().controlSize(.small).frame(width: 22)
+                } else {
+                    Button { registrar() } label: { Image(systemName: "checkmark.circle.fill").foregroundStyle(n.valida ? .green : .secondary) }
+                        .buttonStyle(.souvIcone).disabled(!n.valida).help("Registrar (Enter)").frame(width: 22)
+                }
+                Button { nova = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.souvIcone).help("Cancelar (Esc)").frame(width: 22)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Souv.superficie))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Souv.destaque.opacity(0.45)))
+        } else {
+            Button { nova = Nova(cat: h.categorias.contains("Desenvolvimento") ? "Desenvolvimento" : h.categorias.first ?? "") } label: {
+                Label("Registrar horas à mão", systemImage: "plus.circle")
+            }
+            .buttonStyle(.souvLink)
+            .help("Um trabalho que o jfy não mediu (uma ligação, um trabalho fora do Claude): entra na tabela como as outras linhas")
+        }
+    }
+
+    private func registrar() {
+        guard let n = nova, n.valida, !gravandoNova else { return }
+        gravandoNova = true
+        Task {
+            let r = await JFY.rodar(["--horas-nova", iso, n.p, n.cat, n.min, n.desc])
+            gravandoNova = false
+            if r.status == 0 {
+                nova = nil
+                aviso = nil
+                await carregar()
+            } else {
+                aviso = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)  // o que foi digitado fica para corrigir
             }
         }
     }

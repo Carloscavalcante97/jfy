@@ -165,6 +165,17 @@ async function instalar() {
   }
 }
 
+/** No Mac, o relógio da barra do tmux (`jfy --relogio`) é quem avisa de email novo, da reunião em 5 min e da jornada
+ * de 8h, e quem chama o --vigiar (PRs e agenda) a cada 2 min. No Windows não há tmux: o app mantém o relógio rodando,
+ * e a saída dele (uma linha por segundo, para a barra) ninguém lê. Ele sai quando o jfy muda; sobe de novo. */
+let relogioProc: ReturnType<typeof spawn> | null = null
+function relogio() {
+  const e = env()
+  delete e.JFY_ABA
+  relogioProc = spawn(PYTHON, [MOTOR, '--relogio'], { env: e, windowsHide: true, stdio: 'ignore' })
+  relogioProc.on('exit', () => !saindo && setTimeout(relogio, 5_000))
+}
+
 /** A notificação das 7h (seg a sex), com as reuniões e o foco do dia. O app fica na bandeja, então ele mesmo dispara;
  * com o computador desligado às 7h, sai quando ele ligar, até o meio-dia. */
 function notificacaoDoDia() {
@@ -273,12 +284,15 @@ else {
     setInterval(sinalDeVida, 10_000)
     setInterval(olharNotificacoes, 2_000)
     // PRs pedindo revisão e mudanças na agenda: no Mac quem chama é o relógio da barra do tmux, de 2 em 2 min
-    const vigiar = () => void jfy(['--vigiar'])
-    setTimeout(vigiar, 15_000)
-    setInterval(vigiar, 120_000)
     if (WIN) {
       instalar()
+      relogio()
       setInterval(notificacaoDoDia, 60_000)
+    } else {
+      // no Mac (só para desenvolver) o relógio é o da barra do tmux; aqui só o vigia, como ele faria
+      const vigiar = () => void jfy(['--vigiar'])
+      setTimeout(vigiar, 15_000)
+      setInterval(vigiar, 120_000)
     }
   })
 
@@ -299,6 +313,7 @@ else {
     }
     saindo = true
     abas.encerrarTodas()
+    relogioProc?.kill() // no Windows, o filho não morre sozinho quando o app sai
   })
   app.on('window-all-closed', () => {
     /* fica na bandeja */

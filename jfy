@@ -1426,9 +1426,10 @@ def minutos_uteis(ini, fim):
     return max(1, round((fim - ini - reun) / 60))
 
 
-def registrar_horas(ini, fim, minutos, modo, tid=None, pid=None, titulo=None):
-    """Uma linha por trabalho em ~/.jfy/horas/AAAA-MM-DD.jsonl (dia do início): base do jfy --horas."""
-    linha = {k: v for k, v in dict(ini=ini, fim=fim, min=minutos, modo=modo, tid=tid, pid=pid, titulo=titulo).items()
+def registrar_horas(ini, fim, minutos, modo, tid=None, pid=None, titulo=None, cat=None):
+    """Uma linha por trabalho em ~/.jfy/horas/AAAA-MM-DD.jsonl (dia do início): base do jfy --horas. `cat`: a categoria
+    escolhida à mão (sem ela, a do modo)."""
+    linha = {k: v for k, v in dict(ini=ini, fim=fim, min=minutos, modo=modo, tid=tid, pid=pid, titulo=titulo, cat=cat).items()
              if v is not None}
     with open(os.path.join(HORAS_DIR, date.fromtimestamp(ini).isoformat() + ".jsonl"), "a") as f:
         f.write(json.dumps(linha, ensure_ascii=False) + "\n")
@@ -1458,7 +1459,8 @@ def entradas_do_log(dia):
             except Exception:  # task apagada ou Journify fora: fica o id
                 tasks[tid] = {"title": tid}
         t = tasks.get(tid, {})
-        out.append((e, (e.get("pid") or t.get("projectId"), CATEGORIA.get(e["modo"], "Desenvolvimento"), e.get("titulo") or t.get("title"))))
+        out.append((e, (e.get("pid") or t.get("projectId"), e.get("cat") or CATEGORIA.get(e["modo"], "Desenvolvimento"),
+                        e.get("titulo") or t.get("title"))))
     return out
 
 
@@ -1656,6 +1658,23 @@ def horas_json(dia):
                        "palpite": bool(it["reuniao"] and it["reuniao"][2] and it["p"]), "estado": estado.get(it["kid"])} for it in itens],
             "projetos": menu_projetos(cfg),
             "categorias": list(dict.fromkeys(projetos_journify()["categorias"] + list(CATEGORIA.values())))}
+
+
+def horas_nova(dia, projeto, categoria, horas, descricao):
+    """Aba Horas do app: um trabalho registrado à mão (jfy --horas-nova <dia> <projeto> <categoria> <horas> <descrição>).
+    Vai para o mesmo log em que o jfy grava as tasks e o terminal livre, então vira uma linha como as outras: editar,
+    levar para outro dia, remover e lançar no Journify. As horas são o trabalhado; a regra (fator) vale em cima, como
+    nas outras linhas de trabalho. Projeto: o id do jfy ou um nome livre, como no menu da tabela."""
+    d, m = date.fromisoformat(dia), ler_minutos(horas or "")
+    if d > date.today():
+        sys.exit("Horas só para hoje ou para um dia que já passou.")
+    if not m:
+        sys.exit(f"Não entendi as horas '{horas}': use 1:20, 1h20, 80 (minutos) ou 1,5 (horas).")
+    if not projeto.strip() or not categoria.strip() or not descricao.strip():
+        sys.exit("Escolha o projeto e a categoria e escreva a descrição.")
+    ini = datetime(d.year, d.month, d.day, 12).timestamp()  # meio-dia: o registro cai no dia certo em qualquer fuso
+    registrar_horas(ini, ini + m * 60, m, "manual", pid=projeto.strip(), titulo=descricao.strip(), cat=categoria.strip())
+    return {"dia": d.isoformat(), "trabalhado": m}
 
 
 def mover_horas(dia, kid, novo):
@@ -5092,6 +5111,8 @@ def main():
         cfg, dia = load(), date.fromisoformat(a[1])
         it = next((it for it in itens_horas(cfg, dia)[0] if it["kid"] == a[2]), None)
         return aplicar_ajuste(cfg, dia, it, a[3], a[4] if a[4:] else "") if it else sys.exit("Essa linha não existe mais nesse dia.")
+    if a[:1] == ["--horas-nova"]:  # aba Horas do app: jfy --horas-nova <AAAA-MM-DD> <projeto> <categoria> <horas> <descrição>
+        return app(horas_nova, *a[1:6])
     if a[:1] == ["--horas-mover"]:  # aba Horas do app: jfy --horas-mover <AAAA-MM-DD> <linha> <AAAA-MM-DD novo>
         return app(mover_horas, *a[1:4])
     if a[:1] == ["--horas-lancar"]:  # aba Horas do app: abre uma aba do jfy e, dentro dela, o Claude lança pelo Chrome
@@ -5432,6 +5453,16 @@ def selftest():
     for args in ((d2.isoformat(), kx, (hoje + timedelta(days=1)).isoformat()), (d2.isoformat(), reuniao, d1.isoformat())):
         try:
             mover_horas(*args)  # para o futuro e reunião: recusa
+            assert False, args
+        except SystemExit:
+            pass
+    # registro à mão: vira uma linha como as outras, com a categoria escolhida; futuro e hora ilegível: recusa
+    assert horas_nova(d1.isoformat(), "Souv", "Desenvolvimento", "1h30", " Ajuda no deploy ") == {"dia": d1.isoformat(), "trabalhado": 90}
+    assert so(d1) == {"Ajuda no deploy": (90, None)} and next(x for x in itens_horas(cfg_h, d1)[0])["cat"] == "Desenvolvimento"
+    for args in (((hoje + timedelta(days=1)).isoformat(), "Souv", "Reunião", "1h", "x"), (d1.isoformat(), "Souv", "Reunião", "muito", "x"),
+                 (d1.isoformat(), "Souv", "Reunião", "1h", " ")):
+        try:
+            horas_nova(*args)
             assert False, args
         except SystemExit:
             pass
