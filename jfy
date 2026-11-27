@@ -20,6 +20,9 @@ SEM_REPO = os.path.join(HOME, "sem-repo")  # <id>/: pasta do projeto sem reposit
 HORAS_DIR = os.path.join(HOME, "horas")  # AAAA-MM-DD.jsonl: cada trabalho medido (task, terminal livre, reunião)
 JOURNIFY = "https://journify.souv.tech"  # padrão; quem entra por outro domínio põe "journify" no config.json
 CATEGORIA = {"pipeline": "Desenvolvimento", "sessao": "Desenvolvimento", "livre": "Análise e estudo", "reuniao": "Reunião"}
+# o nome que aparece e que é lançado: as categorias do Journify (o enum do lancar_horas). A chave das linhas guardadas
+# segue com o nome de CATEGORIA, então o ajuste feito num dia antes desta troca não se perde
+CAT_JOURNIFY = {"Desenvolvimento": "Funcionalidade", "Análise e estudo": "Pesquisa"}
 JORNADA = 8 * 60  # minutos; o cronômetro fica verde e avisa ao chegar aqui
 SELF = os.path.realpath(__file__)
 TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(HOME, "tmux.conf")]  # tmux.conf do repo já com as cores do tema
@@ -1249,7 +1252,7 @@ VIGIAS = os.path.join(HOME, "vigias.json")  # o que o vigiar() já viu: PRs pedi
 
 def vigiar():
     """De 2 em 2 min (o relógio da barra chama, em segundo plano): PR novo pedindo a sua revisão e evento adicionado,
-    remarcado ou cancelado por outra pessoa viram notificação, e o clique abre o app na aba certa. A primeira vez só
+    remarcado ou cancelado por outra pessoa e mensagem nova no chat viram notificação, e o clique abre o app na aba certa. A primeira vez só
     guarda o estado (não avisa o que já existia). Uma trava evita aviso em dobro com dois terminais abertos."""
     trava = os.path.join(RUN_DIR, "vigiar.trava")
     try:
@@ -1260,7 +1263,7 @@ def vigiar():
         os.utime(trava)  # trava largada por um vigia que morreu
     try:
         st = json.load(open(VIGIAS)) if os.path.exists(VIGIAS) else {}
-        for vigia in (vigiar_prs, vigiar_agenda):
+        for vigia in (vigiar_prs, vigiar_agenda, vigiar_chat):
             try:
                 vigia(st)
             except Exception as e:  # sem rede, sem gh, sem Google: tenta de novo na próxima
@@ -1530,34 +1533,33 @@ def gravar_reuniao(ini, titulo, reg):
 PROJ_JOURNIFY = os.path.join(HOME, "projetos_journify.json")  # os selects do modal do minhas-horas: projetos e categorias
 
 
-def projetos_journify():
-    """Os projetos (nome do Journify e, quando o jfy conhece, o id dele) e as categorias do select do minhas-horas. O MCP
-    não lista projetos: a lista vem do próprio modal (jfy --projetos-journify), atualizada a cada lançamento."""
+def projetos_journify(forcar=False):
+    """Os projetos (id, nome e etapas) e as categorias em que dá para lançar horas: o opcoes_horas do MCP, as mesmas do
+    Minhas Horas. Guarda por 6 h em ~/.jfy/projetos_journify.json; sem o Journify, vale o guardado (mesmo velho).
+    "jfy" = o id: os projetos do jfy usam o mesmo id do Journify."""
     try:
-        return json.load(open(PROJ_JOURNIFY))
+        d = json.load(open(PROJ_JOURNIFY))
     except (OSError, ValueError):
-        return {"projetos": [], "categorias": []}
+        d = {}
+    velho = forcar or time.time() - d.get("em", 0) > 6 * 3600 or not all("id" in x for x in d.get("projetos") or [{}])
+    if velho:
+        try:
+            o = mcp("opcoes_horas")
+            d = {"em": time.time(), "categorias": o.get("categorias") or [],
+                 "projetos": [{"id": x["id"], "jfy": x["id"], "nome": " ".join((x.get("name") or "").split()),
+                               "etapas": [{"id": e["id"], "nome": " ".join((e.get("name") or "").split())} for e in x.get("etapas") or []]}
+                              for x in o.get("projetos") or []]}
+            json.dump(d, open(PROJ_JOURNIFY, "w"), ensure_ascii=False, indent=1)
+        except Exception:  # sem rede ou sem MCP: o guardado (a lista antiga, raspada do modal, não tem id: fica de fora)
+            pass
+    return {"projetos": [x for x in d.get("projetos") or [] if "id" in x], "categorias": d.get("categorias") or []}
 
 
-def guardar_projetos_journify():
-    """jfy --projetos-journify: grava o que o JS_PROJETOS devolveu no modal (stdin). O id do jfy vem como posição na
-    lista de projetos do config (a ferramenta do Chrome esconde ids na saída)."""
-    # ponytail: posição no config.json; projeto novo entra no fim, então só remover um projeto entre ler e gravar erra
-    d, ids = json.loads(sys.stdin.read()), list(load()["projetos"])
-    if not d.get("projetos"):
-        raise RuntimeError("Lista de projetos vazia: o modal estava aberto?")
-    json.dump({"atualizado": datetime.now().isoformat(timespec="seconds"), "categorias": d.get("categorias") or [],
-               "projetos": [{"nome": x["nome"], "jfy": ids[x["jfy"]] if 0 <= x.get("jfy", -1) < len(ids) else None}
-                            for x in d["projetos"]]}, open(PROJ_JOURNIFY, "w"), ensure_ascii=False, indent=1)
-
-
-def js_projetos_journify(cfg):
-    """O JavaScript que lê os selects de projeto e categoria do modal aberto (vai no pedido do lançamento)."""
-    return ("(() => { const ids = " + json.dumps(list(cfg["projetos"])) + "; const s = [...document.querySelectorAll('select')];"
-            " const p = s.find(x => x.options.length > 5 && [...x.options].some(o => ids.includes(o.value)));"
-            " const c = s.find(x => [...x.options].some(o => o.textContent.trim() === 'Funcionalidade'));"
-            " return JSON.stringify({projetos: [...p.options].map(o => ({nome: o.textContent.trim(), jfy: ids.indexOf(o.value)})),"
-            " categorias: c ? [...c.options].map(o => o.textContent.trim()) : []}); })()")
+def projeto_journify(cfg, p):
+    """O projeto do Journify de uma linha das horas: pelo id (o do jfy é o mesmo) ou pelo nome livre que você digitou."""
+    pj = projetos_journify()["projetos"]
+    nome = " ".join(str(nome_projeto(cfg, p) if p in cfg["projetos"] else p or "").lower().split())
+    return next((x for x in pj if p and x["id"] == p), None) or next((x for x in pj if nome and x["nome"].lower() == nome), None)
 
 
 def menu_projetos(cfg):
@@ -1623,7 +1625,8 @@ def itens_horas(cfg, dia):
         r = reun.get(k)
         kid = "reuniao|" + chave_reuniao(*r[:2]) if r else "|".join(str(x) for x in k)  # reunião: estável mesmo trocando o projeto
         a = aj.get(kid, {})
-        itens.append(dict(kid=kid, p=a.get("p", k[0]), cat=a.get("cat", k[1]), desc=a.get("desc", k[2]), med=m,
+        cat = a.get("cat", k[1])
+        itens.append(dict(kid=kid, p=a.get("p", k[0]), cat=CAT_JOURNIFY.get(cat, cat), desc=a.get("desc", k[2]), med=m,
                           fixo=a.get("min"), fora=a.get("fora", False), reuniao=r, lanc=0))
     # a hora corrigida à mão é o tempo trabalhado da linha: entra no lugar do medido e a regra (fator, múltiplos de 5)
     # vale em cima dela, como nas outras (antes ela substituía o lançado e o topo seguia somando o medido errado)
@@ -1662,7 +1665,11 @@ def horas_json(dia):
     with contextlib.redirect_stdout(sys.stderr):  # aviso de agenda fora vai para o stderr, o JSON fica limpo
         itens, medido, pela_regra = itens_horas(cfg, dia)
     cor = lambda p: "#%02x%02x%02x" % rgb256(cor_projeto(p)) if p else None
-    lancado, estado = estado_lancado(dia, itens)
+    try:
+        lancado, estado = estado_journify(cfg, dia, itens)
+    except Exception as e:  # sem o Journify: a tabela aparece, sem dizer o que já foi lançado
+        print(f"Não consegui ver o que já foi lançado no Journify ({e}).", file=sys.stderr)
+        lancado, estado = None, {}
     return {"dia": dia.isoformat(), "lancado": lancado, "medido": medido, "pela_regra": pela_regra, "fator": cfg.get("horas", {}).get("fator", 1),
             "total": sum(it["lanc"] for it in itens if not it["fora"]),
             "corrigidas": sum(1 for it in itens if it["fixo"] is not None and not it["fora"]),
@@ -1672,7 +1679,7 @@ def horas_json(dia):
                        "fixo": it["fixo"], "fora": it["fora"], "reuniao": bool(it["reuniao"]),
                        "palpite": bool(it["reuniao"] and it["reuniao"][2] and it["p"]), "estado": estado.get(it["kid"])} for it in itens],
             "projetos": menu_projetos(cfg),
-            "categorias": list(dict.fromkeys(projetos_journify()["categorias"] + list(CATEGORIA.values())))}
+            "categorias": projetos_journify()["categorias"] or sorted(set(CAT_JOURNIFY.values()) | {CATEGORIA["reuniao"]})}
 
 
 def horas_nova(dia, projeto, categoria, horas, descricao):
@@ -1754,57 +1761,100 @@ def mover_horas(dia, kid, novo):
     return {"para": d2.isoformat(), "trabalhado": trabalhado(it), "juntou": bool(alvo)}
 
 
-def arq_lancado(dia):
-    return os.path.join(HORAS_DIR, f"{dia.isoformat()}.lancado.json")
+def lancamentos_do_dia(dia):
+    """Os lançamentos de horas do dia no Journify (listar_horas)."""
+    return mcp("listar_horas", de=dia.isoformat(), ate=dia.isoformat()).get("lancamentos") or []
 
 
-def foto_horas(it):
-    """O que conta para dizer se uma linha mudou desde o lançamento: o que vai para o Journify."""
-    return {"p": it["p"], "cat": it["cat"], "desc": it["desc"], "lanc": it["lanc"]}
+def lanc_horas(l):
+    return float(pega(l, "horas", "hours") or 0)
 
 
-def horas_lancado(dia):
-    """jfy --horas-lancado <dia>: o Claude roda no fim do lançamento, depois de conferir o dia no Journify. Guarda a foto
-    das linhas: a aba Horas avisa que o dia já foi lançado e mostra o que mudou desde então."""
-    dia = date.fromisoformat(dia) if isinstance(dia, str) else dia
-    vivos = [it for it in itens_horas(load(), dia)[0] if not it["fora"]]
-    os.makedirs(HORAS_DIR, exist_ok=True)
-    json.dump({"em": time.time(), "itens": {it["kid"]: foto_horas(it) for it in vivos}}, open(arq_lancado(dia), "w"), ensure_ascii=False)
-    print(f"{dia.strftime('%d/%m')} marcado como lançado ({len(vivos)} linha(s)).")
+def casar_lancamentos(cfg, itens, ja):
+    """Cada linha viva com o lançamento do Journify que é ela (mesmo projeto e mesma descrição), ou None. Devolve
+    ({kid: lançamento ou None}, os lançamentos do dia que não são de linha nenhuma)."""
+    norm = lambda t: " ".join(str(t or "").lower().split())
+    livres, par = list(ja), {}
+    for it in itens:
+        pj = projeto_journify(cfg, it["p"])
+        l = next((x for x in livres if pj and pega(x, "projetoId", "projectId") == pj["id"]
+                  and norm(pega(x, "atividade", "descricao", "description")) == norm(it["desc"])), None)
+        if l:
+            livres.remove(l)
+        par[it["kid"]] = l
+    return par, livres
 
 
-def estado_lancado(dia, itens):
-    """(resumo do lançamento ou None, {kid: "lancada" | "mudou" | "nova"}) para a aba Horas."""
-    try:
-        foto = json.load(open(arq_lancado(dia)))
-    except (OSError, ValueError):
+def estado_journify(cfg, dia, itens):
+    """(resumo do dia no Journify ou None, {kid: "lancada" | "mudou" | "nova"}) para a aba Horas, lido do próprio
+    Journify: o que foi lançado por qualquer caminho (o app, o jfy, outra pessoa corrigindo) conta."""
+    ja = lancamentos_do_dia(dia)
+    if not ja:
         return None, {}
-    if foto.get("itens") is None:  # lançado antes de o jfy guardar a foto: só se sabe que o dia já tem horas lá
-        return {"em": None, "removidas": 0}, {}
     vivos = [it for it in itens if not it["fora"]]
-    estado = {it["kid"]: "nova" if it["kid"] not in foto["itens"]
-              else "lancada" if foto["itens"][it["kid"]] == foto_horas(it) else "mudou" for it in vivos}
-    return {"em": foto["em"], "removidas": len(set(foto["itens"]) - set(estado))}, estado
+    par, sobra = casar_lancamentos(cfg, vivos, ja)
+    igual = lambda l, it: abs(lanc_horas(l) - it["lanc"] / 60) < 0.01 and pega(l, "categoria", "category") == it["cat"]
+    estado = {it["kid"]: "nova" if not par[it["kid"]] else "lancada" if igual(par[it["kid"]], it) else "mudou" for it in vivos}
+    return {"lancamentos": len(ja), "horas": round(sum(map(lanc_horas, ja)), 2), "removidas": len(sobra)}, estado
 
 
-def lancar_horas(cfg, dia):
-    """Abre o Claude para lançar as horas do dia no minhas-horas pelo Chrome ("Lançar no Journify" da aba Horas)."""
-    nome = lambda p: nome_journify(cfg, p)
-    vivos = [it for it in itens_horas(cfg, dia)[0] if not it["fora"]]
-    total = sum(it["lanc"] for it in vivos)
-    linhas = "\n".join(f"- projeto: {nome(it['p'])} (id Journify {it['p'] if it['p'] in cfg['projetos'] else '?'}) | "
-                       f"categoria: {it['cat']} | horas: {hm(it['lanc'])} | descrição: {it['desc']}" for it in vivos)
-    pedido = f"""Lance estas horas de {dia.strftime('%d/%m/%Y')} em {cfg.get('journify', JOURNIFY)}/minhas-horas pelo Chrome (já estou logado). Um envio por linha:
-{linhas}
+def etapa_padrao(pj, cat):
+    """A etapa do projeto para uma linha: a única que ele tem; senão a de Design para as categorias de design e a de
+    Desenvolvimento para as outras. ponytail: pelo nome da etapa; projeto com etapas de outros nomes vai sem etapa."""
+    es = pj.get("etapas") or []
+    if len(es) == 1:
+        return es[0]["id"]
+    quer = "design" if cat in ("Design", "UI/UX", "Wireframe", "Protótipo", "Ilustração", "Branding") else "desenvolvimento"
+    return next((e["id"] for e in es if e["nome"].lower().startswith(quer)), None)
 
-- Projeto: o nome acima é o do select do Journify (ou o apelido do jfy, se a lista estiver velha); escolha no select do modal o projeto que corresponde (o id ajuda). Se a linha tiver projeto "?" ou houver dúvida, me pergunte antes.
-- Na primeira vez que o modal abrir, rode este JavaScript na página e passe o texto que ele devolve pelo stdin para `{SELF} --projetos-journify` (mantém os projetos e categorias da aba Horas do app iguais aos do Journify): {js_projetos_journify(cfg)}
-- Categoria: a opção do select mais próxima da sugerida.
-- O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
-- Antes de lançar, veja se o dia já tem horas no minhas-horas. Lançamento que corresponde a uma linha acima (mesmo projeto e descrição parecida) e está com outro valor, categoria ou descrição: edite ele direto para ficar igual à linha, sem criar outro. Linha sem lançamento: crie. Lançamento do dia que não corresponde a nenhuma linha: me mostre e pergunte antes de apagar. Nunca duplique.
-- No fim, recarregue a página e confirme que o dia ficou igual à tabela, com o total de {hm(total)}. Conferido, rode `{SELF} --horas-lancado {dia.isoformat()}` (o app passa a avisar que o dia já foi lançado)."""
-    subprocess.call(["claude", *com_modelo("horas"), pedido], cwd=os.path.expanduser("~"))
-    notificar("Lançamento de horas terminou", f"{dia.strftime('%d/%m')}: confira o dia no Journify", app="horas")
+
+def tasks_das_linhas(dia):
+    """{linha: task} das linhas que vieram de uma task só (a linha vai ligada a ela no Journify)."""
+    por = {}
+    for e, k in entradas_do_log(dia):
+        por.setdefault("|".join(str(x) for x in k), set()).add(e.get("tid"))
+    return {kid: next(iter(t)) for kid, t in por.items() if len(t) == 1 and None not in t}
+
+
+def horas_lancar(dia):
+    """O "Lançar no Journify" da aba Horas, direto pelo MCP (sem o Claude e sem o Chrome): a linha que já está lá (mesmo
+    projeto e descrição) é editada se mudou; as outras entram juntas, tudo ou nada (20 por chamada). A linha de uma task
+    vai ligada à task. Lançamento do dia que não é de linha nenhuma fica como está (o MCP não apaga): volta em
+    "sobrando", para você ver."""
+    cfg, d = load(), date.fromisoformat(dia)
+    with contextlib.redirect_stdout(sys.stderr):  # aviso de agenda fora não suja o JSON do app
+        itens = [it for it in itens_horas(cfg, d)[0] if not it["fora"] and it["lanc"] > 0]
+    if not itens:
+        sys.exit("Nada para lançar nesse dia.")
+    sem = [it["desc"] for it in itens if not projeto_journify(cfg, it["p"])]
+    if sem:
+        sys.exit("Escolha o projeto do Journify destas linhas antes de lançar: " + "; ".join(sem[:5]) + ".")
+    cats = set(projetos_journify()["categorias"])
+    fora = [f"{it['desc']} ({it['cat']})" for it in itens if cats and it["cat"] not in cats]
+    if fora:
+        sys.exit("Categoria que o Journify não tem: " + "; ".join(fora[:5]) + ". Troque na coluna Categoria.")
+    par, sobra = casar_lancamentos(cfg, itens, lancamentos_do_dia(d))
+    tarefas, novas, editadas, iguais = tasks_das_linhas(d), [], 0, 0
+    for it in itens:
+        pj, h, l = projeto_journify(cfg, it["p"]), round(it["lanc"] / 60, 2), par[it["kid"]]
+        if l:
+            if abs(lanc_horas(l) - h) < 0.01 and pega(l, "categoria", "category") == it["cat"]:
+                iguais += 1
+            else:
+                mcp("editar_horas", lancamentoId=pega(l, "id", "lancamentoId"), horas=h, categoria=it["cat"])
+                editadas += 1
+            continue
+        linha = {"data": d.isoformat(), "projetoId": pj["id"], "horas": h, "categoria": it["cat"], "atividade": it["desc"][:2000]}
+        if tarefas.get(it["kid"]):
+            linha["taskId"] = tarefas[it["kid"]]
+        if etapa_padrao(pj, it["cat"]):
+            linha["etapaId"] = etapa_padrao(pj, it["cat"])
+        novas.append(linha)
+    for i in range(0, len(novas), 20):
+        mcp("lancar_horas", lancamentos=novas[i:i + 20])
+    return {"novas": len(novas), "editadas": editadas, "iguais": iguais,
+            "sobrando": [{"projeto": pega(l, "projeto", "projetoNome", "projetoId"), "atividade": pega(l, "atividade", "descricao"),
+                          "horas": lanc_horas(l)} for l in sobra]}
 
 
 # ---------- portas abertas (tela o e barra de cima do Mac) ----------
@@ -2085,7 +2135,6 @@ MODELOS = [  # (id, nome, para que serve, padrão do jfy)
     ("reuniao", "Preparar reunião", "pauta e contexto de uma reunião", None),
     ("avaliacao", "Avaliar o uso da IA", "o diagnóstico da aba Uso da IA", None),
     ("fechamento", "Fechar a task", "handoff e memória ao sair; no modelo da conversa, aproveita o cache", "conversa"),
-    ("horas", "Lançar horas", "preencher o minhas-horas pelo Chrome", "sonnet"),
     ("email", "Emails", "gerar, corrigir e melhorar respostas", "sonnet"),
     ("commit", "Mensagem de commit", "pelas regras do committer", "sonnet"),
     ("pr", "Abrir PR", "pelas regras do pr-creator", "sonnet"),
@@ -2619,25 +2668,52 @@ def uso(dias=None):
     }
 
 
-# Chat do time (as conversas entre colaboradores do Journify) na tela de chat do app. O app só fala com as três
-# funções abaixo, em JSON. ponytail: o MCP do Journify ainda não tem o chat; quando tiver, troque o corpo de cada
-# uma por um mcp(...) que devolva o formato da docstring. O app não muda.
-CHAT_FORA = "O chat do Journify ainda não está no MCP. Quando estiver, ele aparece aqui."
-
-
+# Chat do time (as conversas entre colaboradores do Journify) na tela de chat do app, pelo MCP. O app só fala com as
+# três funções abaixo, em JSON. ponytail: o MCP só responde quando chamado; a tela pergunta a cada 5 s e o vigia, a
+# cada 2 min (mensagem nova vira notificação). Com a API de tempo real do Journify, troca aqui e o app não muda.
 def chat_conversas():
-    """[{id, nome, tipo ("canal" ou "direta"), nao_lidas, ultima: {autor, texto, quando} ou None}], a mais recente primeiro."""
-    sys.exit(CHAT_FORA)
+    """[{id, nome, tipo ("canal" ou "direta"), nao_lidas, membro, ultima: {autor, texto, quando} ou None}], a mais recente primeiro."""
+    return [{"id": c["id"], "nome": c.get("nome") or "Conversa", "tipo": "direta" if c.get("tipo") == "dm" else "canal",
+             "nao_lidas": 1 if c.get("naoLida") else 0, "membro": c.get("membro", True),
+             "ultima": {"autor": None, "texto": c.get("ultimaMensagem") or "", "quando": c["ultimaMensagemEm"]}
+             if c.get("ultimaMensagemEm") else None} for c in mcp("listar_conversas")]
+
+
+def msg_chat(m, eu):
+    texto = "(mensagem apagada)" if m.get("apagada") else (m.get("texto") or "")
+    if not texto and m.get("anexos"):
+        texto = "📎 " + ", ".join(a.get("nome") or "anexo" for a in m["anexos"] if isinstance(a, dict)) or "📎 Anexo"
+    return {"id": m["id"], "autor": m.get("autor") or "?", "texto": texto, "quando": m.get("em"), "minha": bool(eu) and m.get("autorId") == eu}
 
 
 def chat_mensagens(cid):
-    """[{id, autor, texto, quando (ISO 8601), minha (bool)}] da conversa, da mais antiga para a mais nova."""
-    sys.exit(CHAT_FORA)
+    """[{id, autor, texto, quando (ISO 8601), minha (bool)}] da conversa, da mais antiga para a mais nova (as 100 últimas).
+    Abrir a conversa marca como lida, como no app do Journify."""
+    r = mcp("listar_mensagens", conversaId=cid, limite=100, marcarComoLida=True)
+    eu = load().get("journify_uid")
+    return [msg_chat(m, eu) for m in reversed(r.get("mensagens") or [])]
 
 
 def chat_enviar(cid, texto):
     """A mensagem enviada, no formato de chat_mensagens."""
-    sys.exit(CHAT_FORA)
+    r = mcp("enviar_mensagem", conversaId=cid, texto=texto)
+    m = r.get("mensagem", r) if isinstance(r, dict) else {}
+    return {"id": m.get("id") or str(uuid.uuid4()), "autor": m.get("autor") or "você", "texto": texto,
+            "quando": m.get("em") or datetime.now().astimezone().isoformat(timespec="seconds"), "minha": True}
+
+
+def vigiar_chat(st):
+    """Mensagem nova numa conversa (não lida) vira notificação, e o clique abre a conversa no app. A primeira vez só
+    guarda o que já estava lá."""
+    vistas = st.get("chat")
+    novas = {c["id"]: c for c in mcp("listar_conversas", somenteNaoLidas=True)}
+    marca = {cid: c.get("ultimaMensagemEm") for cid, c in novas.items()}
+    if vistas is not None:
+        for cid, c in novas.items():
+            if marca[cid] and vistas.get(cid) != marca[cid]:
+                notificar(c.get("nome") or "Chat do Journify", " ".join((c.get("ultimaMensagem") or "").split())[:140] or "mensagem nova",
+                          app=f"chat/{cid}")
+    st["chat"] = marca
 
 
 def chat(*a):
@@ -2826,43 +2902,22 @@ def task_mudar(tid, campo, valor, extra=""):
     mcp("atualizar_task", taskId=tid, **{{"status": "statusId", "prioridade": "priority", "prazo": "dueDate"}[campo]: valor}, **video)
 
 
-def detalhes_tasks(tids, validade=4 * 3600, forcar=False):
-    """O que a lista do MCP não traz e só vem na task inteira (obter_task): os pontos e os anexos. Guarda até 24 h em
-    RUN_DIR/tasks-detalhe.json; cada uso diz quanto aceita (os pontos, 4 h; a aba Arquivos, 24 h), e forcar lê tudo
-    de novo. Só busca o que falta, 4 por vez; a que falhar tenta de novo, uma por vez (muitas chamadas
-    seguidas e o Journify recusa todas). As que o Journify recusou ficam de fora da resposta."""
-    from concurrent.futures import ThreadPoolExecutor
-    arq, agora = os.path.join(RUN_DIR, "tasks-detalhe.json"), time.time()
-    try:
-        cache = {k: v for k, v in json.load(open(arq)).items() if agora - v["em"] < 24 * 3600}
-    except (OSError, ValueError, KeyError, TypeError):
-        cache = {}
-    erros = []
-
-    def uma(tid):
-        try:
-            t = mcp("obter_task", taskId=tid)["task"]
-        except Exception as e:
-            erros.append(str(e))
-            return tid, None
-        return tid, {"em": agora, "pontos": (t.get("estimate") or {}).get("value") or (t.get("estimateV2") or {}).get("points"),
-                     "anexos": t.get("attachments") or []}
-    faltam = [t for t in tids if forcar or t not in cache or agora - cache[t]["em"] >= validade]
-    with ThreadPoolExecutor(4) as ex:
-        achados = dict(ex.map(uma, faltam))
-    for tid in [t for t, v in achados.items() if v is None]:  # devagar, uma por vez
-        time.sleep(0.5)
-        achados[tid] = uma(tid)[1]
-    cache.update({t: v for t, v in achados.items() if v})
-    json.dump(cache, open(arq, "w"))
-    if any(v is None for v in achados.values()):
-        print(f"o Journify recusou {sum(v is None for v in achados.values())} task(s): {erros[-1][:120]}", file=sys.stderr)
-    return {t: cache[t] for t in tids if t in cache}
+def pontos_tasks(tids):
+    """{task: pontos} pelo obter_tasks, até 100 por chamada (antes era uma task por vez). A que o Journify não achou,
+    ou sem estimativa, fica de fora."""
+    out = {}
+    for i in range(0, len(tids), 100):
+        for t in mcp("obter_tasks", taskIds=list(tids[i:i + 100])).get("tasks") or []:
+            v = (t.get("estimate") or {}).get("value")
+            if v is not None:
+                out[t["id"]] = v
+    return out
 
 
 def tasks_pontos(*tids):
-    """Os pontos das tasks (a tabela do app carrega depois da lista). O MCP não grava pontos: mudar é no Journify."""
-    return {t: d["pontos"] for t, d in detalhes_tasks(list(tids[:120])).items() if d["pontos"] is not None}
+    """Os pontos das tasks (a tabela do app carrega depois da lista; as listas do MCP já trazem, isto completa as que
+    faltarem). O MCP não grava pontos: mudar é no Journify."""
+    return pontos_tasks(list(dict.fromkeys(tids))[:300])
 
 
 SENSIVEL = re.compile(r"(?i)(^|[^a-z])(\.?env|senhas?|passwords?|secrets?|segredos?|credenciai?s?|credentials?|tokens?|chaves?|api[ _-]?keys?)([^a-z]|$)")
@@ -3114,19 +3169,81 @@ def categoria_arquivo(nome, tipo):
     return "Outros"
 
 
+CAT_ARQUIVO = {"reunioes": "Reuniões", "documentos": "Documentos", "planilhas": "Planilhas", "imagens": "Imagens", "outros": "Outros"}
+
+
 def arquivos_json(pid, forcar=""):
-    """Aba Arquivos do projeto: os anexos das tasks, os mais novos primeiro. O MCP não lista os arquivos enviados direto
-    no projeto, e os anexos só vêm task a task: a leitura de um projeto grande demora, então fica guardada por 24 h e
-    o ↻ da aba (forcar) lê de novo."""
-    ts = mcp("listar_tasks_projeto", projetoId=pid)
-    titulo, det = {t["id"]: t["title"] for t in ts}, detalhes_tasks([t["id"] for t in ts], validade=24 * 3600, forcar=bool(forcar))
-    out = [{"id": a.get("id") or a.get("url") or f"{tid}{n}", "nome": a.get("name") or "anexo", "url": a.get("url"),
-            "tipo": a.get("contentType") or "", "tamanho": a.get("size") if isinstance(a.get("size"), (int, float)) else None,
-            "por": a.get("uploadedByName"), "quando": a.get("uploadedAt"), "task": tid, "task_titulo": titulo.get(tid),
-            "categoria": categoria_arquivo(a.get("name"), a.get("contentType"))}
-           for tid, d in det.items() for n, a in enumerate(d["anexos"])]
-    return {"arquivos": sorted(out, key=lambda a: a["quando"] or "", reverse=True), "tasks": len(ts), "lidas": len(det),
-            "lido": min((d["em"] for d in det.values()), default=None)}
+    """Aba Arquivos do projeto: o Drive do projeto, os anexos das tasks e os documentos que são arquivo, numa chamada
+    só (listar_arquivos), os mais novos primeiro. `forcar` ficou só por compatibilidade: não há mais o que guardar."""
+    lista = mcp("listar_arquivos", projetoId=pid)
+    out = [{"id": a.get("link") or f"{a.get('taskId')}|{a.get('nome')}|{n}", "nome": a.get("nome") or "arquivo", "url": a.get("link"),
+            "tipo": a.get("tipo") or "", "tamanho": a.get("tamanho") if isinstance(a.get("tamanho"), (int, float)) else None,
+            "por": a.get("enviadoPor"), "quando": a.get("data"), "task": a.get("taskId"), "task_titulo": a.get("taskTitulo"),
+            "origem": a.get("origem"),  # drive, task ou documento
+            "categoria": CAT_ARQUIVO.get(a.get("categoria")) or categoria_arquivo(a.get("nome"), a.get("tipo"))}
+           for n, a in enumerate(lista)]
+    tasks = len({a["task"] for a in out if a["task"]})
+    return {"arquivos": sorted(out, key=lambda a: a["quando"] or "", reverse=True), "tasks": tasks, "lidas": tasks, "lido": time.time()}
+
+
+def arquivo_enviar(caminho, onde, alvo):
+    """jfy --arquivo-enviar <arquivo> task|projeto <id>: anexa um arquivo a uma task (um print, o vídeo do teste) ou
+    manda para o Drive do projeto. Até 3 MB vai junto na chamada; maior, o MCP devolve um link: o arquivo vai direto
+    por PUT (com os headers que ele mandou) e o confirmar_envio registra. Anexo de task: até 20 MB (vídeo, 100 MB)."""
+    import mimetypes
+    if onde not in ("task", "projeto") or not os.path.isfile(caminho):
+        sys.exit("Use: jfy --arquivo-enviar <arquivo> task|projeto <id>")
+    nome, tam = os.path.basename(caminho)[:200], os.path.getsize(caminho)
+    base = {"nome": nome, "tipo": mimetypes.guess_type(nome)[0] or "application/octet-stream", "tamanho": tam,
+            ("taskId" if onde == "task" else "projetoId"): alvo}
+    if tam <= 3 * 1024 * 1024:
+        return mcp("enviar_arquivo", conteudoBase64=base64.b64encode(open(caminho, "rb").read()).decode(), **base) or {"ok": True}
+    r = mcp("enviar_arquivo", **base)
+    link = pega(r, "url", "uploadUrl", "link")
+    if not link:
+        sys.exit(f"O Journify não devolveu o link de envio: {str(r)[:200]}")
+    with open(caminho, "rb") as f:  # o arquivo vai inteiro do disco para o link, sem passar pelo MCP
+        req = urllib.request.Request(link, data=f, method=pega(r, "metodo", "method") or "PUT",
+                                     headers=dict(pega(r, "headers") or {}, **{"Content-Length": str(tam)}))
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            corpo = resp.read().decode("utf-8", "replace")
+    if onde == "task":
+        return mcp("confirmar_envio", taskId=alvo, caminho=pega(r, "caminho", "path"), nome=nome) or {"ok": True}
+    drive = pega(r, "driveFileId") or (json.loads(corpo).get("id") if corpo.strip().startswith("{") else None)
+    return mcp("confirmar_envio", projetoId=alvo, driveFileId=drive) or {"ok": True}
+
+
+# ---------- formulários e documentos do projeto (criar e editar) ----------
+def formularios_json(pid):
+    """Aba Formulários do projeto: os formulários com a quantidade de respostas (gestor+ ou membro do projeto)."""
+    return [{"id": f["id"], "titulo": f.get("title") or "Sem título", "descricao": f.get("description") or "",
+             "campos": f.get("fieldCount") or 0, "respostas": f.get("respostas") or 0, "publico": bool(f.get("isPublic"))}
+            for f in mcp("listar_formularios", projetoId=pid)]
+
+
+def formulario_json(fid):
+    """Um formulário: os campos (na ordem) e as respostas, as mais novas primeiro, pelo rótulo de cada campo. Os links
+    dos anexos valem 60 min no Journify."""
+    f = mcp("obter_formulario", formId=fid)
+    r = mcp("listar_respostas", formId=fid, limite=200)
+    return {"formulario": f, "respostas": r.get("respostas", r) if isinstance(r, dict) else r}
+
+
+def doc_criar(pid):
+    """jfy --doc-criar <projeto>, com {"titulo", "conteudo"} (markdown) no stdin: um documento novo no projeto."""
+    d = json.loads(sys.stdin.read())
+    if not (d.get("titulo") or "").strip():
+        sys.exit("Dê um título ao documento.")
+    return mcp("criar_documento", projetoId=pid, titulo=d["titulo"].strip()[:200], conteudo=d.get("conteudo") or "")
+
+
+def doc_salvar(did):
+    """jfy --doc-salvar <documento>, com {"titulo"?, "conteudo"?, "modo"?} no stdin: modo "substituir" (padrão) troca o
+    conteúdo inteiro; "anexar" acrescenta ao fim (decision log, regras de negócio depois de uma reunião)."""
+    d = json.loads(sys.stdin.read())
+    args = {k: v for k, v in (("titulo", (d.get("titulo") or "").strip()[:200]), ("conteudo", d.get("conteudo")),
+                              ("modo", d.get("modo"))) if v}
+    return mcp("atualizar_documento", docId=did, **args)
 
 
 def tasks_mudar(campo, valor, *resto):
@@ -5140,7 +5257,7 @@ def main():
                 "--tema": aplicar_tema, "--github-json": github_json, "--pr-json": pr_json, "--pr-acao": pr_acao,
                 "--repos-json": repos_json, "--repo-acao": repo_acao, "--github-conta": github_conta, "--github-login": github_login, "--github-sair": github_sair,
                 "--contas-json": contas_json, "--google-sair": google_sair, "--journify-token": journify_token,
-                "--journify-sair": journify_sair, "--projetos-journify": guardar_projetos_journify, "--horas-lancado": horas_lancado, "--pr-revisar": pr_revisar,
+                "--journify-sair": journify_sair, "--pr-revisar": pr_revisar,
                 "--emails-json": emails_json, "--email-json": email_json, "--email-anexo": email_anexo, "--email-acao": email_acao, "--emails-lidos": emails_lidos,
                 "--portas-json": portas_json, "--porta-encerrar": porta_encerrar,
                 "--portas-encerrar-todas": portas_encerrar_todas, "--email-enviar": email_enviar, "--email-assinatura": email_assinatura, "--email-ia": email_ia, "--contatos-json": contatos_json,
@@ -5148,6 +5265,8 @@ def main():
                 "--commit-autor": commit_autor, "--commit-fazer": commit_fazer,
                 "--repo-historico": repo_historico, "--repo-commit": repo_commit, "--repo-branches": repo_branches,
                 "--repo-branch": repo_branch, "--worktree": worktree_acao, "--pr-abrir": pr_abrir,
+                "--arquivo-enviar": arquivo_enviar, "--formularios-json": formularios_json, "--formulario-json": formulario_json,
+                "--doc-criar": doc_criar, "--doc-salvar": doc_salvar,
                 "--instalar-windows": instalar_windows}
     if a[:1] and a[0] in comandos:
         return app(comandos[a[0]], *a[1:])
@@ -5161,10 +5280,8 @@ def main():
         return app(horas_nova, *a[1:6])
     if a[:1] == ["--horas-mover"]:  # aba Horas do app: jfy --horas-mover <AAAA-MM-DD> <linha> <AAAA-MM-DD novo>
         return app(mover_horas, *a[1:4])
-    if a[:1] == ["--horas-lancar"]:  # aba Horas do app: abre uma aba do jfy e, dentro dela, o Claude lança pelo Chrome
-        if na_aba():
-            return lancar_horas(load(), date.fromisoformat(a[1]))
-        return abrir_aba("horas " + date.fromisoformat(a[1]).strftime("%d/%m"), "horas", "--horas-lancar", a[1])
+    if a[:1] == ["--horas-lancar"]:  # aba Horas do app: lança o dia pelo MCP, JSON com o que fez
+        return app(horas_lancar, a[1])
     if a[:1] == ["--reuniao"]:
         return preparar(a[1])
     if a[:1] == ["--fechar"]:  # fechamento de uma task em segundo plano
@@ -5377,8 +5494,14 @@ def selftest():
     eventos_hoje = lambda forcar=False: [[agora - 3600, agora - 1800, "Daily"], [agora + 60, agora + 600, "Futura"]]
     assert minutos_uteis(agora - 7200, agora) == 90
     eventos_hoje = lambda forcar=False: []
-    chamadas = []
-    mcp = lambda tool, **kw: chamadas.append((tool, kw))  # Journify falso
+    chamadas, journify = [], {"listar_horas": {"lancamentos": []}, "opcoes_horas": {"categorias": [], "projetos": []}}
+
+    def mcp(tool, **kw):  # Journify falso: as leituras das horas respondem; o resto só fica anotado
+        if tool in journify:
+            return journify[tool]
+        chamadas.append((tool, kw))
+    pj_real = PROJ_JOURNIFY
+    globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")
     inicio("TESTE")
     open(os.path.join(RUN_DIR, "TESTE.t"), "w").write(str(time.time() - 125 * 60))
     fim("TESTE", novo="em_teste")
@@ -5466,7 +5589,8 @@ def selftest():
     aplicar_ajuste(cfg_h, hoje, decal, "cat", "Análise e estudo")
     aplicar_ajuste(cfg_h, hoje, entrega, "fora", "1")
     itens, med, _ = itens_horas(cfg_h, hoje)
-    assert [(x["p"], x["cat"], x["lanc"], x["fora"]) for x in itens] == [("Souv", "Análise e estudo", 25, False),
+    # a categoria guardada com o nome antigo aparece (e é lançada) com o nome do Journify
+    assert [(x["p"], x["cat"], x["lanc"], x["fora"]) for x in itens] == [("Souv", "Pesquisa", 25, False),
                                                                          ("r", "Reunião", 0, True)] and med == 25, itens
     # a hora corrigida entra no lugar do medido e o fator vale em cima dela (12 min corrigidos × 1,2 = 15 em múltiplo de 5)
     itens2, med2, regra2 = itens_horas(dict(cfg_h, horas={"fator": 1.2}), hoje)
@@ -5503,8 +5627,8 @@ def selftest():
         except SystemExit:
             pass
     # registro à mão: vira uma linha como as outras, com a categoria escolhida; futuro e hora ilegível: recusa
-    assert horas_nova(d1.isoformat(), "Souv", "Desenvolvimento", "1h30", " Ajuda no deploy ") == {"dia": d1.isoformat(), "trabalhado": 90}
-    assert so(d1) == {"Ajuda no deploy": (90, None)} and next(x for x in itens_horas(cfg_h, d1)[0])["cat"] == "Desenvolvimento"
+    assert horas_nova(d1.isoformat(), "Souv", "Funcionalidade", "1h30", " Ajuda no deploy ") == {"dia": d1.isoformat(), "trabalhado": 90}
+    assert so(d1) == {"Ajuda no deploy": (90, None)} and next(x for x in itens_horas(cfg_h, d1)[0])["cat"] == "Funcionalidade"
     for args in (((hoje + timedelta(days=1)).isoformat(), "Souv", "Reunião", "1h", "x"), (d1.isoformat(), "Souv", "Reunião", "muito", "x"),
                  (d1.isoformat(), "Souv", "Reunião", "1h", " ")):
         try:
@@ -5530,18 +5654,36 @@ def selftest():
         assert "Nada mudou" in str(e), e
     globals()["itens_horas"] = real
     assert {a: open(a).read() if os.path.exists(a) else None for a in arquivos} == antes
-    with contextlib.redirect_stdout(io.StringIO()):
-        horas_lancado(hoje.isoformat())
+    # o que já foi lançado vem do próprio Journify (listar_horas): igual, mudou, nova, e o que está lá sem ser linha
+    journify["opcoes_horas"] = {"categorias": ["Funcionalidade", "Pesquisa", "Reunião"], "projetos": [
+        {"id": "a", "name": "Alpha  [ALPH1-024]", "etapas": [{"id": "E1", "name": "Design"}, {"id": "E2", "name": "Desenvolvimento"}]},
+        {"id": "S1", "name": "Souv", "etapas": []}]}
+    projetos_journify(forcar=True)
+    vivos = [x for x in horas_json(hoje)["itens"] if not x["fora"]]
+    assert len(vivos) == 2 and horas_json(hoje)["lancado"] is None, vivos
+    ja = [{"id": f"L{i}", "projetoId": projeto_journify(load(), x["pid"])["id"], "atividade": " " + x["desc"].upper(),
+           "horas": x["lanc"] / 60, "categoria": x["cat"]} for i, x in enumerate(vivos)]
+    journify["listar_horas"] = {"lancamentos": ja}
     h = horas_json(hoje)
-    assert h["lancado"]["removidas"] == 0 and [x["estado"] for x in h["itens"]] == ["lancada", "lancada"], h["itens"]
-    foto = json.load(open(arq_lancado(hoje)))
-    k0, k1 = list(foto["itens"])
-    foto["itens"][k0]["lanc"] += 5
-    foto["itens"]["sumiu"] = foto["itens"].pop(k1)
-    json.dump(foto, open(arq_lancado(hoje), "w"))
+    assert h["lancado"]["removidas"] == 0 and [x["estado"] for x in h["itens"] if not x["fora"]] == ["lancada", "lancada"], h
+    ja[0]["horas"] += 0.25
+    ja.pop()
+    journify["listar_horas"] = {"lancamentos": ja + [{"id": "X", "projetoId": "S1", "atividade": "outra coisa", "horas": 1, "categoria": "Pesquisa"}]}
     h = horas_json(hoje)
-    assert h["lancado"]["removidas"] == 1 and [x["estado"] for x in h["itens"]] == ["mudou", "nova"], h["itens"]
-    os.remove(arq_lancado(hoje))
+    assert h["lancado"] == {"lancamentos": 2, "horas": round(ja[0]["horas"] + 1, 2), "removidas": 1} \
+        and [x["estado"] for x in h["itens"] if not x["fora"]] == ["mudou", "nova"], h
+    # lançar: a que mudou é editada, a nova entra com o projeto e a etapa do Journify, a que sobrou lá fica (sem apagar)
+    n0 = len(chamadas)
+    r = horas_lancar(hoje.isoformat())
+    feitas_h = chamadas[n0:]
+    assert (r["novas"], r["editadas"], r["iguais"], [x["atividade"] for x in r["sobrando"]]) == (1, 1, 0, ["outra coisa"]), r
+    assert feitas_h[0] == ("editar_horas", {"lancamentoId": "L0", "horas": round(vivos[0]["lanc"] / 60, 2), "categoria": vivos[0]["cat"]}), feitas_h
+    nova = feitas_h[1][1]["lancamentos"][0]
+    pj1 = projeto_journify(load(), vivos[1]["pid"])
+    assert feitas_h[1][0] == "lancar_horas" and nova == dict(
+        {"data": hoje.isoformat(), "projetoId": pj1["id"], "horas": round(vivos[1]["lanc"] / 60, 2), "categoria": vivos[1]["cat"],
+         "atividade": vivos[1]["desc"]}, **({"etapaId": "E2"} if pj1["id"] == "a" else {})), nova
+    journify["listar_horas"] = {"lancamentos": []}
     real_tm, feitos = task_mudar, []
     globals()["task_mudar"] = lambda t, c, v, e="": feitos.append((t, c, v, e)) if t != "ruim" else (_ for _ in ()).throw(RuntimeError("negado"))
     r = tasks_mudar("status", "em_revisao", "t1", "ruim", "t2")
@@ -5626,21 +5768,22 @@ def selftest():
         assert modelo_de("fechamento") == "conversa" and "conversa" in opcoes_modelo("fechamento") and "conversa" not in opcoes_modelo("horas")
     finally:
         globals()["load"] = salvo_load
-    pj_real = PROJ_JOURNIFY
-    globals()["PROJ_JOURNIFY"] = os.path.join(RUN_DIR, "teste-projetos-journify.json")  # sem a lista: os apelidos do jfy
+    # sem a lista do Journify: os apelidos do jfy
+    journify["opcoes_horas"] = {"categorias": [], "projetos": []}
+    projetos_journify(forcar=True)
     h = horas_json(hoje)
     assert h["total"] == 40 and [(x["projeto"], x["desc"], x["reuniao"]) for x in h["itens"]] == [
         ("alpha", "entrega do lote 3", True), ("Souv", "protótipos Decal", True)], h["itens"]
     assert h["itens"][0]["cor"].startswith("#") and h["itens"][1]["cor"].startswith("#") and h["projetos"][0]["nome"] == "alpha"
-    # com a lista do modal: nomes do Journify, o do jfy pelo id, o só do Journify pelo nome, o que faltou na lista fica
-    sys.stdin = io.StringIO(json.dumps({"projetos": [{"nome": "Alpha [ALPH1-024]", "jfy": 0}, {"nome": "Souv", "jfy": -1}],
-                                        "categorias": ["Bug", "Funcionalidade"]}))
-    guardar_projetos_journify()
-    sys.stdin = sys.__stdin__
+    assert set(h["categorias"]) == {"Funcionalidade", "Pesquisa", "Reunião"}, h["categorias"]
+    # com o opcoes_horas: os nomes e os ids do Journify (o do jfy é o mesmo id), o que só existe lá entra no menu
+    journify["opcoes_horas"] = {"categorias": ["Bug", "Funcionalidade", "Reunião"], "projetos": [
+        {"id": "a", "name": "Alpha [ALPH1-024]", "etapas": []}, {"id": "S1", "name": "Souv", "etapas": []}]}
+    projetos_journify(forcar=True)
     h = horas_json(hoje)
     assert [x["projeto"] for x in h["itens"]] == ["Alpha [ALPH1-024]", "Souv"], h["itens"]
-    assert [(x["id"], x["nome"]) for x in h["projetos"]] == [("a", "Alpha [ALPH1-024]"), ("r", "rpa alpha"), ("Souv", "Souv")], h["projetos"]
-    assert h["categorias"][:2] == ["Bug", "Funcionalidade"] and "Reunião" in h["categorias"]
+    assert [(x["id"], x["nome"]) for x in h["projetos"]] == [("a", "Alpha [ALPH1-024]"), ("r", "rpa alpha"), ("S1", "Souv")], h["projetos"]
+    assert h["categorias"] == ["Bug", "Funcionalidade", "Reunião"]
     os.remove(PROJ_JOURNIFY)
     globals()["PROJ_JOURNIFY"] = pj_real
     shutil.rmtree(HORAS_DIR)
@@ -5738,17 +5881,13 @@ def selftest():
         assert False, "enviou sem destinatário"
     except SystemExit:
         pass
-    # detalhe das tasks: o guardado há 5 h vale para a aba Arquivos (24 h), não para os pontos (4 h); forcar lê de novo
-    lidas, run_real = [], RUN_DIR
-    globals().update(RUN_DIR=os.path.join(run_real, "teste-detalhe"), mcp=lambda tool, **kw: lidas.append(kw["taskId"]) or {"task": {}})
-    os.makedirs(RUN_DIR, exist_ok=True)
-    json.dump({"a": {"em": time.time() - 5 * 3600, "pontos": 1, "anexos": []}}, open(os.path.join(RUN_DIR, "tasks-detalhe.json"), "w"))
-    assert detalhes_tasks(["a"], validade=24 * 3600)["a"]["pontos"] == 1 and lidas == []
-    detalhes_tasks(["a"])
-    detalhes_tasks(["a"], validade=24 * 3600, forcar=True)
-    assert lidas == ["a", "a"], lidas
-    shutil.rmtree(RUN_DIR)
-    globals().update(RUN_DIR=run_real, mcp=mcp_real)
+    # pontos: obter_tasks em lotes de 100 (antes, uma task por vez); sem estimativa fica de fora
+    lotes, mcp_real = [], globals()["mcp"]
+    globals()["mcp"] = lambda tool, **kw: lotes.append(len(kw["taskIds"])) or {"tasks": [
+        {"id": t, "estimate": {"value": 3} if t != "t1" else {}} for t in kw["taskIds"]], "naoEncontradas": []}
+    r = tasks_pontos(*[f"t{i}" for i in range(150)], "t0")
+    globals()["mcp"] = mcp_real
+    assert lotes == [100, 50] and len(r) == 149 and "t1" not in r and r["t0"] == 3, (lotes, len(r))
     # commit pelo app: só os arquivos marcados, nunca em main, sem Co-Authored-By, e segredo para antes do git add
     rp = os.path.join(RUN_DIR, "teste-commit")
     os.makedirs(rp)
