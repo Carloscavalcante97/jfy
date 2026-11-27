@@ -78,8 +78,8 @@ export function Bolinha({ cor, tamanho = 8 }: { cor?: string | null; tamanho?: n
   return <span className="bolinha" style={{ background: cor ?? 'var(--texto2)', width: tamanho, height: tamanho }} />
 }
 
-/** Uma mensagem no topo de um painel: erro (vermelho), ok (verde) ou só informação. O × fecha. */
-export function Aviso({ texto, tipo = 'erro', fechar }: { texto: string | null | undefined; tipo?: 'erro' | 'ok' | 'info'; fechar?: () => void }) {
+/** Uma mensagem no topo de um painel: erro (vermelho), alerta (laranja), ok (verde) ou só informação. O × fecha. */
+export function Aviso({ texto, tipo = 'erro', fechar }: { texto: string | null | undefined; tipo?: 'erro' | 'alerta' | 'ok' | 'info'; fechar?: () => void }) {
   if (!texto) return null
   return (
     <div className={`aviso ${tipo}`}>
@@ -109,6 +109,27 @@ export function Vazio({ titulo, children, icone }: { titulo: string; children?: 
 }
 
 // ---------- o que flutua: popover, menus e modais ----------
+// tudo que abre por cima (modal, popover, menu) entra numa pilha só: o Esc fecha o de cima e mais nada. Um calendário
+// aberto dentro do formulário do evento fecha sozinho, sem levar o formulário (e o que foi digitado) junto
+const camadas: object[] = []
+function useCamada(fechar: () => void) {
+  const eu = useRef({}).current
+  useEffect(() => {
+    camadas.push(eu)
+    return () => void camadas.splice(camadas.indexOf(eu), 1)
+  }, [])
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || camadas.at(-1) !== eu) return
+      e.stopPropagation()
+      e.preventDefault()
+      fechar()
+    }
+    window.addEventListener('keydown', k, true)
+    return () => window.removeEventListener('keydown', k, true)
+  }, [fechar])
+}
+
 /** Um painel preso a um elemento (abaixo dele), por cima de tudo. Fecha com Esc e com o clique fora. */
 export function Flutuante(p: { ancora: HTMLElement | null; fechar: () => void; children: ReactNode; largura?: number; lado?: 'baixo' | 'direita' }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -123,14 +144,13 @@ export function Flutuante(p: { ancora: HTMLElement | null; fechar: () => void; c
     if (top + r.height > innerHeight - 8) top = Math.max(8, p.lado === 'direita' ? innerHeight - r.height - 8 : a.top - r.height - 4)
     setPos({ left, top })
   }, [p.ancora])
+  useCamada(p.fechar)
   useEffect(() => {
     const fora = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node) && !p.ancora?.contains(e.target as Node)) p.fechar()
     }
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && (e.stopPropagation(), p.fechar())
     document.addEventListener('mousedown', fora)
-    document.addEventListener('keydown', esc, true)
-    return () => (document.removeEventListener('mousedown', fora), document.removeEventListener('keydown', esc, true))
+    return () => document.removeEventListener('mousedown', fora)
   }, [p.ancora, p.fechar])
   return createPortal(
     <div ref={ref} className="flutuante" style={{ left: pos?.left ?? -9999, top: pos?.top ?? 0, minWidth: p.largura }}>
@@ -167,11 +187,11 @@ function ListaMenu({ itens, fechar }: { itens: ItemMenu[]; fechar: () => void })
 }
 
 /** Um botão que abre um menu da Souv: o rótulo com a setinha e, no clique, a lista. */
-export function MenuBotao({ rotulo, itens, tipo, pequeno, title }: { rotulo: ReactNode; itens: ItemMenu[]; tipo?: TipoBotao; pequeno?: boolean; title?: string }) {
+export function MenuBotao({ rotulo, itens, tipo, pequeno, title, desativado }: { rotulo: ReactNode; itens: ItemMenu[]; tipo?: TipoBotao; pequeno?: boolean; title?: string; desativado?: boolean }) {
   const [ancora, setAncora] = useState<HTMLElement | null>(null)
   return (
     <>
-      <Botao tipo={tipo} pequeno={pequeno} title={title} onClick={(e) => setAncora(ancora ? null : e.currentTarget)}>
+      <Botao tipo={tipo} pequeno={pequeno} title={title} disabled={desativado} onClick={(e) => setAncora(ancora ? null : e.currentTarget)}>
         {rotulo} <ChevronDown size={11} strokeWidth={3} className="texto2" />
       </Botao>
       {ancora && (
@@ -201,11 +221,7 @@ export const confirmar = (p: Omit<Pedido, 'ok'>) => new Promise<boolean>((ok) =>
 
 /** Um modal com conteúdo seu (formulários): título em Lexend, o corpo e os botões embaixo. Esc e o clique fora fecham. */
 export function Modal(p: { titulo: string; children?: ReactNode; acoes?: ReactNode; fechar: () => void; largura?: number }) {
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && (e.stopPropagation(), p.fechar())
-    window.addEventListener('keydown', k, true)
-    return () => window.removeEventListener('keydown', k, true)
-  }, [p.fechar])
+  useCamada(p.fechar)
   return createPortal(
     <div className="veu" onMouseDown={(e) => e.target === e.currentTarget && p.fechar()}>
       <div className="modal" role="dialog" aria-label={p.titulo} style={{ width: p.largura }}>
@@ -218,32 +234,33 @@ export function Modal(p: { titulo: string; children?: ReactNode; acoes?: ReactNo
   )
 }
 
+const fecharMenu = () => menuAberto.set(null)
+function MenuDoClique({ menu }: { menu: { x: number; y: number; itens: ItemMenu[] } }) {
+  useCamada(fecharMenu)
+  useEffect(() => {
+    setTimeout(() => document.addEventListener('mousedown', fecharMenu))
+    return () => document.removeEventListener('mousedown', fecharMenu)
+  }, [menu])
+  return createPortal(
+    <div
+      className="flutuante"
+      style={{ left: Math.min(menu.x, innerWidth - 230), top: Math.min(menu.y, innerHeight - 40 - 32 * menu.itens.length) }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <ListaMenu itens={menu.itens} fechar={fecharMenu} />
+    </div>,
+    document.body
+  )
+}
+
 /** Vai uma vez na raiz do app: o menu do clique direito e a confirmação. */
 export function HostSouv() {
   const menu = menuAberto.use()
   const pedido = confirmacao.use()
   const fechar = (v: boolean) => (pedido?.ok(v), confirmacao.set(null))
-  useEffect(() => {
-    if (!menu) return
-    const f = () => menuAberto.set(null)
-    const esc = (e: KeyboardEvent) => e.key === 'Escape' && f()
-    setTimeout(() => document.addEventListener('mousedown', f))
-    document.addEventListener('keydown', esc)
-    return () => (document.removeEventListener('mousedown', f), document.removeEventListener('keydown', esc))
-  }, [menu])
   return (
     <>
-      {menu &&
-        createPortal(
-          <div
-            className="flutuante"
-            style={{ left: Math.min(menu.x, innerWidth - 230), top: Math.min(menu.y, innerHeight - 40 - 32 * menu.itens.length) }}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <ListaMenu itens={menu.itens} fechar={() => menuAberto.set(null)} />
-          </div>,
-          document.body
-        )}
+      {menu && <MenuDoClique menu={menu} />}
       {pedido && (
         <Modal
           titulo={pedido.titulo}
@@ -450,7 +467,9 @@ DOMPurify.addHook('afterSanitizeAttributes', (n) => {
   // todo link abre no navegador (o processo principal manda para fora); nada navega dentro do app
   if (n.tagName === 'A') (n.setAttribute('target', '_blank'), n.setAttribute('rel', 'noopener'))
 })
-const pareceHtml = (s: string) => /<\/?(p|div|br|ul|ol|li|h[1-6]|strong|em|a|img|table|span)\b/i.test(s)
+// HTML de verdade (o editor do Journify) começa com uma tag de bloco; markdown com <img> ou <br> no meio (comum em PR do
+// GitHub) vai pelo marked, que já deixa passar o HTML do meio
+const pareceHtml = (s: string) => /^\s*<(p|div|h[1-6]|ul|ol|table|blockquote|figure|section)\b/i.test(s)
 
 /** Markdown ou HTML (o Journify manda dos dois), limpo pelo DOMPurify antes de entrar na tela. */
 export function TextoRico({ texto, className }: { texto: string | null | undefined; className?: string }) {

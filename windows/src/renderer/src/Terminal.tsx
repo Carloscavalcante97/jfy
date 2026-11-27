@@ -118,6 +118,7 @@ export function TerminalTela({ menuVivo }: { menuVivo: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     palco = ref.current
+    for (const t of terms.values()) palco!.appendChild(t.el) // montada de novo (login de novo): os xterms vêm junto
     const ro = new ResizeObserver(() => mostrar())
     ro.observe(ref.current!)
     return () => ro.disconnect()

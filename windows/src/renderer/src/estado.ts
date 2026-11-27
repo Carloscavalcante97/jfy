@@ -49,7 +49,13 @@ export const atendido = (k: Exclude<keyof Nav, 'tela'>) => nav.set((n) => ({ ...
  * horas, agenda, emails, github, notificacoes. */
 export function abrirUrl(url: string) {
   const [destino, ...r] = url.replace(/^jfy:\/\//, '').split('/')
-  const resto = decodeURIComponent(r.join('/'))
+  let resto = r.join('/')
+  try {
+    resto = decodeURIComponent(resto)
+  } catch {
+    /* um % solto (o motor nem sempre codifica): fica como veio */
+  }
+  if (destino === 'aba') api.abas.ir(resto) // o clique no aviso do Claude: o terminal já na aba dele
   const mapa: Record<string, [Tela, Partial<Nav>?]> = {
     email: ['Emails', { abrirEmail: resto }], pr: ['GitHub', { abrirPR: resto }], evento: ['Agenda', { abrirEvento: resto }],
     aba: ['jfy'], horas: ['Horas'], agenda: ['Agenda'], emails: ['Emails'], github: ['GitHub'], notificacoes: ['Notificações']

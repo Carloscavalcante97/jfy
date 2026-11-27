@@ -67,6 +67,8 @@ h1, h2, h3 { font-family: 'Lexend', sans-serif; font-weight: 300; margin: 0; }
   cursor: default;
   white-space: nowrap; overflow: hidden;
 }
+/* numa coluna flex de altura fixa (as listas das telas), a linha não encolhe para caber: a lista rola */
+.linha { flex-shrink: 0; }
 .linha:hover { background: color-mix(in srgb, var(--texto) 5%, transparent); }
 .linha.marcada { background: color-mix(in srgb, var(--primaria) 22%, transparent); font-weight: 500; }
 .linha.marcada::before {
@@ -185,6 +187,7 @@ h1, h2, h3 { font-family: 'Lexend', sans-serif; font-weight: 300; margin: 0; }
 .aviso { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; user-select: text; }
 .aviso span { flex: 1; }
 .aviso.erro { background: color-mix(in srgb, var(--perigo) 14%, transparent); color: var(--perigo); }
+.aviso.alerta { background: color-mix(in srgb, #f5a524 16%, transparent); color: #f5a524; }
 .aviso.ok { background: color-mix(in srgb, #2fbf71 16%, transparent); color: #2fbf71; }
 .aviso.info { background: color-mix(in srgb, var(--primaria) 14%, transparent); color: var(--texto); }
 

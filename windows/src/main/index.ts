@@ -193,7 +193,8 @@ ipcMain.on('abas:terminal', (_e, pasta: string, nome?: string) =>
   abas.abrir(nome ?? pasta.split(/[\\/]/).pop() ?? 'terminal', WIN ? ['powershell.exe', '-NoLogo'] : [process.env.SHELL ?? '/bin/zsh', '-l'], { cwd: pasta })
 )
 ipcMain.on('tela', (_e, nome: string) => (tela = nome))
-ipcMain.on('abrir-link', (_e, alvo: string) => (/^[a-z]+:/i.test(alvo) ? shell.openExternal(alvo) : shell.openPath(alvo)))
+// link (https:, mailto:, ms-settings:) ou caminho; duas letras antes do ":" no mínimo, para C:\\... ser caminho
+ipcMain.on('abrir-link', (_e, alvo: string) => (/^[a-z][a-z0-9+.-]+:/i.test(alvo) ? shell.openExternal(alvo) : shell.openPath(alvo)))
 ipcMain.handle('caminhos', () => ({ jfy: JFY_DIR, marca: MARCA, casa: homedir(), win: WIN }))
 
 /** Um arquivo dentro de ~/.jfy (o app do Mac lê alguns direto, sem rodar o jfy). Fora dele, nada. */
@@ -213,9 +214,10 @@ ipcMain.handle('jfy:escrever', (_e, nome: string, texto: string | null) => {
   mkdirSync(dirname(p), { recursive: true })
   writeFileSync(p, texto)
 })
-ipcMain.handle('escolher', async (_e, o: { pasta?: boolean; titulo?: string; criar?: boolean; filtros?: Electron.FileFilter[] }) => {
+ipcMain.handle('escolher', async (_e, o: { pasta?: boolean; titulo?: string; criar?: boolean; filtros?: Electron.FileFilter[]; inicio?: string }) => {
   const r = await dialog.showOpenDialog(janela!, {
     title: o.titulo,
+    defaultPath: o.inicio === 'downloads' ? app.getPath('downloads') : o.inicio,
     properties: [o.pasta ? 'openDirectory' : 'openFile', ...(o.criar ? (['createDirectory', 'promptToCreate'] as const) : [])],
     filters: o.filtros
   })

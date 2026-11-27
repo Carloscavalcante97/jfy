@@ -17,7 +17,8 @@ const api = {
   lerJfy: (nome: string): Promise<string | null> => ipcRenderer.invoke('jfy:ler', nome),
   escreverJfy: (nome: string, texto: string | null): Promise<void> => ipcRenderer.invoke('jfy:escrever', nome, texto),
   /** O painel do sistema para escolher uma pasta ou um arquivo. null: cancelou. */
-  escolher: (o: { pasta?: boolean; titulo?: string; criar?: boolean; filtros?: { name: string; extensions: string[] }[] }): Promise<string | null> =>
+  /** `inicio`: a pasta em que o painel abre ("downloads" ou um caminho). */
+  escolher: (o: { pasta?: boolean; titulo?: string; criar?: boolean; filtros?: { name: string; extensions: string[] }[]; inicio?: string }): Promise<string | null> =>
     ipcRenderer.invoke('escolher', o),
   copiar: (texto: string) => ipcRenderer.send('copiar', texto),
   /** O caminho no disco de um arquivo arrastado para a janela (o File do navegador não tem mais o .path). */
