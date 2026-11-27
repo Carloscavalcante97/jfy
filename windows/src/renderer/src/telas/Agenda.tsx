@@ -11,9 +11,10 @@ import { atendido, irPara, loja, nav, useACada } from '../estado'
 import {
   AreaTexto, Aviso, Bolinha, Botao, Caixa, Campo, CampoData, CampoEmails, Carregando, Modal, Segmentos, Select, diaLocal, fmtHora
 } from '../souv'
+import { Avatar } from '../avatar'
 import './Agenda.css'
 
-type Convidado = { email: string; nome?: string | null; resposta?: string | null; eu: boolean }
+type Convidado = { email: string; nome?: string | null; resposta?: string | null; eu: boolean; foto?: string | null }
 type Evento = {
   id: string; titulo: string; descricao: string; ini: number; fim: number
   dia_inteiro: boolean; eu_organizo: boolean; pode_editar: boolean; recorrente: boolean; palpite: boolean
@@ -21,9 +22,10 @@ type Evento = {
   p?: string | null; projeto?: string | null; cor?: string | null; contexto?: string | null
   convidados: Convidado[]
   pessoa?: string | null // evento da agenda de outra pessoa (o "Reunião com…")
+  pessoa_foto?: string | null // a foto dela, no bloco
 }
 type Projeto = { id: string; nome: string; cor?: string | null }
-type Pessoa = { email: string; nome?: string | null; erro?: string | null; eventos: Evento[] }
+type Pessoa = { email: string; nome?: string | null; erro?: string | null; eventos: Evento[]; foto?: string | null }
 type Dados = { eventos: Evento[]; projetos: Projeto[]; pessoas?: Pessoa[] | null }
 
 /** As cores das pessoas, na ordem em que entram (as mesmas do jfy, CORES_PESSOAS). */
@@ -166,7 +168,8 @@ export default function Agenda({ ativa }: { ativa: boolean }) {
             const info = agenda?.pessoas?.find((p) => p.email === email)
             return (
               <span key={email} className="chip" title={email}>
-                <Bolinha cor={CORES_PESSOAS[i % CORES_PESSOAS.length]} />
+                {/* a foto com o anel na cor da pessoa: a cor é a dos eventos dela na agenda */}
+                <Avatar nome={info?.nome} email={email} foto={info?.foto} cor={CORES_PESSOAS[i % CORES_PESSOAS.length]} tamanho={18} />
                 {info?.nome ?? email.split('@')[0]}
                 {info?.erro && (
                   <span title={info.erro} className="ag-laranja">
@@ -299,6 +302,7 @@ function Coluna({ dia, eventos, abrir, novo }: { dia: Date; eventos: Evento[]; a
 }
 
 function Bloco({ evento: e, abrir, estilo }: { evento: Evento; abrir: (e: Evento) => void; estilo: CSSProperties }) {
+  const outros = e.convidados.filter((c) => !c.eu)
   return (
     <button
       type="button"
@@ -307,10 +311,23 @@ function Bloco({ evento: e, abrir, estilo }: { evento: Evento; abrir: (e: Evento
       title={e.titulo}
       onClick={(ev) => (ev.stopPropagation(), abrir(e))}
     >
-      <strong>{e.titulo}</strong>
+      <strong className="ag-bloco-titulo">
+        {/* evento da agenda de outra pessoa ("Reunião com…"): a foto dela na frente, como no Google */}
+        {e.pessoa && <Avatar email={e.pessoa} foto={e.pessoa_foto} tamanho={14} />}
+        {e.titulo}
+      </strong>
       <span className="texto2">
         {fmtHora(data(e.ini))} – {fmtHora(data(e.fim))}
       </span>
+      {/* quem vai junto, nas reuniões de 1 h ou mais (nas curtas não cabe): até 4 fotos e o resto em número */}
+      {!e.pessoa && e.fim - e.ini >= 3600 && outros.length > 0 && (
+        <span className="ag-bloco-gente">
+          {outros.slice(0, 4).map((c) => (
+            <Avatar key={c.email} nome={c.nome} email={c.email} foto={c.foto} tamanho={16} />
+          ))}
+          {outros.length > 4 && <span className="texto2">+{outros.length - 4}</span>}
+        </span>
+      )}
     </button>
   )
 }
@@ -513,7 +530,13 @@ function Detalhe({ evento: e, projetos, fechar, editar, mudou }: {
             <span className="ag-rotulo">CONVIDADOS ({e.convidados.length})</span>
             {e.convidados.map((c) => (
               <span key={c.email} className="linha-h" title={c.email}>
-                <IconeResposta r={c.resposta} />
+                {/* a resposta no cantinho da foto, como no Google */}
+                <span className="ag-convidado-foto">
+                  <Avatar nome={c.nome} email={c.email} foto={c.foto} tamanho={22} />
+                  <span className="ag-convidado-resposta">
+                    <IconeResposta r={c.resposta} />
+                  </span>
+                </span>
                 {(c.nome ?? c.email) + (c.eu ? ' (você)' : '')}
               </span>
             ))}

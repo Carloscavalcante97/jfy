@@ -10,7 +10,7 @@ import { Aviso, Botao, Campo, Carregando, FotoConta, Select, confirmar } from '.
 import './Configuracoes.css'
 
 type Contas = {
-  google: { conectado: boolean; cliente: boolean; conta?: string | null; erro?: string | null; drive?: boolean | null }
+  google: { conectado: boolean; cliente: boolean; conta?: string | null; erro?: string | null; drive?: boolean | null; fotos?: boolean | null }
   github: { ativa?: string | null; contas: string[]; instalado?: boolean; brew?: boolean }
   journify: { conectado: boolean; fim?: string | null; erro?: string | null; site?: string | null; tasks?: number | null }
 }
@@ -206,13 +206,19 @@ export default function Configuracoes({ ativa }: { ativa: boolean }) {
             {g.conectado ? (
               <>
                 <Estado ok={!g.erro}>{g.conta ? `Conectado como ${g.conta}` : 'Conectado'}</Estado>
-                {g.drive === false && (
+                {/* permissão que o login antigo não tem: o Drive (a cesta de contexto) e o diretório (as fotos das pessoas) */}
+                {(g.drive === false || g.fotos === false) && (
                   <>
                     <span className="cf-alerta">
-                      O login ainda não tem o Drive: a cesta de contexto manda Docs e Planilhas só como link. Entre de novo para ligar.
+                      {'O login ainda não tem ' +
+                        [g.drive === false && 'o Drive (a cesta de contexto manda Docs e Planilhas só como link)',
+                          g.fotos === false && 'as fotos das pessoas (a Agenda e as sugestões de email mostram só as iniciais)']
+                          .filter(Boolean)
+                          .join(' nem ') +
+                        '. Entre de novo para ligar.'}
                     </span>
                     <div>
-                      <Botao onClick={() => entrarGoogle(false)}>Entrar de novo (com o Drive)</Botao>
+                      <Botao onClick={() => entrarGoogle(false)}>Entrar de novo</Botao>
                     </div>
                   </>
                 )}

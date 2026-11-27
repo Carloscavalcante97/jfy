@@ -522,6 +522,7 @@ struct AnexoEmail: View {
 final class Contatos: ObservableObject {
     struct Contato: Decodable, Hashable {
         let email, nome: String
+        let foto: String?  // do diretório do Google (as pessoas da Souv); sem ela, as iniciais
     }
     static let todos = Contatos()
     @Published private(set) var lista: [Contato] = []
@@ -534,6 +535,45 @@ final class Contatos: ObservableObject {
             let (l, _): ([Contato]?, String?) = await JFY.ler(["--contatos-json"])
             lista = l ?? []
         }
+    }
+}
+
+/// A pessoa num círculo, como o Google Agenda: a foto do diretório do Google (as pessoas da Souv) ou, sem ela, as
+/// iniciais sobre uma cor que é sempre a mesma para o mesmo email. `cor`: a cor da pessoa no "Reunião com…" (um anel).
+struct AvatarPessoa: View {
+    let nome: String?
+    let email: String
+    let foto: String?
+    var cor: Color?
+    var tamanho: CGFloat = 18
+
+    private static let cores = ["#14b8a6", "#f97316", "#ec4899", "#a855f7", "#84cc16", "#eab308", "#06b6d4", "#f43f5e"]
+    private var iniciais: String {
+        let base = (nome?.isEmpty == false ? nome! : email.components(separatedBy: "@")[0])
+            .replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
+        return base.split(separator: " ").prefix(2).compactMap(\.first).map { String($0).uppercased() }.joined()
+    }
+    private var corFundo: Color {
+        Color(hex: Self.cores[Int(email.lowercased().unicodeScalars.reduce(0) { ($0 + Int($1.value)) % 997 }) % Self.cores.count])
+    }
+
+    var body: some View {
+        Group {
+            if let foto, let url = URL(string: foto) {
+                AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { letras }
+            } else {
+                letras
+            }
+        }
+        .frame(width: tamanho, height: tamanho)
+        .clipShape(Circle())
+        .overlay { if let cor { Circle().strokeBorder(cor, lineWidth: max(1.5, tamanho / 10)) } }
+        .help(nome.map { "\($0) · \(email)" } ?? email)
+    }
+
+    private var letras: some View {
+        Text(iniciais).font(.system(size: tamanho * 0.42, weight: .semibold)).foregroundStyle(.white)
+            .frame(width: tamanho, height: tamanho).background(corFundo)
     }
 }
 
@@ -682,6 +722,7 @@ struct CampoEmails: View {
                     ForEach(sugestoes, id: \.email) { c in
                         Button { escolher(c) } label: {
                             HStack {
+                                AvatarPessoa(nome: c.nome, email: c.email, foto: c.foto, tamanho: 18)
                                 Text(c.nome.isEmpty ? c.email : c.nome).lineLimit(1)
                                 if !c.nome.isEmpty { Text(c.email).foregroundStyle(.secondary).lineLimit(1) }
                                 Spacer()

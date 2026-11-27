@@ -667,7 +667,8 @@ def barra_ia():
 
 ESCOPOS = ["https://www.googleapis.com/auth/calendar.events",  # lê, cria e edita eventos (calendário da aba Reuniões do app)
            "https://www.googleapis.com/auth/gmail.modify",  # lê, marca como lido e responde (aba Emails do app); não apaga
-           "https://www.googleapis.com/auth/drive.readonly"]  # lê Docs, Planilhas e arquivos citados (cesta de contexto); não grava
+           "https://www.googleapis.com/auth/drive.readonly",  # lê Docs, Planilhas e arquivos citados (cesta de contexto); não grava
+           "https://www.googleapis.com/auth/directory.readonly"]  # lê nome e foto das pessoas da Souv (Agenda, sugestões de email)
 DRIVE = "https://www.googleapis.com/drive/v3/files"
 SHEETS = "https://sheets.googleapis.com/v4/spreadsheets"
 # gmail.metadata não entra junto: com ele no token o Gmail recusa format=full mesmo tendo o readonly
@@ -2970,6 +2971,53 @@ def tem_drive(cfg=None):
     return "drive.readonly" in ((cfg or load()).get("google") or {}).get("escopos", "")
 
 
+def tem_diretorio(cfg=None):
+    return "directory.readonly" in ((cfg or load()).get("google") or {}).get("escopos", "")
+
+
+FOTOS = os.path.join(HOME, "fotos.json")  # email -> foto do diretório do Google Workspace (as pessoas da Souv)
+_fotos = None
+
+
+def fotos_pessoas():
+    """{email: url da foto} das pessoas do domínio, pela People API (o diretório do Workspace), como o Google Agenda
+    mostra. Lê de novo a cada 24 h (com erro, a cada 6 h); fica de fora quem não pôs foto (o Google devolve a letra
+    padrão, e o app desenha as iniciais na cor da pessoa). Sem a permissão do diretório (login antigo) ou com a People
+    API desligada no projeto do Google, fica vazio e o app segue com as iniciais."""
+    global _fotos
+    if _fotos is not None:
+        return _fotos
+    try:
+        st = json.load(open(FOTOS))
+    except (OSError, ValueError):
+        st = {}
+    if tem_diretorio() and time.time() - st.get("em", 0) > (6 if st.get("erro") else 24) * 3600:
+        fotos, pagina = {}, None
+        try:
+            while True:
+                q = {"readMask": "emailAddresses,photos", "sources": "DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE", "pageSize": 1000,
+                     **({"pageToken": pagina} if pagina else {})}
+                r = http_json(f"https://people.googleapis.com/v1/people:listDirectoryPeople?{urllib.parse.urlencode(q)}", token=google_token())
+                for x in r.get("people", []):
+                    url = next((f["url"] for f in x.get("photos", []) if f.get("url") and not f.get("default")), None)
+                    for e in x.get("emailAddresses", []):
+                        if url and e.get("value"):
+                            fotos[e["value"].lower()] = url
+                pagina = r.get("nextPageToken")
+                if not pagina:
+                    break
+            st = {"em": time.time(), "fotos": fotos}
+        except Exception as e:  # People API desligada no projeto, sem rede: tenta de novo daqui a 6 h
+            st = {"em": time.time(), "fotos": st.get("fotos", {}), "erro": str(e)[:200]}
+        json.dump(st, open(FOTOS, "w"), ensure_ascii=False)
+    _fotos = st.get("fotos", {})
+    return _fotos
+
+
+def foto_de(email):
+    return fotos_pessoas().get((email or "").lower())
+
+
 def nome_livre(pasta, nome):
     """Um caminho na pasta para o arquivo, sem caracteres estranhos e sem sobrescrever outro de mesmo nome."""
     base = re.sub(r"[^\w.\- ()]+", "_", nome or "").strip(" .") or "arquivo"
@@ -3298,7 +3346,7 @@ def evento_app(e, cfg):
             "local": local or None, "descricao": e.get("description") or "", "url": e.get("htmlLink"),
             "link": e.get("hangoutLink") or (video[0] if video else local if local.startswith("http") else None),
             "convidados": [{"email": a.get("email", ""), "nome": a.get("displayName"), "resposta": a.get("responseStatus"),
-                            "eu": bool(a.get("self"))} for a in e.get("attendees", []) if not a.get("resource")],
+                            "eu": bool(a.get("self")), "foto": foto_de(a.get("email"))} for a in e.get("attendees", []) if not a.get("resource")],
             "organizador": org.get("displayName") or org.get("email"), "eu_organizo": bool(org.get("self")),
             "pode_editar": bool(org.get("self") or e.get("guestsCanModify")), "recorrente": bool(e.get("recurringEventId")),
             "minha_resposta": eu.get("responseStatus"), "p": p, "projeto": nome_journify(cfg, p) if p else None,
@@ -3317,7 +3365,7 @@ def agenda_pessoa(email, ini, fim, cfg, meus, cor):
                       token=google_token())
     except RuntimeError as e:
         erro = "essa agenda não está compartilhada com você (ou o email não existe)" if " 404" in str(e) or " 403" in str(e) else str(e)[:120]
-        return {"email": email, "nome": None, "erro": erro, "eventos": []}
+        return {"email": email, "nome": None, "erro": erro, "eventos": [], "foto": foto_de(email)}
     nome = (r.get("summary") or email) if "@" not in (r.get("summary") or "@") else None
     primeiro = (nome or email.split("@")[0]).split()[0].split(".")[0].capitalize()
     eventos = []
@@ -3325,10 +3373,10 @@ def agenda_pessoa(email, ini, fim, cfg, meus, cor):
         if e.get("status") == "cancelled" or e["id"] in meus or e.get("eventType") == "workingLocation":
             continue
         ev = evento_app(dict(e, summary=e.get("summary") or "Ocupado"), cfg)
-        ev.update(titulo=f"{primeiro}: {ev['titulo']}", cor=cor, pessoa=email, p=None, projeto=None, palpite=False,
+        ev.update(titulo=f"{primeiro}: {ev['titulo']}", cor=cor, pessoa=email, pessoa_foto=foto_de(email), p=None, projeto=None, palpite=False,
                   pode_editar=False, eu_organizo=False, id=f"{email}|{e['id']}")
         eventos.append(ev)
-    return {"email": email, "nome": nome, "erro": None, "eventos": eventos}
+    return {"email": email, "nome": nome, "erro": None, "eventos": eventos, "foto": foto_de(email)}
 
 
 def agenda_json(de, ate, pessoas=""):
@@ -3656,6 +3704,7 @@ def contas_json():
             google["erro"] = str(e)[:200]
     google["cliente"] = bool(cfg.get("google") or cfg.get("google_cliente"))  # sem ele, o 1º login pede o JSON
     google["drive"] = tem_drive(cfg)
+    google["fotos"] = tem_diretorio(cfg)  # sem ela (login antigo): o app pede para entrar de novo e ver as fotos
     ativa, contas = contas_gh()
     tok = ((servidor_journify() or {}).get("headers") or {}).get("Authorization", "").removeprefix("Bearer ").strip()
     journify = {"conectado": bool(tok), "fim": tok[-4:] or None, "tasks": None, "erro": None, "site": cfg.get("journify", JOURNIFY)}
@@ -4007,7 +4056,7 @@ def contatos_json():
             cota.append(e)
         st.update(lido=0 if cota else time.time(), vistos=sorted(vistos)[-5000:])
         json.dump(st, open(CONTATOS, "w"), ensure_ascii=False)
-    return [{"email": e, "nome": x["nome"]} for e, x in sorted(c.items(), key=lambda kv: -kv[1]["n"])][:500]
+    return [{"email": e, "nome": x["nome"], "foto": foto_de(e)} for e, x in sorted(c.items(), key=lambda kv: -kv[1]["n"])][:500]
 
 
 PEDIDO_EMAIL = {

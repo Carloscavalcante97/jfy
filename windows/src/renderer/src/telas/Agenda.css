@@ -85,3 +85,17 @@
 .ag-form { gap: 12px; }
 .ag-titulo-campo { font-size: 16px; }
 .ag-rotulo-data { width: 44px; flex: none; }
+
+/* as fotos das pessoas: no título do bloco (agenda de outra pessoa), embaixo dele (quem vai junto) e nos convidados */
+.ag-bloco-titulo { display: flex; align-items: flex-start; gap: 4px; }
+.ag-bloco-titulo .avatar { margin-top: 1px; }
+.ag-bloco-gente { display: flex; align-items: center; margin-top: 3px; font-size: 10px; }
+.ag-bloco-gente .avatar { box-shadow: 0 0 0 1px var(--fundo); }
+.ag-bloco-gente .avatar + .avatar { margin-left: -4px; }
+.ag-bloco-gente .texto2 { margin-left: 4px; }
+.ag-convidado-foto { position: relative; display: inline-flex; flex: none; }
+.ag-convidado-resposta {
+  position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center;
+  background: var(--fundo); border-radius: 50%; line-height: 0;
+}
+.ag-convidado-resposta svg { width: 11px; height: 11px; }
