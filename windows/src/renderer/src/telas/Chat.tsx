@@ -1,17 +1,23 @@
 // Tela "Chat" (app/Sources/JFY/Chat.swift no Mac): o chat do time do Journify. A tela só desenha; quem fala com o
-// Journify é o jfy: `--chat` (conversas), `--chat <id>` (mensagens), `--chat <id> <texto>` (envia). Enquanto o MCP
-// do Journify não tiver o chat, o jfy responde com o motivo e a tela mostra isso.
+// Journify (pelo MCP) é o jfy: `--chat` (conversas), `--chat <id>` (mensagens; abrir marca como lida),
+// `--chat <id> <texto>` (envia). Mensagem nova vira notificação pelo vigia, e o clique abre a conversa aqui.
 import { useEffect, useRef, useState } from 'react'
-import { CircleAlert, CircleArrowUp, MessagesSquare } from 'lucide-react'
+import { CircleAlert, CircleArrowUp, Eye, MessagesSquare } from 'lucide-react'
 import { api } from '../jfy'
-import { Botao, Carregando, Linha, Selo, fmtHora } from '../souv'
+import { atendido, nav } from '../estado'
+import { Aviso, Botao, Carregando, Linha, Selo, fmtHora } from '../souv'
 import './Chat.css'
 
 type Mensagem = { id: string; autor: string; texto: string; quando?: string; minha?: boolean }
-type Conversa = { id: string; nome: string; tipo?: string; nao_lidas?: number; ultima?: { autor: string; texto: string; quando?: string } | null }
+type Conversa = {
+  id: string; nome: string; tipo?: string; nao_lidas?: number
+  membro?: boolean // false: um canal que você vê sem participar, só leitura
+  ultima?: { autor?: string | null; texto: string; quando?: string } | null
+}
 type Resultado = { status: number; saida: string; erro: string }
 
-const motivo = (r: Resultado) => r.erro.trim() || `jfy --chat falhou (código ${r.status})`
+// o --chat não passa pelo app() do motor: o erro pode vir com o traceback, e o que interessa é a última linha
+const motivo = (r: Resultado) => r.erro.trim().split('\n').at(-1) || `jfy --chat falhou (código ${r.status})`
 function decodificar<T>(s: string): T | null {
   try {
     return JSON.parse(s) as T
@@ -28,13 +34,14 @@ function hora(iso?: string) {
 }
 
 export default function Chat({ ativa }: { ativa: boolean }) {
-  const [conversas, setConversas] = useState<Conversa[]>([])
+  const { abrirConversa } = nav.use()
+  const [conversas, setConversas] = useState<Conversa[] | null>(null)
   const [selecionada, setSelecionada] = useState<string | null>(null)
   const [mensagens, setMensagens] = useState<Mensagem[]>([])
   const [texto, setTexto] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [erroEnvio, setErroEnvio] = useState<string | null>(null)
-  const [fora, setFora] = useState<string | null>(null) // por que o chat não está disponível
+  const [erro, setErro] = useState<string | null>(null) // a lista não veio (sem rede, sem o Journify)
   const sel = useRef(selecionada)
   sel.current = selecionada
   const campo = useRef<HTMLTextAreaElement>(null)
@@ -43,8 +50,9 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   async function carregarConversas() {
     const r = await api.jfy(['--chat'])
     const lista = r.status === 0 ? decodificar<Conversa[]>(r.saida) : null
-    if (!lista) return setFora(r.status === 0 ? 'Não entendi a lista de conversas do jfy --chat.' : motivo(r))
-    setFora(null)
+    // falhou: a lista que já estava fica, com o aviso; a próxima volta tenta de novo
+    if (!lista) return setErro(r.status === 0 ? 'Não entendi a lista de conversas do jfy --chat.' : motivo(r))
+    setErro(null)
     setConversas(lista)
     setSelecionada((s) => (s && lista.some((c) => c.id === s) ? s : lista[0]?.id ?? null))
   }
@@ -52,27 +60,37 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   async function carregarMensagens(cid: string) {
     const r = await api.jfy(['--chat', cid])
     const lista = r.status === 0 ? decodificar<Mensagem[]>(r.saida) : null
+    if (!lista || sel.current !== cid) return
     // igual não troca: não redesenha nem rola
-    if (lista && sel.current === cid) setMensagens((m) => (JSON.stringify(m) === JSON.stringify(lista) ? m : lista))
+    setMensagens((m) => (JSON.stringify(m) === JSON.stringify(lista) ? m : lista))
+    // o jfy marcou como lida no Journify: o selo some já, sem esperar a lista
+    setConversas((l) => l && l.map((x) => (x.id === cid ? { ...x, nao_lidas: 0 } : x)))
   }
 
   // ponytail: busca de tempos em tempos (conversas a cada 15 s, mensagens a cada 5 s, só com a tela à vista); tempo
   // real (SSE ou websocket) se o MCP do Journify oferecer
   useEffect(() => {
-    if (fora) return
     carregarConversas()
     if (!ativa) return
     const t = setInterval(carregarConversas, 15_000)
     return () => clearInterval(t)
-  }, [ativa, fora])
+  }, [ativa])
 
+  // só com a tela à vista: ler as mensagens marca a conversa como lida no Journify
   useEffect(() => {
-    if (!selecionada) return
+    if (!selecionada || !ativa) return
     carregarMensagens(selecionada)
-    if (!ativa) return
     const t = setInterval(() => carregarMensagens(selecionada), 5_000)
     return () => clearInterval(t)
   }, [selecionada, ativa])
+
+  // o clique na notificação de mensagem nova
+  useEffect(() => {
+    if (!abrirConversa) return
+    setSelecionada(abrirConversa)
+    atendido('abrirConversa')
+  }, [abrirConversa])
+  useEffect(() => setMensagens([]), [selecionada]) // a conversa nova não mostra as mensagens da outra enquanto carrega
 
   // a última à vista quando chega uma nova (o scrollTop, não o scrollIntoView, que rolaria a janela toda)
   useEffect(() => {
@@ -81,12 +99,14 @@ export default function Chat({ ativa }: { ativa: boolean }) {
   }, [mensagens.at(-1)?.id])
   useEffect(() => void (ativa && campo.current?.focus()), [selecionada, ativa])
 
-  const podeEnviar = !enviando && !!texto.trim()
+  const c = conversas?.find((x) => x.id === selecionada)
+  const soLeitura = c?.membro === false
+  const podeEnviar = !enviando && !!texto.trim() && !soLeitura
 
   async function enviar() {
     const t = texto.trim()
     const cid = selecionada
-    if (!cid || !t || enviando) return
+    if (!cid || !t || enviando || soLeitura) return
     setEnviando(true)
     setErroEnvio(null)
     setTexto('')
@@ -101,20 +121,26 @@ export default function Chat({ ativa }: { ativa: boolean }) {
     }
   }
 
-  if (fora)
+  if (!conversas)
     return (
       <div className="ch-fora">
-        <MessagesSquare size={40} strokeWidth={1.5} className="ch-apagado" />
-        <h2>Chat do time</h2>
-        <span className="texto2">{fora}</span>
-        <Botao onClick={() => setFora(null)}>Tentar de novo</Botao>
+        {erro ? (
+          <>
+            <MessagesSquare size={40} strokeWidth={1.5} className="ch-apagado" />
+            <h2>Chat do time</h2>
+            <span className="texto2 selecionavel">{erro}</span>
+            <Botao onClick={() => (setErro(null), carregarConversas())}>Tentar de novo</Botao>
+          </>
+        ) : (
+          <Carregando tamanho={20} />
+        )}
       </div>
     )
 
-  const c = conversas.find((x) => x.id === selecionada)
   return (
     <div className="colunas">
       <div className="coluna ch-lista">
+        {erro && <div className="ch-aviso"><Aviso texto={erro} fechar={() => setErro(null)} /></div>}
         <div className="lista">
           {conversas.map((x) => (
             <Linha key={x.id} marcada={selecionada === x.id} className="ch-linha" onClick={() => setSelecionada(x.id)}>
@@ -126,7 +152,7 @@ export default function Chat({ ativa }: { ativa: boolean }) {
                   <span className="texto2 ch-mini">{hora(x.ultima?.quando)}</span>
                 </div>
                 <div className="linha-h">
-                  <span className="texto2 ch-ultima">{x.ultima ? `${x.ultima.autor}: ${x.ultima.texto}` : ''}</span>
+                  <span className="texto2 ch-ultima">{x.ultima ? (x.ultima.autor ? `${x.ultima.autor}: ` : '') + x.ultima.texto : ''}</span>
                   <span className="espaco" />
                   <Selo n={x.nao_lidas ?? 0} />
                 </div>
@@ -152,20 +178,26 @@ export default function Chat({ ativa }: { ativa: boolean }) {
               <CircleAlert size={12} /> {erroEnvio}
             </span>
           )}
-          <div className="ch-escrever">
-            <textarea
-              ref={campo}
-              rows={Math.min(6, texto.split('\n').length)}
-              placeholder={`Mensagem para ${c.nome}`}
-              value={texto}
-              onChange={(e) => setTexto(e.target.value)}
-              // Enter envia; Shift+Enter quebra a linha
-              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && (e.preventDefault(), enviar())}
-            />
-            <button type="button" className={`ch-enviar ${podeEnviar ? 'pode' : ''}`} disabled={!podeEnviar} title="Enviar (Enter)" onClick={enviar}>
-              {enviando ? <Carregando /> : <CircleArrowUp size={24} />}
-            </button>
-          </div>
+          {soLeitura ? (
+            <div className="ch-escrever ch-so-leitura texto2">
+              <Eye size={14} /> Você não participa desta conversa: só leitura.
+            </div>
+          ) : (
+            <div className="ch-escrever">
+              <textarea
+                ref={campo}
+                rows={Math.min(6, texto.split('\n').length)}
+                placeholder={`Mensagem para ${c.nome}`}
+                value={texto}
+                onChange={(e) => setTexto(e.target.value)}
+                // Enter envia; Shift+Enter quebra a linha
+                onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && (e.preventDefault(), enviar())}
+              />
+              <button type="button" className={`ch-enviar ${podeEnviar ? 'pode' : ''}`} disabled={!podeEnviar} title="Enviar (Enter)" onClick={enviar}>
+                {enviando ? <Carregando /> : <CircleArrowUp size={24} />}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="painel">

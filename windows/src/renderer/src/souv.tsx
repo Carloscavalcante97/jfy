@@ -10,6 +10,7 @@ import { Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Calendar a
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { alternarNaCesta, carregarContatos, cesta, contatos, loja, naCesta, type ItemContexto } from './estado'
+import { Avatar } from './avatar'
 
 // ---------- botões e campos ----------
 type TipoBotao = 'secundario' | 'primario' | 'perigo' | 'link' | 'icone'
@@ -545,6 +546,7 @@ export function CampoEmails({ rotulo, texto, mudar, aoEnter, largura }: {
         <div className="sugestoes">
           {sugestoes.map((c) => (
             <button type="button" key={c.email} onMouseDown={(e) => (e.preventDefault(), escolher(c.email))}>
+              <Avatar nome={c.nome} email={c.email} foto={c.foto} tamanho={18} />
               <span>{c.nome || c.email}</span>
               {c.nome && <span className="texto2">{c.email}</span>}
             </button>

@@ -259,7 +259,7 @@ h1, h2, h3 { font-family: 'Lexend', sans-serif; font-weight: 300; margin: 0; }
 .campo-emails .sugestoes {
   margin-left: 72px; display: grid; background: var(--superficie); border: 1px solid var(--borda); border-radius: 6px; overflow: hidden;
 }
-.campo-emails .sugestoes button {
+.campo-emails .sugestoes button { align-items: center;
   display: flex; gap: 8px; padding: 4px 8px; border: 0; background: none; color: var(--texto); font: 13px 'Roboto'; text-align: left; cursor: pointer;
 }
 .campo-emails .sugestoes button:hover { background: color-mix(in srgb, var(--primaria) 14%, transparent); }

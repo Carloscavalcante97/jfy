@@ -36,17 +36,18 @@ export type Nav = {
   abrirProjeto: string | null
   abrirEmail: string | null
   abrirEvento: string | null
+  abrirConversa: string | null
 }
 export const nav = loja<Nav>({
   tela: (localStorage.getItem('tela.inicial') as Tela) || 'Meu dia', // o app abre na Meu dia
-  abrirTask: null, abrirPR: null, abrirProjeto: null, abrirEmail: null, abrirEvento: null
+  abrirTask: null, abrirPR: null, abrirProjeto: null, abrirEmail: null, abrirEvento: null, abrirConversa: null
 })
 export const irPara = (tela: Tela, pedido: Partial<Nav> = {}) => nav.set((n) => ({ ...n, ...pedido, tela }))
 /** Zera um pedido depois que a tela de destino o atendeu. */
 export const atendido = (k: Exclude<keyof Nav, 'tela'>) => nav.set((n) => ({ ...n, [k]: null }))
 
 /** jfy://<destino>/<resto>: o clique nas notificações. email/<id>, pr/<dono>/<repo>#<n>, evento/<id>, aba/<@n>,
- * horas, agenda, emails, github, notificacoes. */
+ * chat/<conversa>, horas, agenda, emails, github, notificacoes. */
 export function abrirUrl(url: string) {
   const [destino, ...r] = url.replace(/^jfy:\/\//, '').split('/')
   let resto = r.join('/')
@@ -58,7 +59,8 @@ export function abrirUrl(url: string) {
   if (destino === 'aba') api.abas.ir(resto) // o clique no aviso do Claude: o terminal já na aba dele
   const mapa: Record<string, [Tela, Partial<Nav>?]> = {
     email: ['Emails', { abrirEmail: resto }], pr: ['GitHub', { abrirPR: resto }], evento: ['Agenda', { abrirEvento: resto }],
-    aba: ['jfy'], horas: ['Horas'], agenda: ['Agenda'], emails: ['Emails'], github: ['GitHub'], notificacoes: ['Notificações']
+    chat: ['Chat', { abrirConversa: resto || null }], aba: ['jfy'], horas: ['Horas'], agenda: ['Agenda'], emails: ['Emails'],
+    github: ['GitHub'], notificacoes: ['Notificações']
   }
   const [tela, pedido] = mapa[destino] ?? ['jfy']
   irPara(tela, pedido)
@@ -145,7 +147,7 @@ export const sessaoVersao = loja(0)
 export const sessaoMudou = () => sessaoVersao.set((v) => v + 1)
 
 // ---------- contatos (sugestões dos campos de email: Emails e Agenda), lidos uma vez do jfy ----------
-export type Contato = { email: string; nome: string }
+export type Contato = { email: string; nome: string; foto?: string | null } // foto: do diretório do Google
 export const contatos = loja<Contato[]>([])
 let contatosPedidos = false
 export async function carregarContatos() {

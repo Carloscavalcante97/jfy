@@ -38,7 +38,7 @@ export default function Projetos({ ativa }: { ativa: boolean }) {
   const [selecionando, setSelecionando] = useState(false)
   const [marcadas, setMarcadas] = useState<Set<string>>(new Set())
   const [resultadoLote, setResultadoLote] = useState<string | null>(null)
-  const [pontos, setPontos] = useState<Record<string, number>>({}) // carregam depois da lista (o MCP só dá na task inteira)
+  const [pontos, setPontos] = useState<Record<string, number>>({}) // carregam depois da lista (as tasks que vieram sem pontos)
   const [configurando, setConfigurando] = useState<PedidoProjeto | null>(null)
   const [secao, setSecao] = useState('Tasks')
   const [versao, setVersao] = useState(0) // salvar um projeto relê as tasks mesmo sem trocar de projeto

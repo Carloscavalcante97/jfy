@@ -1,12 +1,12 @@
 // As horas do dia para o minhas-horas, a mesma tabela do `h` do jfy: o que foi medido (tasks, terminal livre,
 // reuniões), com os seus ajustes, e o que você registra à mão (app/Sources/JFY/Horas.swift no app do Mac). Quem lê e
-// grava é o jfy (--horas-json, --horas-ajuste, --horas-nova, --horas-mover, --horas-lancar).
+// grava é o jfy (--horas-json, --horas-ajuste, --horas-nova, --horas-mover, --horas-lancar, este direto pelo MCP do
+// Journify).
 import { useEffect, useRef, useState } from 'react'
 import {
   BadgeCheck, Calendar, ChevronLeft, ChevronRight, CircleCheck, CirclePlus, Hand, Info, PencilLine, Trash2, TriangleAlert
 } from 'lucide-react'
 import { fazer, ler } from '../jfy'
-import { irPara } from '../estado'
 import { Aviso, Botao, Calendario, Campo, CampoData, Carregando, Flutuante, Modal, Select, confirmar, diaLocal } from '../souv'
 import './Horas.css'
 
@@ -17,14 +17,19 @@ type Item = {
   med: number; lanc: number; trabalhado: number
   fixo?: number | null
   fora: boolean; reuniao: boolean; palpite: boolean
-  estado?: 'lancada' | 'mudou' | 'nova' | null // depois do lançamento
+  estado?: 'lancada' | 'mudou' | 'nova' | null // com o dia no Journify
 }
 type Dados = {
   medido: number; pela_regra: number; total: number; corrigidas: number; fator: number
   itens: Item[]
   projetos: { id: string; nome: string; cor?: string | null }[]
   categorias: string[]
-  lancado?: { em?: number | null; removidas: number } | null // em null: lançado antes de o jfy guardar a foto
+  // o dia como está no Journify (lido de lá): quantos lançamentos, quantas horas e quantos não são de linha nenhuma
+  lancado?: { lancamentos: number; horas: number; removidas: number } | null
+}
+type Lancou = {
+  novas: number; editadas: number; iguais: number
+  sobrando: { projeto?: string | null; atividade?: string | null; horas: number }[] // no Journify sem ser linha da tabela
 }
 
 // ---------- formatos ----------
@@ -32,8 +37,10 @@ const hm = (m: number) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0
 const fmt = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}min` : `${m}min`)
 const ddmm = (d: Date) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 const inicioDia = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
-const quando = (ts?: number | null) =>
-  ts ? ' em ' + new Date(ts * 1000).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''
+/** "1 nova", "2 novas". */
+const qtd = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`
+/** Horas do Journify (decimais) com vírgula: 6,5. */
+const num = (h: number) => h.toLocaleString('pt-BR', { maximumFractionDigits: 2 })
 const sem = (r: Record<string, string>, k: string) => {
   const { [k]: _, ...resto } = r
   return resto
@@ -53,6 +60,8 @@ export default function Horas({ ativa }: { ativa: boolean }) {
   const [nova, setNova] = useState<{ p: string; cat: string; min: string; desc: string } | null>(null)
   const [gravandoNova, setGravandoNova] = useState(false)
   const [textoOutro, setTextoOutro] = useState('')
+  const [lancando, setLancando] = useState(false)
+  const [lancou, setLancou] = useState<{ feito: string; sobrou: string | null } | null>(null) // o que o último lançamento fez
 
   const hoje = inicioDia(new Date())
   const iso = diaLocal(dia)
@@ -71,7 +80,7 @@ export default function Horas({ ativa }: { ativa: boolean }) {
   useEffect(() => {
     if (ativa) carregar()
   }, [ativa, iso])
-  useEffect(() => (setLevou(null), setNova(null)), [iso])
+  useEffect(() => (setLevou(null), setNova(null), setLancou(null)), [iso])
 
   const mudar = (n: number) => {
     const d = new Date(dia.getFullYear(), dia.getMonth(), dia.getDate() + n)
@@ -153,25 +162,39 @@ export default function Horas({ ativa }: { ativa: boolean }) {
     } else setAviso(msg)
   }
 
+  /** Lança o dia pelo MCP (o jfy edita o que já está lá e mudou e cria o resto) e diz o que fez. O que está no
+   * Journify sem ser linha da tabela o jfy não apaga: vira o aviso laranja. */
   async function lancar(h: Dados) {
     const ok = await confirmar(
       h.lancado
         ? {
-            titulo: 'Este dia já foi lançado. Lançar de novo?',
-            mensagem: `Foi lançado${quando(h.lancado.em)}. Essa ação vai editar as horas já registradas no Journify para ficarem iguais à tabela (e criar só as linhas novas), sem duplicar. Esse passo usa tokens.`,
-            botao: 'Editar as horas já registradas'
+            titulo: 'Este dia já tem lançamentos no Journify. Lançar de novo?',
+            mensagem: 'O que já está lá e mudou é editado, e só as linhas novas são criadas, sem duplicar.',
+            botao: 'Lançar de novo'
           }
         : {
             titulo: `Lançar ${fmt(h.total)} de ${ddmm(dia)} no Journify?`,
-            mensagem: 'O Claude abre numa aba do jfy e preenche o minhas-horas pelo Chrome, um lançamento por linha. Esse passo usa tokens.',
+            mensagem: 'Vai direto para o Journify, em segundos: cada linha vira um lançamento no Minhas Horas, ligado à task quando veio de uma.',
             botao: 'Lançar'
           }
     )
     if (!ok) return
-    // o motor abre a aba do lançamento no app sozinho (pela ponte JFY_APP); daqui só vamos até ela
-    const erro = await fazer(['--horas-lancar', iso])
-    if (erro) setAviso(erro)
-    else irPara('jfy')
+    setLancando(true)
+    setLancou(null)
+    const [r, msg] = await ler<Lancou>(['--horas-lancar', iso])
+    await carregar() // antes do aviso: o carregar troca o aviso
+    setLancando(false)
+    if (!r) return setAviso(msg)
+    const s = r.sobrando
+    setLancou({
+      feito: `Lançado no Journify: ${qtd(r.novas, 'nova', 'novas')}, ${qtd(r.editadas, 'editada', 'editadas')}` +
+        (r.iguais > 0 ? `, ${qtd(r.iguais, 'já estava igual', 'já estavam iguais')}` : '') + '.',
+      sobrou: s.length
+        ? `No Journify há ${qtd(s.length, 'lançamento', 'lançamentos')} desse dia que não ${s.length === 1 ? 'está' : 'estão'} na tabela: ` +
+          s.map((x) => `${x.atividade || 'sem descrição'} (${num(x.horas)} h)`).join('; ') +
+          '. O jfy não apaga: tire pelo Minhas Horas se não deviam estar lá.'
+        : null
+    })
   }
 
   const okOutro = () => {
@@ -272,15 +295,25 @@ export default function Horas({ ativa }: { ativa: boolean }) {
             </span>
           )}
           <span className="espaco" />
-          <Botao tipo="primario" disabled={!vivos.length} onClick={() => lancar(h)}>
-            {h.lancado ? 'Lançar de novo…' : 'Lançar no Journify…'}
+          <Botao tipo="primario" disabled={!vivos.length || lancando} onClick={() => lancar(h)}>
+            {lancando ? (
+              <>
+                <Carregando /> Lançando…
+              </>
+            ) : h.lancado ? 'Lançar de novo…' : 'Lançar no Journify…'}
           </Botao>
         </div>
-        {h.lancado && <AvisoLancado l={h.lancado} vivos={vivos} />}
+        {h.lancado && <AvisoLancado l={h.lancado} />}
+        {lancou && (
+          <>
+            <Aviso tipo="ok" texto={lancou.feito} fechar={() => setLancou(null)} />
+            <Aviso tipo="alerta" texto={lancou.sobrou} />
+          </>
+        )}
         {semProjeto > 0 && (
           <span className="linha-h hr-laranja">
             <TriangleAlert size={14} />
-            {semProjeto} linha(s) sem projeto: escolha na coluna Projeto, ou o Claude pergunta ao lançar.
+            {semProjeto} linha(s) sem projeto: escolha na coluna Projeto antes de lançar.
           </span>
         )}
         {aviso && (
@@ -329,7 +362,6 @@ export default function Horas({ ativa }: { ativa: boolean }) {
                     <Select
                       opcoes={[...new Set([...h.categorias, it.cat])].sort().map((c) => ({ valor: c, rotulo: c }))}
                       valor={it.cat}
-                      extra={['Outra…', () => (setTextoOutro(''), setOutro({ item: it, campo: 'cat' }))]}
                       mudar={(v) => ajustar(it, 'cat', v)}
                     />
                   </span>
@@ -395,7 +427,7 @@ export default function Horas({ ativa }: { ativa: boolean }) {
           tipo="link"
           className="hr-registrar"
           title="Um trabalho que o jfy não mediu (uma ligação, um trabalho fora do Claude): entra na tabela como as outras linhas"
-          onClick={() => setNova({ p: '', cat: h.categorias.includes('Desenvolvimento') ? 'Desenvolvimento' : h.categorias[0] ?? '', min: '', desc: '' })}
+          onClick={() => setNova({ p: '', cat: h.categorias.includes('Funcionalidade') ? 'Funcionalidade' : h.categorias[0] ?? '', min: '', desc: '' })}
         >
           <CirclePlus size={14} /> Registrar horas à mão
         </Botao>
@@ -431,7 +463,6 @@ export default function Horas({ ativa }: { ativa: boolean }) {
             <Select
               opcoes={[...new Set([...h.categorias, nova.cat].filter(Boolean))].sort().map((c) => ({ valor: c, rotulo: c }))}
               valor={nova.cat}
-              extra={['Outra…', () => (setTextoOutro(''), setOutro({ item: null, campo: 'cat' }))]}
               mudar={(v) => setNova({ ...nova, cat: v })}
             />
           </span>
@@ -462,25 +493,15 @@ export default function Horas({ ativa }: { ativa: boolean }) {
 }
 
 // ---------- já lançado ----------
-/** O dia já foi para o Journify: avisa antes de alguém lançar de novo e diz o que mudou desde então. */
-function AvisoLancado({ l, vivos }: { l: NonNullable<Dados['lancado']>; vivos: Item[] }) {
-  const mudou = vivos.filter((it) => it.estado === 'mudou').length
-  const novas = vivos.filter((it) => it.estado === 'nova').length
-  const mudancas = [
-    mudou > 0 && `${mudou} alterada${mudou === 1 ? '' : 's'}`,
-    novas > 0 && `${novas} nova${novas === 1 ? '' : 's'}`,
-    l.removidas > 0 && (l.removidas === 1 ? '1 saiu da tabela' : `${l.removidas} saíram da tabela`)
-  ].filter(Boolean)
+/** O dia já tem lançamentos no Journify: avisa antes de alguém lançar de novo (as marcas da coluna Lança dizem o quê). */
+function AvisoLancado({ l }: { l: NonNullable<Dados['lancado']> }) {
   return (
     <div className="hr-lancado">
       <BadgeCheck size={16} className="destaque hr-icone" />
       <span>
-        {l.em == null
-          ? 'Este dia já tem horas no Journify (lançadas antes de o jfy guardar o que foi lançado). Lançar de novo edita as horas já registradas, sem duplicar.'
-          : `Já lançado no Journify${quando(l.em)}. ` +
-            (mudancas.length
-              ? 'Desde então: ' + mudancas.join(', ') + '. Lançar de novo edita as horas já registradas, sem duplicar.'
-              : 'A tabela está igual ao que foi lançado; lançar de novo vai editar as horas já registradas.')}
+        {`Este dia já tem ${qtd(l.lancamentos, 'lançamento', 'lançamentos')} no Journify (${num(l.horas)} h). ` +
+          '✓ igual, ✎ mudou, + nova: lançar de novo edita o que mudou, sem duplicar.' +
+          (l.removidas > 0 ? ` ${qtd(l.removidas, 'lançamento de lá não está', 'lançamentos de lá não estão')} na tabela.` : '')}
       </span>
     </div>
   )
@@ -495,7 +516,7 @@ function MarcaLancada({ estado }: { estado?: Item['estado'] }) {
     )
   if (estado === 'mudou')
     return (
-      <span title="Mudou desde o lançamento: lançar de novo edita o que está no Journify" className="hr-icone hr-laranja">
+      <span title="No Journify com outras horas ou outra categoria: lançar de novo edita o que está lá" className="hr-icone hr-laranja">
         <PencilLine size={14} />
       </span>
     )

@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import {
   CodeXml, Crosshair, ExternalLink, File, FileArchive, FileText, Film, GitPullRequestArrow, Hammer, HardDrive, Link,
-  MessageSquare, Palette, Presentation, Sheet, SquarePlay, X, type LucideIcon
+  MessageSquare, Palette, Paperclip, Presentation, Sheet, SquarePlay, X, type LucideIcon
 } from 'lucide-react'
 import { api, fazer, ler } from '../jfy'
 import { irPara } from '../estado'
@@ -141,6 +141,7 @@ export function TaskDetalhe({ tid, mudou, fechar }: { tid: string; mudou: () => 
   const [ocupado, setOcupado] = useState(false)
   const [comentario, setComentario] = useState('')
   const [fechandoEm, setFechandoEm] = useState<string | null>(null) // status que pede o vídeo do teste
+  const [anexando, setAnexando] = useState(false)
 
   async function carregar() {
     const [r, msg] = await ler<Detalhe>(['--task-json', tid])
@@ -165,6 +166,18 @@ export function TaskDetalhe({ tid, mudou, fechar }: { tid: string; mudou: () => 
     setOcupado(false)
     setAviso(erro)
     if (!erro) mudou()
+  }
+
+  /** Um print ou o vídeo do teste vira anexo da task. Fora do `ocupado`: arquivo grande leva um tempo, e a task segue
+   * para ler enquanto sobe. */
+  async function anexar() {
+    const arq = await api.escolher({ titulo: 'Anexar à task' })
+    if (!arq) return
+    setAnexando(true)
+    const erro = await fazer(['--arquivo-enviar', arq, 'task', tid])
+    if (!erro) await carregar()
+    setAnexando(false)
+    setAviso(erro)
   }
 
   // a mesma aba do 1 e do 2 na tela da task: o jfy abre a aba no app pela ponte e a tela vai para o terminal
@@ -254,6 +267,9 @@ export function TaskDetalhe({ tid, mudou, fechar }: { tid: string; mudou: () => 
             }
           >
             <Crosshair size={14} /> {noFoco ? 'Tirar do foco' : 'Marcar como foco'}
+          </Botao>
+          <Botao disabled={anexando} onClick={anexar} title="Um print ou o vídeo do teste. Anexo até 20 MB, vídeo até 100 MB: arquivo grande leva um tempo">
+            {anexando ? <Carregando /> : <Paperclip size={14} />} {anexando ? 'Enviando…' : 'Anexar arquivo'}
           </Botao>
         </div>
 
