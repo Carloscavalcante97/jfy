@@ -1,10 +1,11 @@
 // App do jfy para o Windows. O jfy em Python continua sendo o motor: o app roda `python jfy --algo-json` para os
 // dados, lê ~/.jfy direto (notificações) e hospeda as abas (abas.ts) no lugar do tmux.
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, net, Notification, protocol, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { Abas } from './abas'
 
 const WIN = process.platform === 'win32'
@@ -93,8 +94,14 @@ function criarJanela() {
   })
   janela.on('closed', () => (janela = null))
   janela.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (/^(https?|mailto):/i.test(url)) shell.openExternal(url)
     return { action: 'deny' }
+  })
+  // um link clicado no texto de uma task ou de um email abre no navegador; a janela nunca sai do app
+  janela.webContents.on('will-navigate', (e, url) => {
+    if (url.startsWith(process.env.ELECTRON_RENDERER_URL ?? 'file:')) return
+    e.preventDefault()
+    if (/^(https?|mailto):/i.test(url)) shell.openExternal(url)
   })
   if (process.env.ELECTRON_RENDERER_URL) janela.loadURL(process.env.ELECTRON_RENDERER_URL)
   else janela.loadFile(join(__dirname, '../renderer/index.html'))
@@ -153,11 +160,51 @@ ipcMain.on('abas:redimensionar', (_e, cols: number, rows: number) => abas.redime
 ipcMain.on('abas:renomear', (_e, id: string, nome: string) => abas.renomear(id, nome))
 ipcMain.on('abas:fechar', (_e, id: string) => abas.fechar(id))
 ipcMain.on('abas:menu', () => abas.abrirMenu([PYTHON, MOTOR]))
+// uma aba nova rodando um comando do jfy (o que o motor faria com abrir_aba) ou um terminal livre numa pasta
+ipcMain.on('abas:jfy', (_e, nome: string, args: string[]) => abas.abrir(nome, [PYTHON, MOTOR, ...args]))
+ipcMain.on('abas:terminal', (_e, pasta: string, nome?: string) =>
+  abas.abrir(nome ?? pasta.split(/[\\/]/).pop() ?? 'terminal', WIN ? ['powershell.exe', '-NoLogo'] : [process.env.SHELL ?? '/bin/zsh', '-l'], { cwd: pasta })
+)
 ipcMain.on('tela', (_e, nome: string) => (tela = nome))
 ipcMain.on('abrir-link', (_e, alvo: string) => (/^[a-z]+:/i.test(alvo) ? shell.openExternal(alvo) : shell.openPath(alvo)))
-ipcMain.handle('caminhos', () => ({ jfy: JFY_DIR, marca: MARCA }))
+ipcMain.handle('caminhos', () => ({ jfy: JFY_DIR, marca: MARCA, casa: homedir(), win: WIN }))
+
+/** Um arquivo dentro de ~/.jfy (o app do Mac lê alguns direto, sem rodar o jfy). Fora dele, nada. */
+function dentroDoJfy(nome: string) {
+  const p = resolve(JFY_DIR, nome)
+  const r = relative(JFY_DIR, p)
+  if (!r || r.startsWith('..') || isAbsolute(r)) throw new Error(`fora de ~/.jfy: ${nome}`)
+  return p
+}
+ipcMain.handle('jfy:ler', (_e, nome: string) => {
+  const p = dentroDoJfy(nome)
+  return existsSync(p) ? readFileSync(p, 'utf8') : null
+})
+ipcMain.handle('jfy:escrever', (_e, nome: string, texto: string | null) => {
+  const p = dentroDoJfy(nome)
+  if (texto === null) return rmSync(p, { force: true })
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(p, texto)
+})
+ipcMain.handle('escolher', async (_e, o: { pasta?: boolean; titulo?: string; criar?: boolean; filtros?: Electron.FileFilter[] }) => {
+  const r = await dialog.showOpenDialog(janela!, {
+    title: o.titulo,
+    properties: [o.pasta ? 'openDirectory' : 'openFile', ...(o.criar ? (['createDirectory', 'promptToCreate'] as const) : [])],
+    filters: o.filtros
+  })
+  return r.canceled ? null : r.filePaths[0]
+})
+ipcMain.on('copiar', (_e, texto: string) => clipboard.writeText(texto))
+ipcMain.on('mostrar-pasta', (_e, p: string) => shell.openPath(p))
+// o número de notificações novas: no ícone da barra de tarefas (Windows) ou do Dock (Mac, em desenvolvimento)
+ipcMain.on('selo', (_e, n: number, imagem?: string) => {
+  if (!WIN) return void app.setBadgeCount(n)
+  janela?.setOverlayIcon(n && imagem ? nativeImage.createFromDataURL(imagem) : null, n ? `${n} notificações novas` : '')
+})
 
 // ---------- ciclo do app ----------
+// jfyarq://x/<caminho dentro de ~/.jfy>: a tela mostra um arquivo do jfy (a foto de um anexo de email) sem ler o disco
+protocol.registerSchemesAsPrivileged([{ scheme: 'jfyarq', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
   // no Windows, o jfy:// chega como argumento da segunda instância (o clique num link ou numa notificação antiga)
@@ -171,6 +218,13 @@ else {
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
+    protocol.handle('jfyarq', (req) => {
+      try {
+        return net.fetch(pathToFileURL(dentroDoJfy(decodeURIComponent(new URL(req.url).pathname.slice(1)))).toString())
+      } catch {
+        return new Response('fora de ~/.jfy', { status: 403 })
+      }
+    })
     jfyApp = await abas.servir()
     abas.abrirMenu([PYTHON, MOTOR])
     criarJanela()
